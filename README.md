@@ -23,6 +23,15 @@ SGC does not implement VPN, DNS or proxying itself. It installs and configures W
 
 Not available yet. The goal is a single command over SSH that starts a web-based setup wizard.
 
+## Development
+
+SGC is built on Linux with Go; the exact compiler version is pinned in `go.mod`.
+
+```sh
+make check   # format check, static analysis and tests
+make build   # bin/sgc-linux-amd64 and bin/sgc-linux-arm64
+```
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
