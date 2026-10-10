@@ -1,0 +1,48 @@
+[Unit]
+Description=Server Gateway Control
+Documentation=https://github.com/Troglobitten/sgc
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/opt/sgc/current/sgc serve
+User=sgc
+Group=sgc
+Restart=on-failure
+RestartSec=2
+
+# State lives in /var/lib/sgc. systemd creates it and hands it to the sgc user.
+StateDirectory=sgc
+StateDirectoryMode=0700
+UMask=0077
+
+# --- Sandboxing ---------------------------------------------------------
+# The web-facing process never runs as root and can change nothing on the
+# system outside its own state directory. Anything that needs root goes
+# through the separate helper.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=multi-user.target

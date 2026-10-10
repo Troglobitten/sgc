@@ -1,14 +1,17 @@
 // Command sgc is the Server Gateway Control program: the web UI, the API,
 // the scheduler and the command-line tools in one binary.
 //
-// At this stage it only knows how to report its version.
+// At this stage it can report its version and run as an (empty) service.
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"runtime"
+	"syscall"
 
 	"github.com/Troglobitten/sgc"
 )
@@ -36,6 +39,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "version":
 		fmt.Fprintf(stdout, "sgc %s (%s/%s)\n", sgc.Version(), runtime.GOOS, runtime.GOARCH)
 		return exitOK
+	case "serve":
+		// systemd stops a service with SIGTERM; Ctrl+C sends an interrupt.
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+		defer stop()
+		return serve(ctx, stdout)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return exitOK
@@ -50,6 +58,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage: sgc <command>
 
 Commands:
+  serve     Run SGC as a service (started by systemd)
   version   Print the installed SGC version
   help      Show this help
 `)

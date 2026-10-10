@@ -1,0 +1,92 @@
+name: Release
+
+# Publishing a version: push a tag such as v0.3.0 that matches the VERSION file.
+# This workflow then builds the release files, signs their checksum list and
+# publishes a GitHub release.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  # Builds and tests with no access to the signing key or to anything writable.
+  build:
+    name: Build release files
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Tag must match the VERSION file
+        run: |
+          expected="v$(tr -d '[:space:]' < VERSION)"
+          if [ "$GITHUB_REF_NAME" != "$expected" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the VERSION file ($expected)."
+            exit 1
+          fi
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Checks
+        run: make check
+
+      - name: Build release files
+        run: make dist
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files
+          path: |
+            dist/
+            installer/release-key.pem
+          if-no-files-found: error
+          retention-days: 7
+
+  # The only job that can use the signing key. It runs no project code and no
+  # build tools: it signs the checksum list produced above and publishes.
+  publish:
+    name: Sign and publish
+    needs: build
+    runs-on: ubuntu-24.04
+    # The signing key is stored in this environment, which only version tags may use.
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+
+      - name: Sign the checksum list
+        env:
+          SIGNING_KEY: ${{ secrets.SGC_RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key_file="$(mktemp "$RUNNER_TEMP/signing-key.XXXXXX")"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s\n' "$SIGNING_KEY" > "$key_file"
+          openssl pkeyutl -sign -inkey "$key_file" -rawin \
+            -in dist/SHA256SUMS -out dist/SHA256SUMS.sig
+
+      # Catches a key mismatch here, rather than on someone's gateway.
+      - name: Verify the signature with the public key from the repository
+        run: |
+          openssl pkeyutl -verify -pubin -inkey installer/release-key.pem -rawin \
+            -in dist/SHA256SUMS -sigfile dist/SHA256SUMS.sig
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "SGC ${GITHUB_REF_NAME#v}" \
+            --generate-notes \
+            --verify-tag
