@@ -32,7 +32,10 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Format, static analysis and tests
+      - name: Make sure the shell script checker is available
+        run: command -v shellcheck || (sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck)
+
+      - name: Format, static analysis, shell script checks and tests
         run: make check
 
       - name: Build for amd64 and arm64
@@ -40,3 +43,6 @@ jobs:
 
       - name: Run the built program
         run: ./bin/sgc-linux-${{ matrix.arch }} version
+
+      - name: Build the release files
+        run: make dist

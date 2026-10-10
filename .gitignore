@@ -17,6 +17,9 @@ credentials/
 *.secret
 config.local.*
 *.sgcbak
+# The one exception: the PUBLIC half of the release signing key. It is meant to
+# be published; the private half exists only in GitHub's secret store.
+!installer/release-key.pem
 
 # --- User & test data (no real names, files, or records) ------------
 # Go test fixtures live in `testdata/` folders and contain only fake values.
