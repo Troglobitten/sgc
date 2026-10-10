@@ -1,0 +1,3 @@
+# SGC runs on Linux: keep Unix line endings everywhere, even when edited on Windows.
+# A shell script with Windows line endings fails to run on the gateway.
+* text=auto eol=lf

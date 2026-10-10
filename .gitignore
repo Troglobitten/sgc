@@ -1,0 +1,60 @@
+# =====================================================================
+#  .gitignore — sgc
+#  The top sections make sure NOTHING sensitive ever reaches GitHub.
+#  This repository is public: every commit is visible to everyone.
+# =====================================================================
+
+# --- Secrets & credentials (NEVER commit) ---------------------------
+.env
+.env.*
+*.env
+*.key
+*.pem
+*.pfx
+*.p12
+secrets/
+credentials/
+*.secret
+config.local.*
+*.sgcbak
+
+# --- User & test data (no real names, files, or records) ------------
+# Go test fixtures live in `testdata/` folders and contain only fake values.
+data/
+uploads/
+test-data/
+fixtures/private/
+*.sqlite
+*.sqlite3
+*.db
+
+# --- Design docs, CLAUDE.md & assistant data (private by default) ---
+# Design documents and Claude-related files stay local.
+# Remove a line only if the owner explicitly wants it committed.
+CLAUDE.md
+docs/
+.claude/settings.local.json
+.claude/scratch/
+.claude/logs/
+
+# --- OS / editor noise ----------------------------------------------
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.swp
+
+# --- Go ---------------------------------------------------------------
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage.*
+
+# --- Frontend (web/) --------------------------------------------------
+node_modules/
+web/dist/
+npm-debug.log*
