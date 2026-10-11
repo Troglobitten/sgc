@@ -26,6 +26,9 @@ const (
 	ActionUpdateRolledBack = "update.rolled_back"
 	ActionUpdateFailed     = "update.failed"
 	ActionSettingChanged   = "setting.changed"
+
+	ActionExportCreated    = "export.created"
+	ActionRestoreCompleted = "restore.completed"
 )
 
 // ActorConsole is recorded for actions taken with the command-line tool.

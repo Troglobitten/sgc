@@ -13,8 +13,10 @@
        tampered update is refused, a genuine one installs, a signed but
        broken one is rolled back, an older one is never installed, and
        "sgc update" works over SSH.
-    5. Restarts the machine through SGC and checks that everything comes
-       back by itself.
+    5. Makes an export, then restarts the machine through SGC and checks
+       that everything comes back by itself.
+    6. Wipes the machine, installs again and restores the export: the
+       account, the settings and the history must be what they were.
 
     The real release key is never involved. Requires the test machine from
     test/e2e/vm.
@@ -26,21 +28,28 @@ param()
 
 $repo        = (Resolve-Path "$PSScriptRoot\..\..\..").Path
 $releaseDir  = Join-Path $StateDir 'test-release'
+$carryDir    = Join-Path $StateDir 'test-carry'
 $version     = (Get-Content (Join-Path $repo 'VERSION') -Raw).Trim()
+
+# What has to survive the wipe in step 6: the export, its passphrase, and the
+# password of the account inside it. All throwaway values made by the test.
+$carried = 'sgc-test-export.age', 'sgc-test-passphrase', 'sgc-test-password'
 
 Write-Host "Building a test release of $version ..."
 wsl -d $WslDistro --exec bash (ConvertTo-WslPath "$PSScriptRoot\make-test-release.sh") (ConvertTo-WslPath $releaseDir)
 if ($LASTEXITCODE -ne 0) { throw 'Building the test release failed.' }
 
-Write-Host "Resetting the test machine ..."
-& "$PSScriptRoot\..\vm\Reset-TestVM.ps1" | Out-Null
-$address = Get-TestVMAddress
-
 $sshArguments = Get-SshArguments
-Invoke-TestVMCommand -Address $address -Command 'rm -rf /tmp/release ~/cases.sh ~/sgc-test-*'
-& scp @sshArguments -q -r $releaseDir "${VmUser}@${address}:/tmp/release"
-& scp @sshArguments -q "$PSScriptRoot\cases.sh" "${VmUser}@${address}:cases.sh"
-if ($LASTEXITCODE -ne 0) { throw 'Copying the test release to the test machine failed.' }
+
+function Reset-AndPrepare {
+    # A clean machine with the test release and the test script on it.
+    & "$PSScriptRoot\..\vm\Reset-TestVM.ps1" | Out-Null
+    $script:address = Get-TestVMAddress
+    Invoke-TestVMCommand -Address $script:address -Command 'rm -rf /tmp/release ~/cases.sh ~/sgc-test-*'
+    & scp @sshArguments -q -r $releaseDir "${VmUser}@${script:address}:/tmp/release"
+    & scp @sshArguments -q "$PSScriptRoot\cases.sh" "${VmUser}@${script:address}:cases.sh"
+    if ($LASTEXITCODE -ne 0) { throw 'Copying the test release to the test machine failed.' }
+}
 
 $failed = 0
 function Invoke-Cases {
@@ -49,6 +58,9 @@ function Invoke-Cases {
     Invoke-TestVMCommand -Address $script:address -Command "bash ~/cases.sh $Mode $version"
     if ($LASTEXITCODE -ne 0) { $script:failed++ }
 }
+
+Write-Host "Resetting the test machine ..."
+Reset-AndPrepare
 
 Invoke-Cases refused
 Invoke-Cases accepted
@@ -62,6 +74,15 @@ Invoke-Cases update-broken
 Invoke-Cases update-downgrade
 Invoke-Cases update-cli
 
+# An export of everything so far, taken off the machine.
+Invoke-Cases export
+if (Test-Path $carryDir) { Remove-Item -Recurse -Force $carryDir }
+New-Item -ItemType Directory -Path $carryDir | Out-Null
+foreach ($file in $carried) {
+    & scp @sshArguments -q "${VmUser}@${address}:$file" (Join-Path $carryDir $file)
+    if ($LASTEXITCODE -ne 0) { throw "Could not fetch $file from the test machine." }
+}
+
 Invoke-Cases restart
 
 # The machine is now going down. Wait until it has actually stopped answering
@@ -72,6 +93,18 @@ Wait-TestVMSshDown -Address $address
 $address = Wait-TestVMSsh
 
 Invoke-Cases after-restart
+
+# The promise of the export: wipe the machine, install again, restore.
+Write-Host ""
+Write-Host "Wiping the test machine ..."
+Reset-AndPrepare
+foreach ($file in $carried) {
+    & scp @sshArguments -q (Join-Path $carryDir $file) "${VmUser}@${address}:$file"
+    if ($LASTEXITCODE -ne 0) { throw "Could not copy $file to the test machine." }
+}
+Invoke-Cases restore
+
+Remove-Item -Recurse -Force $carryDir
 
 Write-Host ""
 if ($failed -gt 0) { throw "Installer test FAILED." }

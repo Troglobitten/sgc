@@ -22,9 +22,11 @@ var (
 	ErrBadSetupToken = errors.New("the setup link is not valid or has expired")
 	// ErrInvalidCredentials deliberately does not say which part was wrong.
 	ErrInvalidCredentials = errors.New("wrong username or password")
-	ErrInvalidUsername    = errors.New("a username is 1 to 32 characters: lowercase letters, digits, dot, dash or underscore, starting with a letter")
-	ErrWeakPassword       = fmt.Errorf("a password must be at least %d characters", MinPasswordLength)
-	ErrPasswordTooLong    = fmt.Errorf("a password can be at most %d characters", maxPasswordLength)
+	// ErrWrongPassword is for a signed-in admin asked for the password again.
+	ErrWrongPassword   = errors.New("that is not your password")
+	ErrInvalidUsername = errors.New("a username is 1 to 32 characters: lowercase letters, digits, dot, dash or underscore, starting with a letter")
+	ErrWeakPassword    = fmt.Errorf("a password must be at least %d characters", MinPasswordLength)
+	ErrPasswordTooLong = fmt.Errorf("a password can be at most %d characters", maxPasswordLength)
 )
 
 // TooManyAttemptsError is returned while an address is locked out.
@@ -166,6 +168,77 @@ func (s *Service) CompleteSetup(ctx context.Context, token, username, password, 
 	}
 	s.limiter.succeed(remoteAddr)
 	return nil
+}
+
+// CheckSetupToken reports whether token is the current setup token, without
+// using it up. Restoring from an export on a fresh install is guarded by the
+// same one-time link as creating an account, but takes two steps (preview,
+// then confirm), so the first step must leave the link valid.
+func (s *Service) CheckSetupToken(ctx context.Context, token, remoteAddr string) error {
+	now := s.now()
+	if wait := s.limiter.retryAfter(remoteAddr, now); wait > 0 {
+		return &TooManyAttemptsError{RetryAfter: wait}
+	}
+	required, err := s.SetupRequired(ctx)
+	if err != nil {
+		return err
+	}
+	if !required {
+		return ErrAlreadySetUp
+	}
+
+	var storedHash []byte
+	var expiresAt int64
+	err = s.db.QueryRowContext(ctx, "SELECT token_hash, expires_at FROM setup_token WHERE id = 1").Scan(&storedHash, &expiresAt)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("read setup token: %w", err)
+	}
+	given := sha256.Sum256([]byte(token))
+	if err != nil || subtle.ConstantTimeCompare(given[:], storedHash) != 1 || now.Unix() >= expiresAt {
+		s.limiter.fail(remoteAddr, now)
+		return ErrBadSetupToken
+	}
+	return nil
+}
+
+// VerifyAdminPassword checks the admin's password without starting a
+// session. Used to ask for the password again before an action that hands
+// out everything SGC holds, such as an export. Wrong attempts count towards
+// the same lock-out as wrong sign-ins.
+func (s *Service) VerifyAdminPassword(ctx context.Context, password, remoteAddr string) error {
+	now := s.now()
+	if wait := s.limiter.retryAfter(remoteAddr, now); wait > 0 {
+		return &TooManyAttemptsError{RetryAfter: wait}
+	}
+	var storedHash string
+	if err := s.db.QueryRowContext(ctx, "SELECT password_hash FROM admin WHERE id = 1").Scan(&storedHash); err != nil {
+		return fmt.Errorf("read admin account: %w", err)
+	}
+	matches := false
+	if len(password) <= maxPasswordLength {
+		var err error
+		if matches, err = verifyPassword(storedHash, password); err != nil {
+			return err
+		}
+	}
+	if !matches {
+		s.limiter.fail(remoteAddr, now)
+		return ErrWrongPassword
+	}
+	return nil
+}
+
+// AdminUsername returns the admin's username, or "" before setup.
+func (s *Service) AdminUsername(ctx context.Context) (string, error) {
+	var username string
+	err := s.db.QueryRowContext(ctx, "SELECT username FROM admin WHERE id = 1").Scan(&username)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read admin account: %w", err)
+	}
+	return username, nil
 }
 
 // Session is a successful login.

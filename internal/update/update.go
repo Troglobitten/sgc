@@ -13,11 +13,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/Troglobitten/sgc/internal/layout"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/Troglobitten/sgc/internal/layout"
 
 	"github.com/Troglobitten/sgc/internal/release"
 	"github.com/Troglobitten/sgc/internal/store"

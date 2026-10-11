@@ -13,10 +13,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
+	"sync"
 
 	"github.com/Troglobitten/sgc/internal/audit"
 	"github.com/Troglobitten/sgc/internal/auth"
+	"github.com/Troglobitten/sgc/internal/backup"
 	"github.com/Troglobitten/sgc/internal/health"
 	"github.com/Troglobitten/sgc/internal/release"
 	"github.com/Troglobitten/sgc/internal/update"
@@ -50,13 +51,21 @@ type Server struct {
 	// LastUpdate returns the outcome of the most recent update attempt, or
 	// nil if there never was one.
 	LastUpdate func() (*updater.Status, error)
-	Version    string
+	Backups    Backups
+	// StartOver asks the process to wind down the web server and start
+	// again on the database a confirmed restore has put in place.
+	StartOver func()
+	Version   string
 	// UI holds the built browser interface (index.html, assets/...).
 	UI fs.FS
 	// InsecureCookies is for local development over plain http only. It
 	// drops the cookie attributes that require HTTPS.
 	InsecureCookies bool
 	Log             *slog.Logger
+
+	// The export that was uploaded and previewed, waiting to be confirmed.
+	restoreMu      sync.Mutex
+	pendingRestore *backup.Manifest
 }
 
 func (s *Server) Handler() http.Handler {
@@ -72,6 +81,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/update/check", s.requireSession(s.handleUpdateCheck))
 	mux.HandleFunc("POST /api/update/settings", s.requireSession(s.handleUpdateSettings))
 	mux.HandleFunc("POST /api/update/install", s.requireSession(s.handleUpdateInstall))
+	mux.HandleFunc("POST /api/export", s.requireSession(s.handleExport))
+	mux.HandleFunc("POST /api/setup/restore/preview", s.handleRestorePreview)
+	mux.HandleFunc("POST /api/setup/restore/confirm", s.handleRestoreConfirm)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "no such API endpoint")
 	})
@@ -82,12 +94,15 @@ func (s *Server) Handler() http.Handler {
 	// curl carry no browser origin headers and pass.
 	crossOrigin := http.NewCrossOriginProtection()
 
-	return securityHeaders(crossOrigin.Handler(mux))
+	return s.commonHeaders(crossOrigin.Handler(mux))
 }
 
-func securityHeaders(next http.Handler) http.Handler {
+func (s *Server) commonHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
+		// Lets a page that was loaded from an earlier version notice that
+		// SGC has been updated underneath it, and reload itself.
+		h.Set("X-SGC-Version", s.Version)
 		// The UI loads only its own files: no inline scripts, no other sites,
 		// and it may not be embedded in a frame (clickjacking). Inline styles
 		// are allowed because the dialog component injects a small style
@@ -175,6 +190,7 @@ type stateResponse struct {
 	SignedIn      bool   `json:"signedIn"`
 	Username      string `json:"username,omitempty"`
 	MinPassword   int    `json:"minPasswordLength"`
+	MinPassphrase int    `json:"minPassphraseLength"`
 }
 
 // handleState tells the UI which screen to show. It is the only endpoint
@@ -185,7 +201,12 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	resp := stateResponse{Version: s.Version, SetupRequired: setupRequired, MinPassword: auth.MinPasswordLength}
+	resp := stateResponse{
+		Version:       s.Version,
+		SetupRequired: setupRequired,
+		MinPassword:   auth.MinPasswordLength,
+		MinPassphrase: backup.MinPassphraseLength,
+	}
 	if session, err := s.currentSession(r); err != nil {
 		s.internalError(w, r, err)
 		return
@@ -383,10 +404,7 @@ func (s *Server) handleUpdateInstall(w http.ResponseWriter, r *http.Request) {
 
 	// The download can take a while on a slow line; the usual time limit
 	// for answering a request is too short for it.
-	deadline := time.Now().Add(15 * time.Minute)
-	controller := http.NewResponseController(w)
-	controller.SetReadDeadline(deadline)
-	controller.SetWriteDeadline(deadline)
+	extendDeadlines(w)
 
 	username := sessionFrom(r).Username
 	s.record(r, username, audit.ActionUpdateStarted, "to "+version.String())

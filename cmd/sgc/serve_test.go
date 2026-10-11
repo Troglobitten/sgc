@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
-	"github.com/Troglobitten/sgc/internal/layout"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Troglobitten/sgc/internal/layout"
 )
 
 // syncBuffer lets the test read output while the server is still writing to it.

@@ -75,6 +75,11 @@ export default function App() {
   }
   if (!state.signedIn) return <LoginPage onDone={refresh} />
   return (
-    <DashboardPage username={state.username ?? ''} version={state.version} onSignedOut={refresh} />
+    <DashboardPage
+      username={state.username ?? ''}
+      version={state.version}
+      minPassphraseLength={state.minPassphraseLength}
+      onSignedOut={refresh}
+    />
   )
 }
