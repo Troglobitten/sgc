@@ -92,9 +92,48 @@ func TestOnlyListedOperationsExist(t *testing.T) {
 		{http.MethodGet, "/v1/restart-device"},
 		{http.MethodGet, "/"},
 	} {
-		if err := client.call(context.Background(), probe.method, probe.path, nil); err == nil {
+		if err := client.call(context.Background(), probe.method, probe.path, nil, nil); err == nil {
 			t.Errorf("%s %s was accepted", probe.method, probe.path)
 		}
+	}
+}
+
+func TestStartUpdatePassesOnlyPlainVersions(t *testing.T) {
+	var started []string
+	client := startHelper(t, &Server{
+		AllowedUID:  uint32(os.Getuid()),
+		StartUpdate: func(version string) error { started = append(started, version); return nil },
+	})
+	ctx := context.Background()
+
+	if err := client.StartUpdate(ctx, "0.5.1"); err != nil {
+		t.Fatalf("a plain version was refused: %v", err)
+	}
+	if len(started) != 1 || started[0] != "0.5.1" {
+		t.Fatalf("started = %v", started)
+	}
+
+	// The version ends up in a systemd unit name. Nothing but a version may
+	// reach the function that builds that name.
+	for _, bad := range []string{"", "latest", "0.5.1 --now", "0.5.1; reboot", "../../etc/passwd", "0.5.1\n0.5.2", "v0.5.1", "0.5.1-beta"} {
+		if err := client.StartUpdate(ctx, bad); err == nil {
+			t.Errorf("%q was accepted as a version", bad)
+		}
+	}
+	if len(started) != 1 {
+		t.Errorf("an update was started for a refused version: %v", started)
+	}
+}
+
+func TestStartUpdateFailureIsReported(t *testing.T) {
+	client := startHelper(t, &Server{
+		AllowedUID:  uint32(os.Getuid()),
+		StartUpdate: func(string) error { return errors.New("unit not found") },
+	})
+
+	err := client.StartUpdate(context.Background(), "0.5.1")
+	if err == nil || !strings.Contains(err.Error(), "unit not found") {
+		t.Errorf("err = %v, want the underlying reason", err)
 	}
 }
 

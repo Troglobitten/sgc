@@ -1,0 +1,49 @@
+[Unit]
+Description=Server Gateway Control update to %i
+Documentation=https://github.com/Troglobitten/sgc
+
+[Service]
+# One run per update: verify the downloaded release, install it, wait for the
+# new version to answer, and put the previous one back if it does not.
+# Started by the helper (from the dashboard) or by "sgc update".
+Type=oneshot
+ExecStart=/opt/sgc/current/sgc-helper update %i
+TimeoutStartSec=360
+
+# The update's status and the database backup live in /var/lib/sgc-update,
+# owned by root and readable by the web process.
+StateDirectory=sgc-update
+StateDirectoryMode=0755
+
+# --- Sandboxing ---------------------------------------------------------
+# The updater replaces programs and restarts services, so it must be root.
+# It still gets only what that takes: it may write to SGC's own folders and
+# nowhere else, and it may talk to this machine only (to ask the new version
+# whether it is up). It never talks to the internet; downloading is done
+# beforehand by the unprivileged web process.
+NoNewPrivileges=yes
+# Reading the download from, and restoring the database into, the service
+# user's private folder; handing restored files back to that user.
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER
+ProtectSystem=strict
+ReadWritePaths=/opt/sgc /etc/systemd/system /var/lib/sgc
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@resources

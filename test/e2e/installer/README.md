@@ -17,8 +17,13 @@ Runs the real installer on the clean test machine from [`../vm`](../vm), then dr
 | Signing in and out | Sign out ends access; a wrong password is refused; the right one signs in |
 | Root helper | Socket owned by `root:sgc`, closed to other users; answers the service user; has no "run a command" operation |
 | Second run | Running the installer again is harmless and does not hand out a new setup link |
+| Tampered update | An update whose archive was altered is refused before the root updater is even started; nothing changes |
+| Genuine update | Installs through the API; SGC comes back as the new version; the earlier sign-in still works; the previous version is kept; the outcome is in the activity log |
+| Broken update | A correctly signed release whose program does not start: SGC goes back to the previous version and its data by itself, and says so |
+| Older release | Never offered, and refused if asked for |
+| `sgc update` | Needs root; `--check` only looks; answering "no" changes nothing; `--yes` installs |
 | Restart | A restart needs confirmation; SGC restarts the machine; afterwards SGC and the helper are back by themselves, the earlier sign-in still works and the restart is in the activity log |
 
-The test builds its own release and signs it with a throwaway key created on the spot (`make-test-release.sh`). The real release key is never involved. The admin account it creates uses a random password that exists only on the test machine.
+The test builds its own releases (the version under test and three later ones, one of them deliberately broken) and signs them with a throwaway key created on the spot (`make-test-release.sh`). The updates are served from a folder on the test machine itself. The real release key is never involved, and nothing built for the test is ever published. The admin account it creates uses a random password that exists only on the test machine.
 
 `cases.sh` is the part that runs on the test machine.

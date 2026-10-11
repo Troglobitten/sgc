@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/Troglobitten/sgc/internal/layout"
 	"io"
 	"os"
 	"os/signal"
@@ -45,6 +46,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return serve(ctx, args[1:], stdout, stderr)
 	case "setup-link":
 		return setupLink(ctx, args[1:], stdout, stderr)
+	case "update":
+		return updateCommand(ctx, args[1:], os.Stdin, stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return exitOK
@@ -61,6 +64,7 @@ func printUsage(w io.Writer) {
 Commands:
   serve        Run SGC as a service (started by systemd)
   setup-link   Print a new one-time link for creating the admin account
+  update       Look for a newer SGC version and install it (--check: only look)
   version      Print the installed SGC version
   help         Show this help
 `)
@@ -72,5 +76,5 @@ func defaultStateDir() string {
 	if dir := os.Getenv("STATE_DIRECTORY"); dir != "" {
 		return dir
 	}
-	return "/var/lib/sgc"
+	return layout.StateDir
 }

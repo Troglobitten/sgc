@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/Troglobitten/sgc/internal/layout"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -23,20 +24,20 @@ import (
 	"github.com/Troglobitten/sgc/internal/helper"
 	"github.com/Troglobitten/sgc/internal/store"
 	"github.com/Troglobitten/sgc/internal/tlscert"
+	"github.com/Troglobitten/sgc/internal/updater"
 	"github.com/Troglobitten/sgc/internal/web"
 	webui "github.com/Troglobitten/sgc/web"
 )
-
-const databaseFile = "sgc.db"
 
 // serve runs the web UI and API until ctx is cancelled, which is how systemd
 // asks the service to stop.
 func serve(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("sgc serve", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	listen := flags.String("listen", ":"+strconv.Itoa(web.DefaultPort), "address to listen on")
+	listen := flags.String("listen", ":"+strconv.Itoa(layout.WebPort), "address to listen on")
 	stateDir := flags.String("state-dir", defaultStateDir(), "folder for the database and certificate")
-	helperSocket := flags.String("helper-socket", helper.SocketPath, "socket of the root helper")
+	helperSocket := flags.String("helper-socket", layout.HelperSocket, "socket of the root helper")
+	updateWorkDir := flags.String("update-work-dir", layout.UpdateWorkDir, "folder where the updater records its outcome")
 	devHTTP := flags.Bool("dev-insecure-http", false, "development only: plain http, reachable from this machine only")
 	if err := flags.Parse(args); err != nil {
 		return exitUsage
@@ -51,7 +52,7 @@ func serve(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	// Everything SGC writes (database, certificate key) is private to its user.
 	syscall.Umask(0o077)
 
-	db, err := store.Open(ctx, filepath.Join(*stateDir, databaseFile))
+	db, err := store.Open(ctx, filepath.Join(*stateDir, layout.DatabaseFile))
 	if err != nil {
 		return fail("open database", err)
 	}
@@ -61,9 +62,21 @@ func serve(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail("prepare sign-in", err)
 	}
+	auditLog := audit.New(db)
 	monitor := health.NewMonitor()
 	go monitor.Run(ctx, 2*time.Second)
 	go deleteExpiredSessionsHourly(ctx, authService, log)
+
+	updates, err := newUpdateChecker(db, *stateDir, log)
+	if err != nil {
+		return fail("prepare updates", err)
+	}
+	// Whatever was downloaded for an earlier update has served its purpose.
+	updates.ClearSpool()
+	// In the background: right after an update it has to wait for the
+	// updater to record the outcome, and start-up must not wait with it.
+	go reportUpdateOutcome(ctx, db, auditLog, *updateWorkDir, log)
+	go updates.Run(ctx)
 
 	ui, err := fs.Sub(webui.Dist, "dist")
 	if err != nil {
@@ -72,9 +85,11 @@ func serve(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	server := &web.Server{
 		Auth:            authService,
-		Audit:           audit.New(db),
+		Audit:           auditLog,
 		Health:          monitor,
 		Helper:          helper.NewClient(*helperSocket),
+		Updates:         updates,
+		LastUpdate:      func() (*updater.Status, error) { return updater.ReadStatus(*updateWorkDir) },
 		Version:         sgc.Version(),
 		UI:              ui,
 		InsecureCookies: *devHTTP,

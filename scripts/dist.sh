@@ -29,10 +29,14 @@ mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 
 # The browser interface is embedded into the sgc binary, so it is built first.
-bash scripts/build-web.sh
+# SGC_SKIP_WEB_BUILD=1 reuses what is already in web/dist; the tests use it to
+# build several versions in a row without rebuilding an identical interface.
+if [ "${SGC_SKIP_WEB_BUILD:-}" != 1 ]; then
+    bash scripts/build-web.sh
+fi
 
 programs="sgc sgc-helper"
-units="sgc.service sgc-helper.service sgc-helper.socket"
+units="sgc.service sgc-helper.service sgc-helper.socket sgc-update@.service"
 
 for arch in amd64 arm64; do
     stage="$(mktemp -d)"

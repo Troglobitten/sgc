@@ -20,16 +20,48 @@ import (
 	"github.com/Troglobitten/sgc/internal/auth"
 	"github.com/Troglobitten/sgc/internal/health"
 	"github.com/Troglobitten/sgc/internal/store"
+	"github.com/Troglobitten/sgc/internal/update"
+	"github.com/Troglobitten/sgc/internal/updater"
 )
 
 type fakeHelper struct {
 	restarts int
 	err      error
+	// Versions the helper was asked to install.
+	updates   []string
+	updateErr error
 }
 
 func (f *fakeHelper) RestartDevice(context.Context) error {
 	f.restarts++
 	return f.err
+}
+
+func (f *fakeHelper) StartUpdate(_ context.Context, version string) error {
+	f.updates = append(f.updates, version)
+	return f.updateErr
+}
+
+// fakeUpdates stands in for the update checker.
+type fakeUpdates struct {
+	status   update.Status
+	checks   int
+	fetched  []string
+	fetchErr error
+}
+
+func (f *fakeUpdates) Status(context.Context) (update.Status, error) { return f.status, nil }
+func (f *fakeUpdates) Check(context.Context) (update.Status, error) {
+	f.checks++
+	return f.status, nil
+}
+func (f *fakeUpdates) Fetch(_ context.Context, version string) error {
+	f.fetched = append(f.fetched, version)
+	return f.fetchErr
+}
+func (f *fakeUpdates) SetAutoCheck(_ context.Context, enabled bool) error {
+	f.status.AutoCheck = enabled
+	return nil
 }
 
 type testEnv struct {
@@ -38,6 +70,8 @@ type testEnv struct {
 	client     *http.Client // keeps cookies, like a browser
 	auth       *auth.Service
 	helper     *fakeHelper
+	updates    *fakeUpdates
+	lastUpdate *updater.Status
 	setupToken string
 }
 
@@ -60,12 +94,16 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 
 	helper := &fakeHelper{}
+	updates := &fakeUpdates{status: update.Status{Current: "9.9.9", AutoCheck: true}}
+	e := &testEnv{t: t, auth: authService, helper: helper, updates: updates, setupToken: token}
 	server := &Server{
-		Auth:    authService,
-		Audit:   audit.New(db),
-		Health:  health.NewMonitor(),
-		Helper:  helper,
-		Version: "9.9.9",
+		Auth:       authService,
+		Audit:      audit.New(db),
+		Health:     health.NewMonitor(),
+		Helper:     helper,
+		Updates:    updates,
+		LastUpdate: func() (*updater.Status, error) { return e.lastUpdate, nil },
+		Version:    "9.9.9",
 		UI: fstest.MapFS{
 			"index.html":    {Data: []byte("<!doctype html><title>SGC</title>")},
 			"assets/app.js": {Data: []byte("console.log('sgc')")},
@@ -79,7 +117,15 @@ func newTestEnv(t *testing.T) *testEnv {
 	client := ts.Client()
 	client.Jar, _ = cookiejar.New(nil)
 
-	return &testEnv{t: t, url: ts.URL, client: client, auth: authService, helper: helper, setupToken: token}
+	e.url, e.client = ts.URL, client
+	return e
+}
+
+// signIn takes a fresh environment straight to a signed-in admin.
+func (e *testEnv) signIn() {
+	e.t.Helper()
+	body := setupRequest{Token: e.setupToken, Username: testUser, Password: testPassword}
+	e.expectStatus(e.call("POST", "/api/setup", body, nil), http.StatusOK)
 }
 
 // call sends a JSON request and decodes a JSON answer into out (if not nil).

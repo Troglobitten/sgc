@@ -33,6 +33,34 @@ export interface AuditEntry {
   remoteAddr: string
 }
 
+/** How the most recent update attempt ended (internal/updater). */
+export interface UpdateOutcome {
+  id: number
+  state: 'running' | 'succeeded' | 'rolled-back' | 'failed'
+  from: string
+  to: string
+  message: string
+  startedAt: string
+  finishedAt?: string
+  /** false when the attempt was refused before anything was touched */
+  changed: boolean
+}
+
+export interface UpdateStatus {
+  current: string
+  /** '' until a check has succeeded */
+  latest: string
+  updateAvailable: boolean
+  notes: string
+  publishedAt: string | null
+  checkedAt: string | null
+  /** why the most recent check failed, or '' */
+  checkError: string
+  checkFailedAt: string | null
+  autoCheck: boolean
+  lastUpdate: UpdateOutcome | null
+}
+
 /** An error with a message that is fit to show to the user as it is. */
 export class ApiError extends Error {
   /** HTTP status, or 0 when SGC could not be reached at all. */
@@ -78,6 +106,12 @@ export const api = {
   health: () => request<Health>('GET', '/api/health'),
   audit: () => request<AuditEntry[]>('GET', '/api/audit'),
   restartDevice: () => request<void>('POST', '/api/device/restart', { confirm: true }),
+  update: () => request<UpdateStatus>('GET', '/api/update'),
+  checkForUpdate: () => request<UpdateStatus>('POST', '/api/update/check', {}),
+  setAutoCheck: (autoCheck: boolean) =>
+    request<UpdateStatus>('POST', '/api/update/settings', { autoCheck }),
+  installUpdate: (version: string) =>
+    request<void>('POST', '/api/update/install', { version, confirm: true }),
 }
 
 /** The message to show for any thrown value. */

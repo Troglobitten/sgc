@@ -43,12 +43,18 @@ jobs:
       - name: Build release files
         run: make dist
 
+      # The release's description: this version's section of CHANGELOG.md.
+      # SGC shows it to its owner before they update.
+      - name: Release notes
+        run: bash scripts/release-notes.sh > release-notes.md
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-files
           path: |
             dist/
             installer/release-key.pem
+            release-notes.md
           if-no-files-found: error
           retention-days: 7
 
@@ -92,5 +98,5 @@ jobs:
           gh release create "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "SGC ${GITHUB_REF_NAME#v}" \
-            --generate-notes \
+            --notes-file release-notes.md \
             --verify-tag

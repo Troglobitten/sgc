@@ -12,9 +12,11 @@
 //
 //	GET  /v1/ping            is the helper there, and which version?
 //	POST /v1/restart-device  restart the machine cleanly
+//	POST /v1/start-update    install an already downloaded SGC version
 package helper
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,12 +25,15 @@ import (
 	"net/http"
 	"syscall"
 	"time"
+
+	"github.com/Troglobitten/sgc/internal/release"
 )
 
-// SocketPath is where systemd creates the helper's socket (sgc-helper.socket).
-const SocketPath = "/run/sgc-helper/helper.sock"
-
 type pingResponse struct {
+	Version string `json:"version"`
+}
+
+type startUpdateRequest struct {
 	Version string `json:"version"`
 }
 
@@ -57,7 +62,7 @@ func NewClient(socketPath string) *Client {
 // Ping returns the helper's version.
 func (c *Client) Ping(ctx context.Context) (string, error) {
 	var resp pingResponse
-	if err := c.call(ctx, http.MethodGet, "/v1/ping", &resp); err != nil {
+	if err := c.call(ctx, http.MethodGet, "/v1/ping", nil, &resp); err != nil {
 		return "", err
 	}
 	return resp.Version, nil
@@ -66,12 +71,29 @@ func (c *Client) Ping(ctx context.Context) (string, error) {
 // RestartDevice asks for a clean restart of the machine. It returns once the
 // restart has been scheduled, shortly before the machine goes down.
 func (c *Client) RestartDevice(ctx context.Context) error {
-	return c.call(ctx, http.MethodPost, "/v1/restart-device", nil)
+	return c.call(ctx, http.MethodPost, "/v1/restart-device", nil, nil)
 }
 
-func (c *Client) call(ctx context.Context, method, path string, out any) error {
+// StartUpdate asks for the given, already downloaded, version to be
+// installed. It returns once the update has been started; the update then
+// runs on its own and restarts SGC.
+func (c *Client) StartUpdate(ctx context.Context, version string) error {
+	return c.call(ctx, http.MethodPost, "/v1/start-update", startUpdateRequest{Version: version}, nil)
+}
+
+func (c *Client) call(ctx context.Context, method, path string, in, out any) error {
+	var body *bytes.Reader
+	if in != nil {
+		encoded, err := json.Marshal(in)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(encoded)
+	} else {
+		body = bytes.NewReader(nil)
+	}
 	// The host part is ignored: the transport always dials the socket.
-	req, err := http.NewRequestWithContext(ctx, method, "http://helper"+path, nil)
+	req, err := http.NewRequestWithContext(ctx, method, "http://helper"+path, body)
 	if err != nil {
 		return err
 	}
@@ -105,6 +127,9 @@ type Server struct {
 	Version    string
 	// Restart performs the restart. Injected so tests do not reboot anything.
 	Restart func() error
+	// StartUpdate starts the installation of a version. It is only ever
+	// called with a string that is a plain version number.
+	StartUpdate func(version string) error
 }
 
 type peerUIDKey struct{}
@@ -153,6 +178,27 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/restart-device", func(w http.ResponseWriter, _ *http.Request) {
 		if err := s.Restart(); err != nil {
 			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "could not restart the device: " + err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, struct{}{})
+	})
+	mux.HandleFunc("POST /v1/start-update", func(w http.ResponseWriter, r *http.Request) {
+		var req startUpdateRequest
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "the request could not be read"})
+			return
+		}
+		// The version becomes part of a systemd unit name. Only a plain
+		// version number gets through, written back in canonical form.
+		version, err := release.ParseVersion(req.Version)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: err.Error()})
+			return
+		}
+		if err := s.StartUpdate(version.String()); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "could not start the update: " + err.Error()})
 			return
 		}
 		writeJSON(w, http.StatusOK, struct{}{})

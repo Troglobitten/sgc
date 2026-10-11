@@ -13,6 +13,7 @@ import {
 
 import { Logo } from '@/components/logo'
 import { ThemeMenu } from '@/components/theme-menu'
+import { UpdateCard } from '@/components/update-card'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -50,6 +51,12 @@ export function DashboardPage({
   const [activity, setActivity] = useState<AuditEntry[] | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
   const [restarting, setRestarting] = useState(false)
+  // While an update runs: the number of the attempt before it (or null).
+  const [updating, setUpdating] = useState<{ previousAttempt: number | null } | null>(null)
+  // SGC is briefly unreachable during a restart or an update; the regular
+  // refreshing pauses so it does not report that as a problem.
+  const paused = restarting || updating !== null
+  const finishUpdating = useCallback(() => setUpdating(null), [])
 
   // A 401 means the session ended (expired, or signed out in another tab):
   // go back to the sign-in screen instead of showing a broken dashboard.
@@ -62,7 +69,7 @@ export function DashboardPage({
   )
 
   useEffect(() => {
-    if (restarting) return
+    if (paused) return
     let stopped = false
     const load = () =>
       api.health().then(
@@ -79,10 +86,10 @@ export function DashboardPage({
       stopped = true
       clearInterval(timer)
     }
-  }, [handleError, restarting])
+  }, [handleError, paused])
 
   useEffect(() => {
-    if (restarting) return
+    if (paused) return
     let stopped = false
     const load = () =>
       api.audit().then(
@@ -95,7 +102,7 @@ export function DashboardPage({
       stopped = true
       clearInterval(timer)
     }
-  }, [handleError, restarting])
+  }, [handleError, paused])
 
   async function signOut() {
     try {
@@ -106,6 +113,15 @@ export function DashboardPage({
   }
 
   if (restarting) return <RestartingScreen />
+  if (updating) {
+    return (
+      <UpdatingScreen
+        previousAttempt={updating.previousAttempt}
+        onFinished={finishUpdating}
+        onSignedOut={onSignedOut}
+      />
+    )
+  }
 
   return (
     <div className="min-h-svh bg-muted/40">
@@ -198,12 +214,18 @@ export function DashboardPage({
               <ActivityList entries={activity} />
             </CardContent>
           </Card>
-          <Card>
-            <CardContent className="flex flex-col gap-3">
-              <h2 className="text-sm text-muted-foreground">Device</h2>
-              <RestartButton onRestarting={() => setRestarting(true)} />
-            </CardContent>
-          </Card>
+          <div className="flex flex-col gap-3">
+            <UpdateCard
+              onError={handleError}
+              onUpdating={(previousAttempt) => setUpdating({ previousAttempt })}
+            />
+            <Card>
+              <CardContent className="flex flex-col gap-3">
+                <h2 className="text-sm text-muted-foreground">Device</h2>
+                <RestartButton onRestarting={() => setRestarting(true)} />
+              </CardContent>
+            </Card>
+          </div>
         </div>
       </main>
     </div>
@@ -283,6 +305,18 @@ function describeActivity(entry: AuditEntry): string {
       return `${entry.actor} restarted the device`
     case 'device.restart_failed':
       return 'Restarting the device failed'
+    case 'update.started':
+      return entry.actor === 'console'
+        ? `An update ${entry.detail} was started over SSH`
+        : `${entry.actor} started an update ${entry.detail}`
+    case 'update.succeeded':
+    case 'update.rolled_back':
+      // The updater's own sentence says it best.
+      return entry.detail
+    case 'update.failed':
+      return `Update failed: ${entry.detail}`
+    case 'setting.changed':
+      return `${entry.actor}: ${entry.detail}`
     default:
       return entry.action
   }
@@ -345,6 +379,61 @@ function RestartButton({ onRestarting }: { onRestarting: () => void }) {
         </AlertDialogContent>
       </AlertDialog>
     </>
+  )
+}
+
+/**
+ * Shown while SGC updates itself. SGC is stopped for part of that time, so
+ * failed requests are expected and simply retried. The update is over when
+ * the updater has recorded the outcome of a new attempt.
+ */
+function UpdatingScreen({
+  previousAttempt,
+  onFinished,
+  onSignedOut,
+}: {
+  previousAttempt: number | null
+  onFinished: () => void
+  onSignedOut: () => void
+}) {
+  const [slow, setSlow] = useState(false)
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>
+    const started = Date.now()
+    const again = () => {
+      if (Date.now() - started > 6 * 60 * 1000) setSlow(true)
+      timer = setTimeout(check, 2_000)
+    }
+    const check = () =>
+      api.update().then(
+        (status) => {
+          const last = status.lastUpdate
+          if (!last || last.id === previousAttempt || last.state === 'running') return again()
+          // A new version brings new interface files: load them. After a
+          // rollback the page is still right; the dashboard shows what happened.
+          if (last.state === 'succeeded') window.location.reload()
+          else onFinished()
+        },
+        (error) => {
+          if (error instanceof ApiError && error.status === 401) onSignedOut()
+          else again()
+        },
+      )
+    timer = setTimeout(check, 2_000)
+    return () => clearTimeout(timer)
+  }, [previousAttempt, onFinished, onSignedOut])
+
+  return (
+    <div className="flex min-h-svh flex-col items-center justify-center gap-4 bg-muted/40 p-4 text-center">
+      <Logo className="size-14 animate-spin [animation-duration:6s]" />
+      <h1 className="text-base font-medium">Updating SGC</h1>
+      <p className="max-w-xs text-sm text-muted-foreground">
+        {slow
+          ? 'This is taking longer than expected. You can reload the page; if SGC stays unreachable, check it over SSH with: sudo sgc update --check'
+          : 'This takes about a minute. The page comes back by itself.'}
+      </p>
+    </div>
   )
 }
 
