@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"github.com/Troglobitten/sgc/internal/layout"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -117,7 +118,7 @@ func TestServeKeepsItsFilesPrivate(t *testing.T) {
 	_, _, stop := startServe(t, "--state-dir", stateDir)
 	stop()
 
-	for _, name := range []string{databaseFile, filepath.Join("tls", "selfsigned-key.pem")} {
+	for _, name := range []string{layout.DatabaseFile, filepath.Join("tls", "selfsigned-key.pem")} {
 		info, err := os.Stat(filepath.Join(stateDir, name))
 		if err != nil {
 			t.Errorf("%s: %v", name, err)

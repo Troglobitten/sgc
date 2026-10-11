@@ -20,10 +20,19 @@ const (
 	// Written when a requested restart could not be carried out, so the log
 	// never claims a restart that did not happen.
 	ActionDeviceRestartFailed = "device.restart_failed"
+
+	ActionUpdateStarted    = "update.started"
+	ActionUpdateSucceeded  = "update.succeeded"
+	ActionUpdateRolledBack = "update.rolled_back"
+	ActionUpdateFailed     = "update.failed"
+	ActionSettingChanged   = "setting.changed"
 )
 
 // ActorConsole is recorded for actions taken with the command-line tool.
 const ActorConsole = "console"
+
+// ActorSystem is recorded for things SGC reports about itself.
+const ActorSystem = "system"
 
 type Entry struct {
 	ID         int64     `json:"id"`

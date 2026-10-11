@@ -1,8 +1,16 @@
 // Command sgc-helper performs the few SGC operations that need root.
 //
-// It is started by systemd when the web process first connects to its socket
-// (sgc-helper.socket), and offers only the fixed list of operations in
-// internal/helper. See that package for why this is a separate program.
+// It has two modes, both started by systemd and never by hand:
+//
+//   - With no arguments it is the helper service: started when the web
+//     process first connects to its socket (sgc-helper.socket), it offers the
+//     fixed list of operations in internal/helper. See that package for why
+//     this is a separate program.
+//
+//   - "sgc-helper update <version>" installs an already downloaded release
+//     and rolls it back if it does not come up (sgc-update@.service). It runs
+//     as its own unit so that it survives SGC itself being stopped and
+//     restarted during the update.
 package main
 
 import (
@@ -10,6 +18,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/Troglobitten/sgc/internal/layout"
 	"net"
 	"net/http"
 	"os"
@@ -25,26 +34,29 @@ import (
 	"github.com/Troglobitten/sgc/internal/helper"
 )
 
+const systemctl = "/usr/bin/systemctl"
+
 func main() {
-	if err := run(); err != nil {
+	var err error
+	if len(os.Args) >= 2 && os.Args[1] == "update" {
+		err = runUpdate(os.Args[2:])
+	} else {
+		err = runService()
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "sgc-helper:", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	allowUser := flag.String("allow-user", "sgc", "the user whose requests are accepted")
+func runService() error {
+	allowUser := flag.String("allow-user", layout.ServiceUser, "the user whose requests are accepted")
 	flag.Parse()
 
-	allowed, err := user.Lookup(*allowUser)
+	uid, _, err := lookupUser(*allowUser)
 	if err != nil {
-		return fmt.Errorf("look up user %q: %w", *allowUser, err)
+		return err
 	}
-	uid, err := strconv.ParseUint(allowed.Uid, 10, 32)
-	if err != nil {
-		return fmt.Errorf("user %q has an unusable ID %q", *allowUser, allowed.Uid)
-	}
-
 	listener, err := systemdListener()
 	if err != nil {
 		return err
@@ -52,9 +64,10 @@ func run() error {
 
 	server := &http.Server{
 		Handler: (&helper.Server{
-			AllowedUID: uint32(uid),
-			Version:    sgc.Version(),
-			Restart:    restartDevice,
+			AllowedUID:  uint32(uid),
+			Version:     sgc.Version(),
+			Restart:     restartDevice,
+			StartUpdate: startUpdate,
 		}).Handler(),
 		ConnContext:       helper.ConnContext,
 		ReadHeaderTimeout: 5 * time.Second,
@@ -78,6 +91,20 @@ func run() error {
 	return nil
 }
 
+func lookupUser(name string) (uid, gid int, err error) {
+	u, err := user.Lookup(name)
+	if err != nil {
+		return 0, 0, fmt.Errorf("look up user %q: %w", name, err)
+	}
+	if uid, err = strconv.Atoi(u.Uid); err != nil {
+		return 0, 0, fmt.Errorf("user %q has an unusable ID %q", name, u.Uid)
+	}
+	if gid, err = strconv.Atoi(u.Gid); err != nil {
+		return 0, 0, fmt.Errorf("user %q has an unusable group ID %q", name, u.Gid)
+	}
+	return uid, gid, nil
+}
+
 // systemdListener returns the socket systemd opened for this service.
 //
 // The helper never creates its own socket: systemd creates it with the right
@@ -97,15 +124,27 @@ func systemdListener() (net.Listener, error) {
 	return listener, nil
 }
 
-// restartDevice asks systemd for a clean restart. The command and its
-// arguments are fixed; nothing from a request ever reaches them.
-func restartDevice() error {
-	// --no-block returns as soon as the restart is queued, so the answer
-	// still reaches the browser before the machine goes down.
-	cmd := exec.Command("/usr/bin/systemctl", "--no-block", "reboot")
+// runSystemctl runs systemctl with fixed arguments. Nothing from a request
+// reaches it except a version number that has been checked to be one.
+func runSystemctl(args ...string) error {
+	cmd := exec.Command(systemctl, args...)
 	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin"}
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+// restartDevice asks systemd for a clean restart.
+func restartDevice() error {
+	// --no-block returns as soon as the restart is queued, so the answer
+	// still reaches the browser before the machine goes down.
+	return runSystemctl("--no-block", "reboot")
+}
+
+// startUpdate starts the unit that installs the given version. The caller
+// (internal/helper) guarantees that version is a plain version number.
+func startUpdate(version string) error {
+	// --no-block: the update stops and restarts SGC, so nobody can wait for it here.
+	return runSystemctl("--no-block", "start", "sgc-update@"+version+".service")
 }

@@ -145,9 +145,10 @@ start_service() {
             --shell /usr/sbin/nologin sgc
     fi
 
+    # Every service definition the release brings, whatever their number.
     local unit
-    for unit in sgc.service sgc-helper.service sgc-helper.socket; do
-        install -m 0644 "$INSTALL_ROOT/current/$unit" "/etc/systemd/system/$unit"
+    for unit in "$INSTALL_ROOT/current/"*.service "$INSTALL_ROOT/current/"*.socket; do
+        install -m 0644 "$unit" "/etc/systemd/system/$(basename "$unit")"
     done
     systemctl daemon-reload
     systemctl enable --quiet sgc-helper.socket sgc.service

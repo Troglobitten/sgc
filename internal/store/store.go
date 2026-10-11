@@ -8,6 +8,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 
@@ -57,6 +58,50 @@ var migrations = []string{
 	);
 	CREATE INDEX audit_log_at ON audit_log (at);
 	`,
+
+	// 2: settings, and what the last check for a newer SGC found.
+	`
+	CREATE TABLE setting (
+		key   TEXT PRIMARY KEY,
+		value TEXT NOT NULL
+	);
+
+	CREATE TABLE update_check (
+		id             INTEGER PRIMARY KEY CHECK (id = 1),
+		-- The newest release seen at the last successful check.
+		latest_version TEXT    NOT NULL DEFAULT '',
+		notes          TEXT    NOT NULL DEFAULT '',
+		published_at   INTEGER NOT NULL DEFAULT 0,
+		checked_at     INTEGER NOT NULL DEFAULT 0,
+		-- Set while the most recent check failed; cleared by a successful one.
+		error          TEXT    NOT NULL DEFAULT '',
+		error_at       INTEGER NOT NULL DEFAULT 0
+	);
+	INSERT INTO update_check (id) VALUES (1);
+	`,
+}
+
+// Setting reads one setting. found is false if it was never set, in which
+// case the caller applies its default.
+func Setting(ctx context.Context, db *sql.DB, key string) (value string, found bool, err error) {
+	err = db.QueryRowContext(ctx, "SELECT value FROM setting WHERE key = ?", key).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read setting %s: %w", key, err)
+	}
+	return value, true, nil
+}
+
+// SetSetting stores one setting, replacing any earlier value.
+func SetSetting(ctx context.Context, db *sql.DB, key, value string) error {
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO setting (key, value) VALUES (?, ?)
+		 ON CONFLICT (key) DO UPDATE SET value = excluded.value`, key, value); err != nil {
+		return fmt.Errorf("store setting %s: %w", key, err)
+	}
+	return nil
 }
 
 // Open opens (creating if needed) the database at path and applies any

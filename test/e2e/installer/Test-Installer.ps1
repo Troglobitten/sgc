@@ -9,7 +9,11 @@
        and leaves nothing behind.
     3. Installs the genuine release and checks the service, the one-time
        setup link, sign-in, the dashboard data and the root helper.
-    4. Restarts the machine through SGC and checks that everything comes
+    4. Points SGC at a local test update source and checks updating: a
+       tampered update is refused, a genuine one installs, a signed but
+       broken one is rolled back, an older one is never installed, and
+       "sgc update" works over SSH.
+    5. Restarts the machine through SGC and checks that everything comes
        back by itself.
 
     The real release key is never involved. Requires the test machine from
@@ -48,6 +52,16 @@ function Invoke-Cases {
 
 Invoke-Cases refused
 Invoke-Cases accepted
+
+# Updating: a tampered update, a genuine one, a signed-but-broken one that
+# must roll back, an older one, and the command-line way.
+Invoke-Cases update-setup
+Invoke-Cases update-refused
+Invoke-Cases update-good
+Invoke-Cases update-broken
+Invoke-Cases update-downgrade
+Invoke-Cases update-cli
+
 Invoke-Cases restart
 
 # The machine is now going down. Wait until it has actually stopped answering

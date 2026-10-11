@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/Troglobitten/sgc/internal/layout"
 	"io"
 	"net"
 	"os"
@@ -18,11 +19,9 @@ import (
 	"github.com/Troglobitten/sgc/internal/auth"
 	"github.com/Troglobitten/sgc/internal/store"
 	"github.com/Troglobitten/sgc/internal/tlscert"
-	"github.com/Troglobitten/sgc/internal/web"
 )
 
 const (
-	serviceUser    = "sgc"
 	setupLinkValid = time.Hour
 )
 
@@ -45,13 +44,13 @@ func setupLink(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	// leave root-owned files behind that the service can no longer open, so
 	// root steps down to that user first.
 	if os.Geteuid() == 0 {
-		if err := becomeUser(serviceUser); err != nil {
-			return fail("could not switch to the %s user: %v", serviceUser, err)
+		if err := becomeUser(layout.ServiceUser); err != nil {
+			return fail("could not switch to the %s user: %v", layout.ServiceUser, err)
 		}
 	}
 	syscall.Umask(0o077)
 
-	db, err := store.Open(ctx, filepath.Join(*stateDir, databaseFile))
+	db, err := store.Open(ctx, filepath.Join(*stateDir, layout.DatabaseFile))
 	if err != nil {
 		return fail("%v\nRun this command with sudo.", err)
 	}
@@ -61,7 +60,7 @@ func setupLink(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	if err != nil {
 		return fail("%v", err)
 	}
-	address := "https://" + net.JoinHostPort(primaryAddress(), strconv.Itoa(web.DefaultPort))
+	address := "https://" + net.JoinHostPort(primaryAddress(), strconv.Itoa(layout.WebPort))
 
 	token, err := authService.NewSetupToken(ctx, setupLinkValid)
 	if errors.Is(err, auth.ErrAlreadySetUp) {

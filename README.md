@@ -39,6 +39,19 @@ At the end the installer prints a one-time link. Open it in a browser on your ne
 
 If the link has expired, `sudo sgc setup-link` prints a new one.
 
+### Updating
+
+The dashboard shows when a newer version exists and installs it with one click. Over SSH:
+
+```sh
+sudo sgc update --check   # only look
+sudo sgc update           # look, ask, install
+```
+
+Before installing, SGC verifies the release's signature and that it is newer than what is installed. After installing, it waits for the new version to answer; if it does not, SGC puts back the previous version together with its data, and reports what happened.
+
+SGC asks GitHub for the newest release once a day (a switch on the dashboard turns that off). That request tells GitHub your IP address and that you run SGC, nothing else.
+
 ### How releases are verified
 
 Every release contains `SHA256SUMS`, a list of checksums of the release files, and `SHA256SUMS.sig`, an Ed25519 signature over that list. The public key is [`installer/release-key.pem`](installer/release-key.pem) and is built into the installer. To check a download by hand:
@@ -69,13 +82,17 @@ To work on the interface, run `sgc serve --dev-insecure-http --state-dir <folder
 |---|---|---|
 | `sgc serve` | unprivileged user `sgc`, in a systemd sandbox | The web interface and API |
 | `sgc-helper` | root, in a systemd sandbox, started on demand | The few operations that need root, as a fixed list; no "run a command" |
+| `sgc-helper update` | root, as a one-off systemd unit | Installs a downloaded release and rolls it back if it does not come up |
 | `sgc setup-link` | from the installer or `sudo` | Prints the one-time link for creating the admin account |
+| `sgc update` | `sudo` | Looks for a newer version and installs it |
 
 The web process never has root. It reaches the helper through a Unix socket that only it may open, and the helper additionally checks who is calling.
 
+Updating is split the same way: the unprivileged web process downloads a release, and the root updater, which never talks to the internet, verifies it again by itself before installing.
+
 Whole-machine tests run against a disposable Hyper-V virtual machine; see [`test/e2e/vm`](test/e2e/vm) and [`test/e2e/installer`](test/e2e/installer).
 
-A release is published by pushing a tag that matches the `VERSION` file (for example `v0.3.0`).
+A release is published by pushing a tag that matches the `VERSION` file (for example `v0.5.0`). Its description is that version's section of [CHANGELOG.md](CHANGELOG.md), which is also what SGC shows before an update; `make check` fails if the section is missing.
 
 ## Contributing
 

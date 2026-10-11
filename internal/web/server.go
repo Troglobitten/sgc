@@ -13,15 +13,15 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Troglobitten/sgc/internal/audit"
 	"github.com/Troglobitten/sgc/internal/auth"
 	"github.com/Troglobitten/sgc/internal/health"
+	"github.com/Troglobitten/sgc/internal/release"
+	"github.com/Troglobitten/sgc/internal/update"
+	"github.com/Troglobitten/sgc/internal/updater"
 )
-
-// DefaultPort is where the UI listens until SGC has its own hostname and a
-// real certificate.
-const DefaultPort = 8443
 
 // maxRequestBody bounds what a client can make the server read. Every API
 // request is a small JSON object.
@@ -30,6 +30,15 @@ const maxRequestBody = 64 * 1024
 // Helper is what the web process may ask the root helper to do.
 type Helper interface {
 	RestartDevice(ctx context.Context) error
+	StartUpdate(ctx context.Context, version string) error
+}
+
+// Updates is what the web process knows and can do about newer SGC versions.
+type Updates interface {
+	Status(ctx context.Context) (update.Status, error)
+	Check(ctx context.Context) (update.Status, error)
+	Fetch(ctx context.Context, version string) error
+	SetAutoCheck(ctx context.Context, enabled bool) error
 }
 
 type Server struct {
@@ -37,7 +46,11 @@ type Server struct {
 	Audit   *audit.Log
 	Health  *health.Monitor
 	Helper  Helper
-	Version string
+	Updates Updates
+	// LastUpdate returns the outcome of the most recent update attempt, or
+	// nil if there never was one.
+	LastUpdate func() (*updater.Status, error)
+	Version    string
 	// UI holds the built browser interface (index.html, assets/...).
 	UI fs.FS
 	// InsecureCookies is for local development over plain http only. It
@@ -55,6 +68,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/health", s.requireSession(s.handleHealth))
 	mux.HandleFunc("GET /api/audit", s.requireSession(s.handleAudit))
 	mux.HandleFunc("POST /api/device/restart", s.requireSession(s.handleRestart))
+	mux.HandleFunc("GET /api/update", s.requireSession(s.handleUpdateStatus))
+	mux.HandleFunc("POST /api/update/check", s.requireSession(s.handleUpdateCheck))
+	mux.HandleFunc("POST /api/update/settings", s.requireSession(s.handleUpdateSettings))
+	mux.HandleFunc("POST /api/update/install", s.requireSession(s.handleUpdateInstall))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "no such API endpoint")
 	})
@@ -278,6 +295,120 @@ func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 		s.Log.Error("restart device", "error", err)
 		s.record(r, username, audit.ActionDeviceRestartFailed, "")
 		writeError(w, http.StatusBadGateway, "The device could not be restarted. Details are in the SGC log.")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, struct{}{})
+}
+
+// --- Updates ----------------------------------------------------------------
+
+type updateResponse struct {
+	update.Status
+	// LastUpdate is the outcome of the most recent update attempt, if any.
+	LastUpdate *updater.Status `json:"lastUpdate"`
+}
+
+func (s *Server) writeUpdateStatus(w http.ResponseWriter, r *http.Request, status update.Status) {
+	last, err := s.LastUpdate()
+	if err != nil {
+		// The dashboard is still useful without it.
+		s.Log.Error("read last update outcome", "error", err)
+	}
+	writeJSON(w, http.StatusOK, updateResponse{Status: status, LastUpdate: last})
+}
+
+func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
+	status, err := s.Updates.Status(r.Context())
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	s.writeUpdateStatus(w, r, status)
+}
+
+// handleUpdateCheck asks the update source right now. A check that fails is
+// not an error of this request: the answer says why, and when.
+func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	status, err := s.Updates.Check(r.Context())
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	s.writeUpdateStatus(w, r, status)
+}
+
+type updateSettingsRequest struct {
+	AutoCheck bool `json:"autoCheck"`
+}
+
+func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
+	var req updateSettingsRequest
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if err := s.Updates.SetAutoCheck(r.Context(), req.AutoCheck); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	detail := "daily check for updates switched off"
+	if req.AutoCheck {
+		detail = "daily check for updates switched on"
+	}
+	s.record(r, sessionFrom(r).Username, audit.ActionSettingChanged, detail)
+	s.handleUpdateStatus(w, r)
+}
+
+type updateInstallRequest struct {
+	Version string `json:"version"`
+	Confirm bool   `json:"confirm"`
+}
+
+// handleUpdateInstall downloads and verifies the newest version, then hands
+// it to the root updater. It answers once the update has started; from then
+// on SGC restarts and the browser follows progress through /api/update.
+func (s *Server) handleUpdateInstall(w http.ResponseWriter, r *http.Request) {
+	var req updateInstallRequest
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if !req.Confirm {
+		writeError(w, http.StatusBadRequest, "updating needs confirmation")
+		return
+	}
+	version, err := release.ParseVersion(req.Version)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, sentence(err))
+		return
+	}
+
+	// The download can take a while on a slow line; the usual time limit
+	// for answering a request is too short for it.
+	deadline := time.Now().Add(15 * time.Minute)
+	controller := http.NewResponseController(w)
+	controller.SetReadDeadline(deadline)
+	controller.SetWriteDeadline(deadline)
+
+	username := sessionFrom(r).Username
+	s.record(r, username, audit.ActionUpdateStarted, "to "+version.String())
+
+	fail := func(status int, message string, cause error) {
+		s.Log.Error("start update", "version", version.String(), "error", cause)
+		s.record(r, username, audit.ActionUpdateFailed, "to "+version.String()+": "+message)
+		writeError(w, status, message)
+	}
+	if err := s.Updates.Fetch(r.Context(), version.String()); err != nil {
+		switch {
+		case errors.Is(err, update.ErrNoUpdate), errors.Is(err, update.ErrNotLatest):
+			fail(http.StatusConflict, sentence(err), err)
+		case errors.Is(err, release.ErrBadSignature), errors.Is(err, release.ErrBadChecksum), errors.Is(err, release.ErrNotListed):
+			fail(http.StatusBadGateway, "The download was refused: "+err.Error()+". Nothing was changed.", err)
+		default:
+			fail(http.StatusBadGateway, "The update could not be downloaded: "+err.Error()+". Nothing was changed.", err)
+		}
+		return
+	}
+	if err := s.Helper.StartUpdate(r.Context(), version.String()); err != nil {
+		fail(http.StatusBadGateway, "The update could not be started. Details are in the SGC log. Nothing was changed.", err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, struct{}{})

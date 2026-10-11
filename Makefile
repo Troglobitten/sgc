@@ -20,7 +20,7 @@ GO_SOURCES := cmd internal web/embed.go version.go version_test.go
 
 SHELL_SCRIPTS := installer/install.sh scripts/*.sh test/e2e/vm/*.sh test/e2e/installer/*.sh
 
-.PHONY: build web dist check fmt-check vet shellcheck test clean
+.PHONY: build web dist check fmt-check vet shellcheck changelog-check test clean
 
 # Scripts are run through bash explicitly: files committed from Windows carry
 # no executable bit.
@@ -37,7 +37,12 @@ build: web
 dist:
 	bash scripts/dist.sh dist
 
-check: fmt-check vet shellcheck test
+check: fmt-check vet shellcheck changelog-check test
+
+# The version about to be built must be described in CHANGELOG.md: those
+# lines are what SGC shows to its owner before an update.
+changelog-check:
+	@bash scripts/release-notes.sh >/dev/null
 
 fmt-check:
 	@unformatted="$$(gofmt -l $(GO_SOURCES))"; \
