@@ -9,7 +9,8 @@
 #   2. downloads this release of SGC, its checksum list and the list's signature
 #   3. verifies the signature with the public key below, then the download
 #      against the checksum list, and stops if either does not match
-#   4. installs the program under /opt/sgc and starts it as a service
+#   4. installs the programs under /opt/sgc and starts SGC as a service
+#   5. prints a one-time link for creating the admin account in a browser
 #
 # Nothing is changed on the machine before step 3 has passed.
 #
@@ -117,9 +118,11 @@ install_files() {
     rm -rf "$release_dir.new"
     install -d -m 0755 "$release_dir.new"
     tar -xzf "$work/$tarball" -C "$release_dir.new" --no-same-owner --no-same-permissions
+    # Owned by root and writable by nobody else: the service user can run the
+    # programs but can never replace them.
     chown -R root:root "$release_dir.new"
-    chmod 0755 "$release_dir.new/sgc"
-    chmod 0644 "$release_dir.new/sgc.service"
+    chmod 0644 "$release_dir.new"/*
+    chmod 0755 "$release_dir.new/sgc" "$release_dir.new/sgc-helper"
 
     "$release_dir.new/sgc" version | grep -q "^sgc ${SGC_VERSION} " \
         || fail "the downloaded program does not report version ${SGC_VERSION}."
@@ -135,20 +138,38 @@ install_files() {
 
 start_service() {
     # SGC's web-facing part runs as its own user without login or privileges.
+    # The user must exist before the helper's socket is created, because the
+    # socket is made accessible to this user's group.
     if ! id sgc >/dev/null 2>&1; then
         useradd --system --user-group --home-dir /var/lib/sgc --no-create-home \
             --shell /usr/sbin/nologin sgc
     fi
 
-    install -m 0644 "$INSTALL_ROOT/current/sgc.service" /etc/systemd/system/sgc.service
+    local unit
+    for unit in sgc.service sgc-helper.service sgc-helper.socket; do
+        install -m 0644 "$INSTALL_ROOT/current/$unit" "/etc/systemd/system/$unit"
+    done
     systemctl daemon-reload
-    systemctl enable --quiet sgc.service
+    systemctl enable --quiet sgc-helper.socket sgc.service
+
+    # On an update the old helper may still be running. Stop it, so the next
+    # request starts the new one; then make sure its socket is listening.
+    systemctl stop sgc-helper.service 2>/dev/null || true
+    systemctl restart sgc-helper.socket
     systemctl restart sgc.service
 
     # Give it a moment, then make sure it stayed up.
     sleep 1
     systemctl is-active --quiet sgc.service \
         || fail "the service did not start. Details: journalctl -u sgc --no-pager -n 30"
+}
+
+print_next_step() {
+    printf '\nSGC %s is installed and running.\n\n' "$SGC_VERSION"
+    # On a new installation this prints the one-time link for creating the
+    # admin account; on an existing one, where to sign in.
+    "$INSTALL_ROOT/current/sgc" setup-link \
+        || fail "SGC is installed, but the setup link could not be created. Try: sudo sgc setup-link"
 }
 
 main() {
@@ -163,8 +184,7 @@ main() {
     download_and_verify
     install_files
     start_service
-
-    printf '\nSGC %s is installed and running.\n' "$SGC_VERSION"
+    print_next_step
 }
 
 main "$@"

@@ -2,7 +2,7 @@
 
 A secure front door for your home network, running on a Raspberry Pi or any small Debian machine.
 
-> **Status: early development.** The installer works, but what it installs does not do anything useful yet.
+> **Status: early development.** The installer, the admin account and a first dashboard with system health work. VPN, DNS and the reverse proxy are not built yet.
 
 ## What it will do
 
@@ -35,7 +35,9 @@ less install.sh
 sudo bash install.sh
 ```
 
-At this stage it installs an empty service. The web-based setup wizard comes next.
+At the end the installer prints a one-time link. Open it in a browser on your network to create the admin account; you then land on the dashboard. Until SGC has a certificate from Let's Encrypt (a later milestone) it uses a self-signed one, so the browser shows a warning; the installer prints the certificate's fingerprint so you can check you are talking to your own device.
+
+If the link has expired, `sudo sgc setup-link` prints a new one.
 
 ### How releases are verified
 
@@ -50,13 +52,26 @@ The signing key is held by this repository's release workflow on GitHub. A signa
 
 ## Development
 
-SGC is built on Linux with Go; the exact compiler version is pinned in `go.mod`.
+SGC is built on Linux. The backend is Go (compiler version pinned in `go.mod`); the browser interface in `web/` is React, TypeScript and Tailwind CSS, built with Node.js (version pinned in `.node-version`, packages pinned in `web/package-lock.json`) and embedded into the `sgc` binary.
 
 ```sh
 make check   # format check, static analysis, shell script checks and tests
-make build   # bin/sgc-linux-amd64 and bin/sgc-linux-arm64
+make web     # build the browser interface into web/dist
+make build   # the interface, then bin/sgc-* and bin/sgc-helper-* for amd64 and arm64
 make dist    # the files that make up a release, in dist/
 ```
+
+To work on the interface, run `sgc serve --dev-insecure-http --state-dir <folder>` (plain http, this machine only) and `npm run dev` in `web/`.
+
+### How it is put together
+
+| Part | Runs as | What it does |
+|---|---|---|
+| `sgc serve` | unprivileged user `sgc`, in a systemd sandbox | The web interface and API |
+| `sgc-helper` | root, in a systemd sandbox, started on demand | The few operations that need root, as a fixed list; no "run a command" |
+| `sgc setup-link` | from the installer or `sudo` | Prints the one-time link for creating the admin account |
+
+The web process never has root. It reaches the helper through a Unix socket that only it may open, and the helper additionally checks who is calling.
 
 Whole-machine tests run against a disposable Hyper-V virtual machine; see [`test/e2e/vm`](test/e2e/vm) and [`test/e2e/installer`](test/e2e/installer).
 

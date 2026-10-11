@@ -1,14 +1,16 @@
 <#
 .SYNOPSIS
-    Tests the installer on the clean test machine.
+    Tests the installer and the installed SGC on the clean test machine.
 
 .DESCRIPTION
     1. Builds a release signed with a throwaway test key, plus three
        deliberately bad variants (see make-test-release.sh).
     2. Resets the test machine and checks that every bad variant is refused
        and leaves nothing behind.
-    3. Checks that the genuine release installs, runs as an unprivileged
-       service, and can be installed a second time without harm.
+    3. Installs the genuine release and checks the service, the one-time
+       setup link, sign-in, the dashboard data and the root helper.
+    4. Restarts the machine through SGC and checks that everything comes
+       back by itself.
 
     The real release key is never involved. Requires the test machine from
     test/e2e/vm.
@@ -31,17 +33,31 @@ Write-Host "Resetting the test machine ..."
 $address = Get-TestVMAddress
 
 $sshArguments = Get-SshArguments
-Invoke-TestVMCommand -Address $address -Command 'rm -rf /tmp/release /tmp/cases.sh'
+Invoke-TestVMCommand -Address $address -Command 'rm -rf /tmp/release ~/cases.sh ~/sgc-test-*'
 & scp @sshArguments -q -r $releaseDir "${VmUser}@${address}:/tmp/release"
-& scp @sshArguments -q "$PSScriptRoot\cases.sh" "${VmUser}@${address}:/tmp/cases.sh"
+& scp @sshArguments -q "$PSScriptRoot\cases.sh" "${VmUser}@${address}:cases.sh"
 if ($LASTEXITCODE -ne 0) { throw 'Copying the test release to the test machine failed.' }
 
 $failed = 0
-foreach ($mode in 'refused', 'accepted') {
+function Invoke-Cases {
+    param([string]$Mode)
     Write-Host ""
-    Invoke-TestVMCommand -Address $address -Command "bash /tmp/cases.sh $mode $version"
-    if ($LASTEXITCODE -ne 0) { $failed++ }
+    Invoke-TestVMCommand -Address $script:address -Command "bash ~/cases.sh $Mode $version"
+    if ($LASTEXITCODE -ne 0) { $script:failed++ }
 }
+
+Invoke-Cases refused
+Invoke-Cases accepted
+Invoke-Cases restart
+
+# The machine is now going down. Wait until it has actually stopped answering
+# before waiting for it to come back.
+Write-Host ""
+Write-Host "Waiting for the machine to go down and come back ..."
+Wait-TestVMSshDown -Address $address
+$address = Wait-TestVMSsh
+
+Invoke-Cases after-restart
 
 Write-Host ""
 if ($failed -gt 0) { throw "Installer test FAILED." }

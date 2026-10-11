@@ -1,6 +1,6 @@
 # Installer test
 
-Runs the real installer on the clean test machine from [`../vm`](../vm).
+Runs the real installer on the clean test machine from [`../vm`](../vm), then drives the installed SGC the way a browser would.
 
 ```powershell
 .\Test-Installer.ps1
@@ -11,9 +11,14 @@ Runs the real installer on the clean test machine from [`../vm`](../vm).
 | Altered download | One byte added to the archive: refused, nothing installed |
 | Altered checksum list | Archive altered and the list recalculated to match, which is all an attacker without the key can do: refused, nothing installed |
 | Wrong key | Genuine files signed with a different key: refused, nothing installed |
-| Genuine release | Installs; reports the right version; runs as the unprivileged user `sgc`; starts at boot; program files owned by root; state folder private |
-| Second run | Running the installer again is harmless |
+| Genuine release | Installs; reports the right version; runs as the unprivileged user `sgc`; starts at boot; program files owned by root; database and state folder private |
+| Setup link | The installer prints a one-time link, and the fingerprint it prints matches the certificate actually served |
+| Web interface and API | The interface is served over TLS only; a fresh install asks for setup; a wrong link is refused; the real link works exactly once; dashboard data needs a sign-in |
+| Signing in and out | Sign out ends access; a wrong password is refused; the right one signs in |
+| Root helper | Socket owned by `root:sgc`, closed to other users; answers the service user; has no "run a command" operation |
+| Second run | Running the installer again is harmless and does not hand out a new setup link |
+| Restart | A restart needs confirmation; SGC restarts the machine; afterwards SGC and the helper are back by themselves, the earlier sign-in still works and the restart is in the activity log |
 
-The test builds its own release and signs it with a throwaway key created on the spot (`make-test-release.sh`). The real release key is never involved.
+The test builds its own release and signs it with a throwaway key created on the spot (`make-test-release.sh`). The real release key is never involved. The admin account it creates uses a random password that exists only on the test machine.
 
 `cases.sh` is the part that runs on the test machine.

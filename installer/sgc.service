@@ -1,7 +1,10 @@
 [Unit]
 Description=Server Gateway Control
 Documentation=https://github.com/Troglobitten/sgc
-After=network.target
+After=network.target sgc-helper.socket
+# The web process asks the helper for anything that needs root. If the helper
+# is not available, SGC still runs; only those actions report an error.
+Wants=sgc-helper.socket
 
 [Service]
 Type=simple
