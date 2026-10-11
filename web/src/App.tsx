@@ -8,8 +8,10 @@ import { LoginPage } from '@/pages/login'
 import { SetupPage } from '@/pages/setup'
 
 // The secret part of the one-time setup link lives after the "#", which
-// browsers never send to a server. Read it once, at load.
-const setupToken = window.location.pathname === '/setup' ? window.location.hash.slice(1) : ''
+// browsers never send to a server.
+function readSetupToken(): string {
+  return window.location.pathname === '/setup' ? window.location.hash.slice(1) : ''
+}
 
 // SGC decides which screen to show from its own state, not from the address:
 // a fresh install shows setup, a signed-out visitor the sign-in form,
@@ -17,6 +19,16 @@ const setupToken = window.location.pathname === '/setup' ? window.location.hash.
 export default function App() {
   const [state, setState] = useState<State | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [setupToken, setSetupToken] = useState(readSetupToken)
+
+  // Pasting the setup link into a tab that already shows SGC only changes the
+  // part after the "#". The browser does not reload the page for that, so the
+  // app has to notice the change itself.
+  useEffect(() => {
+    const onHashChange = () => setSetupToken(readSetupToken())
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
 
   const refresh = useCallback(() => {
     api.state().then(
