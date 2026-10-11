@@ -104,6 +104,23 @@ func SetSetting(ctx context.Context, db *sql.DB, key, value string) error {
 	return nil
 }
 
+// SchemaVersion is the number of migrations this SGC knows: the layout
+// version a database has after Open.
+func SchemaVersion() int { return len(migrations) }
+
+// OpenSnapshot opens a database file as it is, without updating its layout
+// and without the write-ahead log, so that it stays a single self-contained
+// file. For working on a copy made for an export.
+func OpenSnapshot(path string) (*sql.DB, error) {
+	dsn := "file:" + (&url.URL{Path: path}).EscapedPath() +
+		"?_pragma=journal_mode(DELETE)&_pragma=busy_timeout(5000)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open database copy: %w", err)
+	}
+	return db, nil
+}
+
 // Open opens (creating if needed) the database at path and applies any
 // migrations it has not seen yet.
 func Open(ctx context.Context, path string) (*sql.DB, error) {

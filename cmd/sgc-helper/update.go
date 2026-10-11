@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Troglobitten/sgc/internal/layout"
 	"log/slog"
 	"net"
 	"net/http"
@@ -15,6 +14,8 @@ import (
 	"runtime"
 	"strconv"
 	"time"
+
+	"github.com/Troglobitten/sgc/internal/layout"
 
 	"github.com/Troglobitten/sgc"
 	"github.com/Troglobitten/sgc/internal/release"

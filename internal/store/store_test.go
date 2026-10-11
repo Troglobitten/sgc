@@ -71,7 +71,7 @@ func TestDatabaseFromAnEarlierVersionIsBroughtUpToDate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, "INSERT INTO admin (id, username, password_hash, created_at) VALUES (1, 'davy', 'hash', 5)"); err != nil {
+	if _, err := db.ExecContext(ctx, "INSERT INTO admin (id, username, password_hash, created_at) VALUES (1, 'alex', 'hash', 5)"); err != nil {
 		t.Fatal(err)
 	}
 	db.Close()
@@ -83,7 +83,7 @@ func TestDatabaseFromAnEarlierVersionIsBroughtUpToDate(t *testing.T) {
 	defer db.Close()
 
 	var username string
-	if err := db.QueryRowContext(ctx, "SELECT username FROM admin").Scan(&username); err != nil || username != "davy" {
+	if err := db.QueryRowContext(ctx, "SELECT username FROM admin").Scan(&username); err != nil || username != "alex" {
 		t.Errorf("admin after update = %q, %v; existing data must survive", username, err)
 	}
 	if _, found, err := Setting(ctx, db, "anything"); err != nil || found {

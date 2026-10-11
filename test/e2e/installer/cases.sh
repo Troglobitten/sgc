@@ -17,8 +17,11 @@
 #   update-broken  a signed but broken update is rolled back by itself
 #   update-downgrade  an older release is never offered or installed
 #   update-cli     "sgc update" over SSH
+#   export         makes an export through the API (kept in the home folder)
 #   restart        asks SGC to restart the machine (the machine goes down)
 #   after-restart  SGC came back by itself and remembers everything
+#   restore        on a freshly wiped machine: installs, then restores the
+#                  export made earlier and checks that SGC is what it was
 
 exec 2>&1
 set -uo pipefail
@@ -33,6 +36,10 @@ api="https://127.0.0.1:8443"
 # account on a throwaway machine.
 cookies="$HOME/sgc-test-cookies"
 password_file="$HOME/sgc-test-password"
+# The export and its passphrase. Test-Installer.ps1 carries these two and the
+# password file across the wipe of the machine.
+export_file="$HOME/sgc-test-export.age"
+passphrase_file="$HOME/sgc-test-passphrase"
 username=tester-admin
 
 pass() { echo "  PASS  $*"; }
@@ -372,6 +379,83 @@ update-cli)
     expect_status "the earlier sign-in still works" 200 GET /api/health
     expect_in_audit "the update over SSH was recorded" '"actor":"console","action":"update.started"'
     expect_in_audit "and so was its outcome" "updated from $before to $next3"
+    ;;
+
+export)
+    echo "Exporting everything into one encrypted file"
+    password="$(cat "$password_file")"
+    head -c 18 /dev/urandom | base64 >"$passphrase_file"
+    passphrase="$(cat "$passphrase_file")"
+    rm -f "$export_file"
+
+    # A setting changed away from its default, to see it come back later.
+    expect_status "a setting is changed before exporting" 200 POST /api/update/settings '{"autoCheck":false}'
+
+    expect_status "an export needs the admin password again" 403 POST /api/export \
+        "{\"password\":\"not-the-password\",\"passphrase\":\"$passphrase\"}"
+    expect_status "being refused did not end the session" 200 GET /api/health
+    expect_status "a short passphrase is refused" 400 POST /api/export \
+        "{\"password\":\"$password\",\"passphrase\":\"short\"}"
+
+    code="$(curl -sk -o "$export_file" -w '%{http_code}' -b "$cookies" -H 'Content-Type: application/json' \
+        -d "{\"password\":\"$password\",\"passphrase\":\"$passphrase\"}" "$api/api/export")"
+    if [ "$code" = 200 ]; then pass "the export is delivered"; else fail "the export was not delivered (status $code)"; fi
+    check "it is a standard age file" sh -c "head -c 21 '$export_file' | grep -q '^age-encryption.org/v1'"
+    check "nothing in it is readable" sh -c "! grep -q -e '$username' -e 'argon2' '$export_file'"
+    check "no temporary copy of the database is left behind" sudo sh -c "[ -z \"\$(ls -A /var/lib/sgc/tmp 2>/dev/null)\" ]"
+    expect_in_audit "the export was recorded" '"action":"export.created"'
+    ;;
+
+restore)
+    echo "A freshly wiped machine: install, then restore the export"
+    password="$(cat "$password_file")"
+    passphrase="$(cat "$passphrase_file")"
+    if run_installer good >/tmp/install.log; then pass "installer succeeded on the wiped machine"; else
+        fail "installer failed"
+        indent </tmp/install.log
+    fi
+    link="$(grep -o 'https://[^ ]*/setup#[A-Za-z0-9_-]*' /tmp/install.log)"
+    token="${link##*#}"
+    rm -f "$cookies"
+    expect_status "the fresh install asks for setup" 200 GET /api/state
+    check "setup is required" body_has '"setupRequired":true'
+
+    # upload <token> <passphrase>: prints the status code of a restore preview.
+    upload() {
+        curl -sk -o /tmp/sgc-test-body -w '%{http_code}' \
+            -F "token=$1" -F "passphrase=$2" -F "file=@$export_file" "$api/api/setup/restore/preview"
+    }
+    code="$(upload wrong-token "$passphrase")"
+    if [ "$code" = 403 ]; then pass "without the setup link the file is not even looked at"; else fail "wrong setup link: status $code"; fi
+    code="$(upload "$token" not-the-passphrase)"
+    if [ "$code" = 403 ]; then pass "a wrong passphrase is refused"; else fail "wrong passphrase: status $code"; fi
+    code="$(upload "$token" "$passphrase")"
+    if [ "$code" = 200 ]; then pass "the right passphrase opens the file"; else
+        fail "preview failed (status $code)"
+        indent </tmp/sgc-test-body
+    fi
+    check "the preview names the account in the export" body_has "\"adminUsername\":\"$username\""
+    expect_status "previewing alone changes nothing" 200 GET /api/state
+    check "setup is still required" body_has '"setupRequired":true'
+
+    expect_status "confirming starts the restore" 202 POST /api/setup/restore/confirm "{\"token\":\"$token\"}"
+    # shellcheck disable=SC2317  # called indirectly through wait_for()
+    restored() { [ "$(http GET /api/state)" = 200 ] && grep -q '"setupRequired":false' /tmp/sgc-test-body; }
+    if wait_for 30 restored; then pass "SGC came back on the restored data"; else fail "SGC did not come back restored"; fi
+
+    echo "The restored SGC is the old one"
+    expect_status "the old account signs in with its old password" 200 POST /api/login \
+        "{\"username\":\"$username\",\"password\":\"$password\"}"
+    expect_status "update settings are readable" 200 GET /api/update
+    check "the changed setting came back" body_has '"autoCheck":false'
+    expect_in_audit "the history came back" '"action":"setup.completed"'
+    check "including the updates made on the old machine" body_has '"action":"update.succeeded"'
+    expect_in_audit "the restore itself was recorded" '"action":"restore.completed"'
+    expect_status "the fresh install's setup link is closed" 409 POST /api/setup \
+        "{\"token\":\"$token\",\"username\":\"mallory\",\"password\":\"$password\"}"
+    check "service is running" systemctl is-active --quiet sgc
+    check "the database is still private to sgc" sudo sh -c "[ \"\$(stat -c %U:%a /var/lib/sgc/sgc.db)\" = sgc:600 ]"
+    check "nothing is left waiting to be restored" sudo sh -c "[ ! -e /var/lib/sgc/restore ]"
     ;;
 
 restart)

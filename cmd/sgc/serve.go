@@ -3,25 +3,29 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/Troglobitten/sgc/internal/layout"
 	"io"
 	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/Troglobitten/sgc"
 	"github.com/Troglobitten/sgc/internal/audit"
 	"github.com/Troglobitten/sgc/internal/auth"
+	"github.com/Troglobitten/sgc/internal/backup"
 	"github.com/Troglobitten/sgc/internal/health"
 	"github.com/Troglobitten/sgc/internal/helper"
+	"github.com/Troglobitten/sgc/internal/layout"
 	"github.com/Troglobitten/sgc/internal/store"
 	"github.com/Troglobitten/sgc/internal/tlscert"
 	"github.com/Troglobitten/sgc/internal/updater"
@@ -29,70 +33,126 @@ import (
 	webui "github.com/Troglobitten/sgc/web"
 )
 
+type serveOptions struct {
+	listen        string
+	stateDir      string
+	helperSocket  string
+	updateWorkDir string
+	devHTTP       bool
+}
+
 // serve runs the web UI and API until ctx is cancelled, which is how systemd
 // asks the service to stop.
 func serve(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	var opts serveOptions
 	flags := flag.NewFlagSet("sgc serve", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	listen := flags.String("listen", ":"+strconv.Itoa(layout.WebPort), "address to listen on")
-	stateDir := flags.String("state-dir", defaultStateDir(), "folder for the database and certificate")
-	helperSocket := flags.String("helper-socket", layout.HelperSocket, "socket of the root helper")
-	updateWorkDir := flags.String("update-work-dir", layout.UpdateWorkDir, "folder where the updater records its outcome")
-	devHTTP := flags.Bool("dev-insecure-http", false, "development only: plain http, reachable from this machine only")
+	flags.StringVar(&opts.listen, "listen", ":"+strconv.Itoa(layout.WebPort), "address to listen on")
+	flags.StringVar(&opts.stateDir, "state-dir", defaultStateDir(), "folder for the database and certificate")
+	flags.StringVar(&opts.helperSocket, "helper-socket", layout.HelperSocket, "socket of the root helper")
+	flags.StringVar(&opts.updateWorkDir, "update-work-dir", layout.UpdateWorkDir, "folder where the updater records its outcome")
+	flags.BoolVar(&opts.devHTTP, "dev-insecure-http", false, "development only: plain http, reachable from this machine only")
 	if err := flags.Parse(args); err != nil {
 		return exitUsage
 	}
 
 	log := slog.New(slog.NewTextHandler(stdout, nil))
-	fail := func(what string, err error) int {
-		log.Error(what, "error", err)
-		return exitFailed
-	}
 
 	// Everything SGC writes (database, certificate key) is private to its user.
 	syscall.Umask(0o077)
 
-	db, err := store.Open(ctx, filepath.Join(*stateDir, layout.DatabaseFile))
+	// Normally this loop runs once. Restoring from an export replaces the
+	// database, which can only be done while nothing has it open: the web
+	// server then winds down, and the next round starts on the restored one.
+	for {
+		code, again := serveOnce(ctx, opts, log, stdout)
+		if !again || ctx.Err() != nil {
+			return code
+		}
+	}
+}
+
+// serveOnce opens the database and serves until asked to stop (again is
+// false) or to start over on a restored database (again is true).
+func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout io.Writer) (code int, again bool) {
+	fail := func(what string, err error) (int, bool) {
+		log.Error(what, "error", err)
+		return exitFailed, false
+	}
+
+	// A restore confirmed before the last stop is put in place now, while
+	// the database is closed.
+	restored, err := backup.ApplyStaged(opts.stateDir)
+	if err != nil {
+		return fail("apply restore", err)
+	}
+
+	db, err := store.Open(ctx, filepath.Join(opts.stateDir, layout.DatabaseFile))
 	if err != nil {
 		return fail("open database", err)
 	}
-	defer db.Close()
+	// Everything running in the background uses the database. When this
+	// round ends they are told to stop and waited for before it is closed.
+	runCtx, endRun := context.WithCancel(ctx)
+	var background sync.WaitGroup
+	defer func() {
+		endRun()
+		background.Wait()
+		db.Close()
+	}()
 
 	authService, err := auth.NewService(db)
 	if err != nil {
 		return fail("prepare sign-in", err)
 	}
 	auditLog := audit.New(db)
-	monitor := health.NewMonitor()
-	go monitor.Run(ctx, 2*time.Second)
-	go deleteExpiredSessionsHourly(ctx, authService, log)
+	if restored != nil {
+		detail := fmt.Sprintf("from an export of %s, made %s by SGC %s",
+			restored.Hostname, restored.CreatedAt.Format(time.DateOnly), restored.SGCVersion)
+		if err := auditLog.Record(ctx, audit.ActorSystem, audit.ActionRestoreCompleted, detail, ""); err != nil {
+			log.Error("record restore", "error", err)
+		}
+		log.Info("restored from an export", "detail", detail)
+	}
 
-	updates, err := newUpdateChecker(db, *stateDir, log)
+	monitor := health.NewMonitor()
+	updates, err := newUpdateChecker(db, opts.stateDir, log)
 	if err != nil {
 		return fail("prepare updates", err)
 	}
 	// Whatever was downloaded for an earlier update has served its purpose.
 	updates.ClearSpool()
-	// In the background: right after an update it has to wait for the
-	// updater to record the outcome, and start-up must not wait with it.
-	go reportUpdateOutcome(ctx, db, auditLog, *updateWorkDir, log)
-	go updates.Run(ctx)
+
+	background.Go(func() { monitor.Run(runCtx, 2*time.Second) })
+	background.Go(func() { deleteExpiredSessionsHourly(runCtx, authService, log) })
+	background.Go(func() { updates.Run(runCtx) })
+	// Right after an update this has to wait for the updater to record the
+	// outcome, and start-up must not wait with it.
+	background.Go(func() { reportUpdateOutcome(runCtx, db, auditLog, opts.updateWorkDir, log) })
 
 	ui, err := fs.Sub(webui.Dist, "dist")
 	if err != nil {
 		return fail("load web interface", err)
 	}
 
+	startOver := make(chan struct{}, 1)
 	server := &web.Server{
-		Auth:            authService,
-		Audit:           auditLog,
-		Health:          monitor,
-		Helper:          helper.NewClient(*helperSocket),
-		Updates:         updates,
-		LastUpdate:      func() (*updater.Status, error) { return updater.ReadStatus(*updateWorkDir) },
+		Auth:       authService,
+		Audit:      auditLog,
+		Health:     monitor,
+		Helper:     helper.NewClient(opts.helperSocket),
+		Updates:    updates,
+		LastUpdate: func() (*updater.Status, error) { return updater.ReadStatus(opts.updateWorkDir) },
+		Backups:    backups{db: db, stateDir: opts.stateDir},
+		StartOver: func() {
+			select {
+			case startOver <- struct{}{}:
+			default: // already asked
+			}
+		},
 		Version:         sgc.Version(),
 		UI:              ui,
-		InsecureCookies: *devHTTP,
+		InsecureCookies: opts.devHTTP,
 		Log:             log,
 	}
 	httpServer := &http.Server{
@@ -108,8 +168,8 @@ func serve(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelDebug),
 	}
 
-	address := *listen
-	if *devHTTP {
+	address := opts.listen
+	if opts.devHTTP {
 		// Without TLS the admin password would cross the network readable.
 		// Whatever was asked for, only this machine may connect.
 		_, port, err := net.SplitHostPort(address)
@@ -123,11 +183,12 @@ func serve(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return fail("listen", err)
 	}
 
-	if *devHTTP {
+	if opts.devHTTP {
 		log.Warn("development mode: plain http, this machine only", "address", listener.Addr().String())
 	} else {
-		cert, err := tlscert.LoadOrCreate(filepath.Join(*stateDir, "tls"))
+		cert, err := tlscert.LoadOrCreate(filepath.Join(opts.stateDir, "tls"))
 		if err != nil {
+			listener.Close()
 			return fail("prepare certificate", err)
 		}
 		listener = tls.NewListener(listener, &tls.Config{
@@ -136,12 +197,17 @@ func serve(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		})
 	}
 
-	// Shut down cleanly when asked: stop accepting, let running requests finish.
+	// Wind down cleanly when asked: stop accepting, let running requests finish.
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)
-		<-ctx.Done()
-		fmt.Fprintln(stdout, "sgc stopping")
+		select {
+		case <-ctx.Done():
+			fmt.Fprintln(stdout, "sgc stopping")
+		case <-startOver:
+			again = true
+			fmt.Fprintln(stdout, "sgc starting over on the restored database")
+		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		httpServer.Shutdown(shutdownCtx)
@@ -152,7 +218,27 @@ func serve(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return fail("serve", err)
 	}
 	<-stopped
-	return exitOK
+	return exitOK, again
+}
+
+// backups connects the web interface to export and restore.
+type backups struct {
+	db       *sql.DB
+	stateDir string
+}
+
+func (b backups) Export(ctx context.Context, w io.Writer, passphrase string) (*backup.Manifest, error) {
+	hostname, _ := os.Hostname()
+	source := backup.Source{SGCVersion: sgc.Version(), Hostname: hostname}
+	return backup.Export(ctx, b.db, w, passphrase, source, filepath.Join(b.stateDir, "tmp"))
+}
+
+func (b backups) Stage(ctx context.Context, r io.Reader, passphrase string) (*backup.Manifest, error) {
+	return backup.Stage(ctx, r, passphrase, b.stateDir)
+}
+
+func (b backups) Confirm(manifest *backup.Manifest) error {
+	return backup.Confirm(b.stateDir, manifest)
 }
 
 func deleteExpiredSessionsHourly(ctx context.Context, authService *auth.Service, log *slog.Logger) {

@@ -29,7 +29,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Troglobitten/sgc/internal/layout"
 	"io"
 	"log/slog"
 	"os"
@@ -38,6 +37,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/Troglobitten/sgc/internal/layout"
 
 	"github.com/Troglobitten/sgc/internal/release"
 )

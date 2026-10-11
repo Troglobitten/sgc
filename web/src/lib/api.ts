@@ -6,6 +6,17 @@ export interface State {
   signedIn: boolean
   username?: string
   minPasswordLength: number
+  minPassphraseLength: number
+}
+
+/** What an export file says about itself (internal/backup). */
+export interface ExportManifest {
+  formatVersion: number
+  sgcVersion: string
+  schemaVersion: number
+  createdAt: string
+  hostname: string
+  adminUsername: string
 }
 
 export interface Health {
@@ -72,28 +83,67 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+// Set at build time (vite.config.ts); 'dev' when running the dev server.
+declare const __SGC_VERSION__: string
+
+const reloadedForKey = 'sgc-reloaded-for'
+
+/**
+ * A page stays open for a long time; SGC may be updated underneath it, for
+ * example over SSH. The old page would then keep running old code against a
+ * newer SGC. Every answer from SGC names its version; when that differs from
+ * the version this page was built for, the page reloads itself, once.
+ */
+function reloadIfOutdated(response: Response) {
+  const running = response.headers.get('X-SGC-Version')
+  if (!running || __SGC_VERSION__ === 'dev' || running === __SGC_VERSION__) return
+  try {
+    // Remembered so that a reload which does not help is not repeated forever.
+    if (sessionStorage.getItem(reloadedForKey) === running) return
+    sessionStorage.setItem(reloadedForKey, running)
+  } catch {
+    return // no way to remember: better an old page than an endless reload
+  }
+  window.location.reload()
+}
+
+/** Sends a request and returns the raw answer, or throws an ApiError. */
+async function send(method: string, path: string, body?: unknown): Promise<Response> {
+  // A form (file upload) is sent as it is; anything else as JSON.
+  const isForm = body instanceof FormData
   let response: Response
   try {
     response = await fetch(path, {
       method,
-      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      headers: body === undefined || isForm ? undefined : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : isForm ? body : JSON.stringify(body),
       credentials: 'same-origin',
     })
   } catch {
     throw new ApiError(0, "Can't reach SGC. Check that the device is on, then try again.")
   }
-
-  const data: unknown = await response.json().catch(() => null)
+  reloadIfOutdated(response)
   if (!response.ok) {
+    const data: unknown = await response.json().catch(() => null)
     const message =
       data !== null && typeof data === 'object' && 'error' in data && typeof data.error === 'string'
         ? data.error
         : `SGC answered with an error (${response.status}).`
     throw new ApiError(response.status, message)
   }
-  return data as T
+  return response
+}
+
+async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const response = await send(method, path, body)
+  return (await response.json().catch(() => null)) as T
+}
+
+/** Asks for an export and returns the encrypted file with the name SGC gave it. */
+async function downloadExport(password: string, passphrase: string) {
+  const response = await send('POST', '/api/export', { password, passphrase })
+  const name = /filename="?([^";]+)"?/.exec(response.headers.get('Content-Disposition') ?? '')
+  return { file: await response.blob(), name: name?.[1] ?? 'sgc-export.age' }
 }
 
 export const api = {
@@ -112,6 +162,17 @@ export const api = {
     request<UpdateStatus>('POST', '/api/update/settings', { autoCheck }),
   installUpdate: (version: string) =>
     request<void>('POST', '/api/update/install', { version, confirm: true }),
+  downloadExport,
+  restorePreview: (token: string, passphrase: string, file: File) => {
+    // The order matters: SGC checks the setup link before it reads the file.
+    const form = new FormData()
+    form.append('token', token)
+    form.append('passphrase', passphrase)
+    form.append('file', file)
+    return request<ExportManifest>('POST', '/api/setup/restore/preview', form)
+  },
+  restoreConfirm: (token: string) =>
+    request<void>('POST', '/api/setup/restore/confirm', { token }),
 }
 
 /** The message to show for any thrown value. */

@@ -36,7 +36,7 @@ func newTestService(t *testing.T) (*Service, *clock) {
 }
 
 const (
-	goodUser     = "davy"
+	goodUser     = "alex"
 	goodPassword = "correct horse battery"
 	addr         = "192.168.1.10"
 )
@@ -140,9 +140,9 @@ func TestSetupRejectsBadUsernamesAndPasswords(t *testing.T) {
 		want                     error
 	}{
 		{"empty username", "", goodPassword, ErrInvalidUsername},
-		{"uppercase username", "Davy", goodPassword, ErrInvalidUsername},
+		{"uppercase username", "Alex", goodPassword, ErrInvalidUsername},
 		{"username with space", "da vy", goodPassword, ErrInvalidUsername},
-		{"username starting with digit", "1davy", goodPassword, ErrInvalidUsername},
+		{"username starting with digit", "1alex", goodPassword, ErrInvalidUsername},
 		{"short password", goodUser, "short", ErrWeakPassword},
 		{"eleven characters", goodUser, "elevenchars", ErrWeakPassword},
 	}
@@ -256,6 +256,63 @@ func TestRepeatedWrongPasswordsLockTheAddressOut(t *testing.T) {
 	c.advance(lockout + time.Second)
 	if _, err := s.Login(ctx, goodUser, goodPassword, addr, "test"); err != nil {
 		t.Errorf("after the lockout period: %v", err)
+	}
+}
+
+func TestCheckSetupTokenDoesNotUseTheLinkUp(t *testing.T) {
+	ctx := context.Background()
+	s, c := newTestService(t)
+	token, _ := s.NewSetupToken(ctx, time.Hour)
+
+	if err := s.CheckSetupToken(ctx, "wrong", addr); !errors.Is(err, ErrBadSetupToken) {
+		t.Errorf("wrong token: err = %v", err)
+	}
+	// Checking twice, then using it: all three must work.
+	for i := 0; i < 2; i++ {
+		if err := s.CheckSetupToken(ctx, token, addr); err != nil {
+			t.Fatalf("check %d: %v", i+1, err)
+		}
+	}
+	if err := s.CompleteSetup(ctx, token, goodUser, goodPassword, addr); err != nil {
+		t.Fatalf("the link was used up by checking it: %v", err)
+	}
+	if err := s.CheckSetupToken(ctx, token, addr); !errors.Is(err, ErrAlreadySetUp) {
+		t.Errorf("after setup: err = %v, want ErrAlreadySetUp", err)
+	}
+
+	// An expired link fails the check too.
+	s2, c2 := newTestService(t)
+	expiring, _ := s2.NewSetupToken(ctx, time.Hour)
+	c2.advance(2 * time.Hour)
+	if err := s2.CheckSetupToken(ctx, expiring, addr); !errors.Is(err, ErrBadSetupToken) {
+		t.Errorf("expired link: err = %v", err)
+	}
+	_ = c
+}
+
+func TestVerifyAdminPassword(t *testing.T) {
+	ctx := context.Background()
+	s, _ := newTestService(t)
+	setUp(t, s)
+
+	if err := s.VerifyAdminPassword(ctx, goodPassword, addr); err != nil {
+		t.Errorf("correct password: %v", err)
+	}
+	if err := s.VerifyAdminPassword(ctx, "not the password", addr); !errors.Is(err, ErrWrongPassword) {
+		t.Errorf("wrong password: err = %v", err)
+	}
+
+	// Guessing here is limited exactly like guessing at the sign-in form.
+	for i := 0; i < maxFailures; i++ {
+		s.VerifyAdminPassword(ctx, "not the password", addr)
+	}
+	var locked *TooManyAttemptsError
+	if err := s.VerifyAdminPassword(ctx, goodPassword, addr); !errors.As(err, &locked) {
+		t.Errorf("after repeated wrong passwords: err = %v, want a lock-out", err)
+	}
+
+	if name, err := s.AdminUsername(ctx); err != nil || name != goodUser {
+		t.Errorf("AdminUsername = %q, %v", name, err)
 	}
 }
 

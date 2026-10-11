@@ -28,7 +28,8 @@ fi
 cd "$work"
 npm ci --no-audit --no-fund
 npm run lint
-npm run build
+# The interface is told which SGC version it belongs to.
+SGC_VERSION="$(tr -d '[:space:]' <"$repo/VERSION")" npm run build
 
 if [ "$work" != "$repo/web" ]; then
     rm -rf "$repo/web/dist"

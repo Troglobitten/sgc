@@ -3,3 +3,4 @@
 * text=auto eol=lf
 # Binary test material must reach Linux byte for byte.
 *.sig binary
+*.age binary

@@ -239,7 +239,7 @@ function UpdateDialog({
   const notes = status.notes.trim()
   return (
     <AlertDialog open={open} onOpenChange={(next) => !busy && onOpenChange(next)}>
-      <AlertDialogContent className="data-[size=default]:sm:max-w-lg">
+      <AlertDialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto data-[size=default]:sm:max-w-lg">
         <AlertDialogHeader>
           <AlertDialogTitle>Update to SGC {status.latest}?</AlertDialogTitle>
           <AlertDialogDescription>

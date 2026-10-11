@@ -11,6 +11,7 @@ import {
   User,
 } from 'lucide-react'
 
+import { ExportCard } from '@/components/export-card'
 import { Logo } from '@/components/logo'
 import { ThemeMenu } from '@/components/theme-menu'
 import { UpdateCard } from '@/components/update-card'
@@ -41,10 +42,12 @@ const activityInterval = 15_000
 export function DashboardPage({
   username,
   version,
+  minPassphraseLength,
   onSignedOut,
 }: {
   username: string
   version: string
+  minPassphraseLength: number
   onSignedOut: () => void
 }) {
   const [health, setHealth] = useState<Health | null>(null)
@@ -219,6 +222,7 @@ export function DashboardPage({
               onError={handleError}
               onUpdating={(previousAttempt) => setUpdating({ previousAttempt })}
             />
+            <ExportCard minPassphraseLength={minPassphraseLength} />
             <Card>
               <CardContent className="flex flex-col gap-3">
                 <h2 className="text-sm text-muted-foreground">Device</h2>
@@ -317,6 +321,10 @@ function describeActivity(entry: AuditEntry): string {
       return `Update failed: ${entry.detail}`
     case 'setting.changed':
       return `${entry.actor}: ${entry.detail}`
+    case 'export.created':
+      return `${entry.actor} made an export`
+    case 'restore.completed':
+      return `Restored ${entry.detail}`
     default:
       return entry.action
   }

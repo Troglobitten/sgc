@@ -52,6 +52,20 @@ Before installing, SGC verifies the release's signature and that it is newer tha
 
 SGC asks GitHub for the newest release once a day (a switch on the dashboard turns that off). That request tells GitHub your IP address and that you run SGC, nothing else.
 
+### Export and restore
+
+The dashboard's **Export** saves everything SGC holds (the admin account, settings and history) as one encrypted file. You choose a passphrase for it, and SGC asks for your password again before handing it out. Sign-in sessions and other things that only make sense on the running machine are left out.
+
+To restore, install SGC on a clean machine and open the setup link: next to creating an account it offers **Restore from an export**. You see what the file contains before confirming. A newer SGC can restore an export made by an older one; an export made by a newer SGC is refused.
+
+The file is a standard [age](https://age-encryption.org) file containing a tar archive, so it can be opened without SGC:
+
+```sh
+age -d sgc-export-<host>-<date>.age | tar -x
+```
+
+That gives `manifest.json` and `database.sqlite`. Keep the file and its passphrase somewhere other than the gateway; without the passphrase nobody can open it.
+
 ### How releases are verified
 
 Every release contains `SHA256SUMS`, a list of checksums of the release files, and `SHA256SUMS.sig`, an Ed25519 signature over that list. The public key is [`installer/release-key.pem`](installer/release-key.pem) and is built into the installer. To check a download by hand:

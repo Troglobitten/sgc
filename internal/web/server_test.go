@@ -18,6 +18,7 @@ import (
 
 	"github.com/Troglobitten/sgc/internal/audit"
 	"github.com/Troglobitten/sgc/internal/auth"
+	"github.com/Troglobitten/sgc/internal/backup"
 	"github.com/Troglobitten/sgc/internal/health"
 	"github.com/Troglobitten/sgc/internal/store"
 	"github.com/Troglobitten/sgc/internal/update"
@@ -64,6 +65,38 @@ func (f *fakeUpdates) SetAutoCheck(_ context.Context, enabled bool) error {
 	return nil
 }
 
+// fakeBackups stands in for export and restore.
+type fakeBackups struct {
+	exports    []string // passphrases exports were made with
+	staged     []string // contents of files that were staged
+	stageErr   error
+	confirmed  []*backup.Manifest
+	startOvers int
+}
+
+func (f *fakeBackups) Export(_ context.Context, w io.Writer, passphrase string) (*backup.Manifest, error) {
+	if len([]rune(passphrase)) < backup.MinPassphraseLength {
+		return nil, backup.ErrWeakPassphrase
+	}
+	f.exports = append(f.exports, passphrase)
+	w.Write([]byte("ENCRYPTED EXPORT"))
+	return &backup.Manifest{Hostname: "star gate/../x", CreatedAt: time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)}, nil
+}
+
+func (f *fakeBackups) Stage(_ context.Context, r io.Reader, passphrase string) (*backup.Manifest, error) {
+	data, _ := io.ReadAll(r)
+	if f.stageErr != nil {
+		return nil, f.stageErr
+	}
+	f.staged = append(f.staged, string(data)+"|"+passphrase)
+	return &backup.Manifest{FormatVersion: 1, SGCVersion: "0.6.0", Hostname: "oldgate", AdminUsername: "olduser"}, nil
+}
+
+func (f *fakeBackups) Confirm(manifest *backup.Manifest) error {
+	f.confirmed = append(f.confirmed, manifest)
+	return nil
+}
+
 type testEnv struct {
 	t          *testing.T
 	url        string
@@ -71,6 +104,7 @@ type testEnv struct {
 	auth       *auth.Service
 	helper     *fakeHelper
 	updates    *fakeUpdates
+	backups    *fakeBackups
 	lastUpdate *updater.Status
 	setupToken string
 }
@@ -95,7 +129,8 @@ func newTestEnv(t *testing.T) *testEnv {
 
 	helper := &fakeHelper{}
 	updates := &fakeUpdates{status: update.Status{Current: "9.9.9", AutoCheck: true}}
-	e := &testEnv{t: t, auth: authService, helper: helper, updates: updates, setupToken: token}
+	backups := &fakeBackups{}
+	e := &testEnv{t: t, auth: authService, helper: helper, updates: updates, backups: backups, setupToken: token}
 	server := &Server{
 		Auth:       authService,
 		Audit:      audit.New(db),
@@ -103,6 +138,8 @@ func newTestEnv(t *testing.T) *testEnv {
 		Helper:     helper,
 		Updates:    updates,
 		LastUpdate: func() (*updater.Status, error) { return e.lastUpdate, nil },
+		Backups:    backups,
+		StartOver:  func() { backups.startOvers++ },
 		Version:    "9.9.9",
 		UI: fstest.MapFS{
 			"index.html":    {Data: []byte("<!doctype html><title>SGC</title>")},
@@ -168,7 +205,7 @@ func (e *testEnv) expectStatus(resp *http.Response, want int) {
 }
 
 const (
-	testUser     = "davy"
+	testUser     = "alex"
 	testPassword = "correct horse battery"
 )
 
@@ -380,6 +417,8 @@ func TestBrowserInterfaceIsServed(t *testing.T) {
 
 	resp, _ = get("/")
 	for header, want := range map[string]string{
+		// How an open page notices that SGC was updated underneath it.
+		"X-SGC-Version":          "9.9.9",
 		"X-Content-Type-Options": "nosniff",
 		"X-Frame-Options":        "DENY",
 		"Referrer-Policy":        "no-referrer",

@@ -22,7 +22,7 @@ func TestRecentReturnsNewestFirstUpToLimit(t *testing.T) {
 	}
 
 	for _, action := range []string{ActionSetupCompleted, ActionLogin, ActionLogout} {
-		if err := log.Record(ctx, "davy", action, "", "192.168.1.10"); err != nil {
+		if err := log.Record(ctx, "alex", action, "", "192.168.1.10"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -37,7 +37,7 @@ func TestRecentReturnsNewestFirstUpToLimit(t *testing.T) {
 	if entries[0].Action != ActionLogout || entries[1].Action != ActionLogin {
 		t.Errorf("order = %s, %s; want newest first", entries[0].Action, entries[1].Action)
 	}
-	if entries[0].Actor != "davy" || entries[0].RemoteAddr != "192.168.1.10" {
+	if entries[0].Actor != "alex" || entries[0].RemoteAddr != "192.168.1.10" {
 		t.Errorf("entry fields not preserved: %+v", entries[0])
 	}
 }

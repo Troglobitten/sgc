@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { api, errorMessage } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { RestorePage } from '@/pages/restore'
 
 // The same rule the server enforces (internal/auth). Checking here too lets
 // the form explain the problem before anything is sent.
@@ -27,6 +28,8 @@ export function SetupPage({
   const [repeat, setRepeat] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // A fresh install can also be restored from an export instead.
+  const [restoring, setRestoring] = useState(false)
 
   if (!token) {
     return (
@@ -41,6 +44,10 @@ export function SetupPage({
         <pre className="rounded-lg bg-muted px-3 py-2 font-mono text-sm">sudo sgc setup-link</pre>
       </AuthCard>
     )
+  }
+
+  if (restoring) {
+    return <RestorePage token={token} onDone={onDone} onCreateInstead={() => setRestoring(false)} />
   }
 
   // A message about what was wrong is out of date as soon as the user edits
@@ -123,6 +130,9 @@ export function SetupPage({
         <FormError message={error} />
         <Button type="submit" size="lg" disabled={busy}>
           {busy ? 'Creating account…' : 'Create account'}
+        </Button>
+        <Button type="button" variant="ghost" disabled={busy} onClick={() => setRestoring(true)}>
+          Restore from an export instead
         </Button>
         <p className="text-xs text-muted-foreground">
           This link works once and stops working after setup.

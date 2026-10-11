@@ -10,7 +10,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"github.com/Troglobitten/sgc/internal/layout"
 	"io"
 	"log/slog"
 	"os"
@@ -18,6 +17,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Troglobitten/sgc/internal/layout"
 
 	"github.com/Troglobitten/sgc/internal/release"
 )

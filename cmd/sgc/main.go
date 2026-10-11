@@ -5,12 +5,13 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/Troglobitten/sgc/internal/layout"
 	"io"
 	"os"
 	"os/signal"
 	"runtime"
 	"syscall"
+
+	"github.com/Troglobitten/sgc/internal/layout"
 
 	"github.com/Troglobitten/sgc"
 )
