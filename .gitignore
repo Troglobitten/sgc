@@ -59,5 +59,10 @@ coverage.*
 
 # --- Frontend (web/) --------------------------------------------------
 node_modules/
-web/dist/
 npm-debug.log*
+*.tsbuildinfo
+# The built interface is generated, not committed. The one placeholder file
+# stays, so that the Go code (which embeds this folder) compiles before the
+# interface has been built.
+web/dist/*
+!web/dist/.gitkeep

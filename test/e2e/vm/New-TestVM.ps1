@@ -104,7 +104,9 @@ Invoke-TestVMCommand -Address $address -Command 'cloud-init status --wait >/dev/
 # Taken while the machine is off, so restoring it is a normal cold boot with
 # a correct clock rather than a resume from frozen memory.
 Write-Host "Taking the clean checkpoint ..."
-Invoke-TestVMCommand -Address $address -Command 'sudo systemctl poweroff' 2>$null
+# Scheduled a moment ahead and without waiting, so the SSH session ends
+# normally instead of being cut off by the shutdown it just started.
+Invoke-TestVMCommand -Address $address -Command 'sudo systemd-run --quiet --on-active=1 systemctl poweroff'
 Wait-TestVMOff
 Checkpoint-VM -Name $VmName -SnapshotName $CheckpointName
 Start-VM -Name $VmName

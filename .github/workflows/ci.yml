@@ -32,13 +32,17 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+
       - name: Make sure the shell script checker is available
         run: command -v shellcheck || (sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck)
 
       - name: Format, static analysis, shell script checks and tests
         run: make check
 
-      - name: Build for amd64 and arm64
+      - name: Build the interface and the programs for amd64 and arm64
         run: make build
 
       - name: Run the built program

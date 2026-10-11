@@ -93,19 +93,45 @@ function Invoke-TestVMCommand {
     & ssh @sshArguments "$VmUser@$Address" "echo $encoded | base64 -d | bash"
 }
 
+function Test-TestVMSsh {
+    # Reports whether the machine answers over SSH right now.
+    param([Parameter(Mandatory)][string]$Address)
+    # When a connection fails, ssh says so on its error stream. Windows
+    # PowerShell turns such output into an error that would stop the whole
+    # script, so errors are made non-fatal inside this one probe (the setting
+    # only applies within this function).
+    $ErrorActionPreference = 'Continue'
+    $sshArguments = Get-SshArguments
+    $reply = & ssh @sshArguments "$VmUser@$Address" 'echo ready' 2>$null
+    return ($LASTEXITCODE -eq 0 -and $reply -eq 'ready')
+}
+
 function Wait-TestVMSsh {
     # Waits until the machine answers over SSH and returns its address.
     param([int]$TimeoutSeconds = 240)
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         $address = Get-TestVMAddress
-        if ($address) {
-            $reply = Invoke-TestVMCommand -Address $address -Command 'echo ready' 2>$null
-            if ($LASTEXITCODE -eq 0 -and $reply -eq 'ready') { return $address }
-        }
+        if ($address -and (Test-TestVMSsh -Address $address)) { return $address }
         Start-Sleep -Seconds 3
     }
     throw "The test machine did not answer over SSH within $TimeoutSeconds seconds."
+}
+
+function Wait-TestVMSshDown {
+    # Waits until the machine has stopped answering, for example after asking
+    # it to restart. Without this, a machine that has not gone down yet would
+    # be mistaken for one that already came back.
+    param(
+        [Parameter(Mandatory)][string]$Address,
+        [int]$TimeoutSeconds = 60
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Test-TestVMSsh -Address $Address)) { return }
+        Start-Sleep -Seconds 1
+    }
+    throw "The test machine was still answering after $TimeoutSeconds seconds; it did not go down."
 }
 
 function Wait-TestVMOff {

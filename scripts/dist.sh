@@ -28,23 +28,33 @@ rm -rf "$out"
 mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 
+# The browser interface is embedded into the sgc binary, so it is built first.
+bash scripts/build-web.sh
+
+programs="sgc sgc-helper"
+units="sgc.service sgc-helper.service sgc-helper.socket"
+
 for arch in amd64 arm64; do
     stage="$(mktemp -d)"
 
-    CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
-        go build -trimpath -ldflags "-s -w" -o "$stage/build/sgc" ./cmd/sgc
-
     # Explicit modes: the source folder may be on a Windows drive, where every
     # file looks executable and world-writable.
-    install -m 0755 "$stage/build/sgc" "$stage/sgc"
-    install -m 0644 installer/sgc.service "$stage/sgc.service"
+    for program in $programs; do
+        CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
+            go build -trimpath -ldflags "-s -w" -o "$stage/build/$program" "./cmd/$program"
+        install -m 0755 "$stage/build/$program" "$stage/$program"
+    done
+    for unit in $units; do
+        install -m 0644 "installer/$unit" "$stage/$unit"
+    done
 
     # Fixed order, dates and owners make the archive identical on every build
     # of the same source, so anyone can rebuild a release and compare.
     # The files are listed by name on purpose: archiving "." would also record
     # the temporary folder's own permissions and apply them on extraction.
+    # shellcheck disable=SC2086  # the lists are meant to be split into words
     tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
-        -C "$stage" -cf - sgc sgc.service |
+        -C "$stage" -cf - $programs $units |
         gzip -n >"$out/sgc-$version-linux-$arch.tar.gz"
 
     rm -rf "$stage"
