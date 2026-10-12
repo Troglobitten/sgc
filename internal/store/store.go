@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"time"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver: no C compiler needed, static binaries stay simple
 )
@@ -157,11 +158,33 @@ func Open(ctx context.Context, path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
-	if err := migrate(ctx, db); err != nil {
-		db.Close()
-		return nil, err
+	// busy_timeout does not cover everything. When several programs open a
+	// brand-new database in the same instant (the service and `sgc
+	// setup-link` right after installation), each first has to switch it to
+	// WAL, and SQLite answers "busy" at once there instead of waiting, because
+	// waiting could deadlock. That moment passes in milliseconds, so it is
+	// waited out here. Found by this package's own test failing once in a few
+	// hundred runs, first on the build machines.
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		err := migrate(ctx, db)
+		if err == nil {
+			return db, nil
+		}
+		if !isBusy(err) || ctx.Err() != nil || time.Now().After(deadline) {
+			db.Close()
+			return nil, err
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	return db, nil
+}
+
+// isBusy reports whether an error is SQLite saying that another connection
+// holds the database right now (SQLITE_BUSY, in any of its variants).
+func isBusy(err error) bool {
+	const sqliteBusy = 5
+	var coded interface{ Code() int }
+	return errors.As(err, &coded) && coded.Code()&0xff == sqliteBusy
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {
