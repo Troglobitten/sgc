@@ -60,6 +60,9 @@ type Server struct {
 	SSH         SSH
 	OSUpdates   OSUpdates
 	Maintenance Maintenance
+	DNS         DNS
+	// AdguardAddress is where AdGuard Home's own page listens (host:port).
+	AdguardAddress string
 	// StartOver asks the process to wind down the web server and start
 	// again on the database a confirmed restore has put in place.
 	StartOver func()
@@ -108,6 +111,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/os-updates/mode", s.requireSession(s.handleOSUpdatesMode))
 	mux.HandleFunc("POST /api/os-updates/check", s.requireSession(s.handleOSUpdatesCheck))
 	mux.HandleFunc("POST /api/os-updates/install", s.requireSession(s.handleOSUpdatesInstall))
+	mux.HandleFunc("GET /api/dns", s.requireSession(s.handleDNSStatus))
+	mux.HandleFunc("POST /api/dns/install", s.requireSession(s.handleDNSInstall))
+	mux.HandleFunc("POST /api/dns/remove", s.requireSession(s.handleDNSRemove))
+	// AdGuard Home's own page, behind SGC's login.
+	adguardPage := s.requireSession(s.adguardProxy().ServeHTTP)
+	mux.Handle(adguardPrefix, adguardPage)
+	mux.Handle(adguardPrefix+"/", adguardPage)
 	mux.HandleFunc("GET /api/maintenance", s.requireSession(s.handleMaintenanceStatus))
 	mux.HandleFunc("POST /api/maintenance", s.requireSession(s.handleMaintenanceSet))
 	mux.HandleFunc("POST /api/maintenance/auto-update", s.requireSession(s.handleMaintenanceAutoUpdate))

@@ -197,7 +197,7 @@ func TestSwitchingOnAndConfirming(t *testing.T) {
 		t.Fatalf("fresh machine: %+v", s)
 	}
 
-	if err := e.service.Change(ctx, "alex", "192.168.1.10", true); err != nil {
+	if err := e.service.Change(ctx, "alex", "192.168.1.10", true, false); err != nil {
 		t.Fatal(err)
 	}
 	// The software is installed first, because a clean Debian lacks it.
@@ -232,13 +232,13 @@ func TestSwitchingOnAndConfirming(t *testing.T) {
 	)
 
 	// Switching on what is on, or starting a second change, is refused.
-	if err := e.service.Change(ctx, "alex", "", true); !errors.Is(err, ErrNoChange) {
+	if err := e.service.Change(ctx, "alex", "", true, false); !errors.Is(err, ErrNoChange) {
 		t.Errorf("switching on twice: %v", err)
 	}
-	if err := e.service.Change(ctx, "alex", "", false); err != nil {
+	if err := e.service.Change(ctx, "alex", "", false, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.service.Change(ctx, "alex", "", true); !errors.Is(err, ErrChangePending) {
+	if err := e.service.Change(ctx, "alex", "", true, false); !errors.Is(err, ErrChangePending) {
 		t.Errorf("a second change while one waits: %v", err)
 	}
 }
@@ -248,7 +248,7 @@ func TestUndo(t *testing.T) {
 	ctx := context.Background()
 	e.root.installed = true
 
-	if err := e.service.Change(ctx, "alex", "", true); err != nil {
+	if err := e.service.Change(ctx, "alex", "", true, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.service.Undo(ctx, "alex", ""); err != nil {
@@ -272,7 +272,7 @@ func TestAChangeNobodyConfirmsIsWrittenDownOnce(t *testing.T) {
 	ctx := context.Background()
 	e.root.installed = true
 
-	if err := e.service.Change(ctx, "alex", "", true); err != nil {
+	if err := e.service.Change(ctx, "alex", "", true, false); err != nil {
 		t.Fatal(err)
 	}
 	// Still waiting: nothing to write down.
@@ -306,7 +306,7 @@ func TestAChangeLostToARestartIsWrittenDown(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
 	e.root.installed = true
-	if err := e.service.Change(ctx, "alex", "", true); err != nil {
+	if err := e.service.Change(ctx, "alex", "", true, false); err != nil {
 		t.Fatal(err)
 	}
 	os.RemoveAll(e.root.runDir) // what a restart does to /run
@@ -323,7 +323,7 @@ func TestAConfirmationSGCMissedIsCaughtUp(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
 	e.root.installed = true
-	if err := e.service.Change(ctx, "alex", "", true); err != nil {
+	if err := e.service.Change(ctx, "alex", "", true, false); err != nil {
 		t.Fatal(err)
 	}
 	e.root.FirewallConfirm(ctx)
@@ -345,7 +345,7 @@ func TestFailuresAreExplained(t *testing.T) {
 	// The software cannot be installed: nothing else is attempted.
 	e := newEnv(t)
 	e.root.installErr = errors.New("no network")
-	err := e.service.Change(ctx, "alex", "", true)
+	err := e.service.Change(ctx, "alex", "", true, false)
 	if !errors.As(err, &failure) || !strings.Contains(failure.Message, "could not be installed") {
 		t.Errorf("error: %v", err)
 	}
@@ -358,7 +358,7 @@ func TestFailuresAreExplained(t *testing.T) {
 	e.root.installed = true
 	e.root.changeErr = errors.New("unit failed")
 	e.root.changeReason = "nftables did not accept the new rules: syntax error"
-	err = e.service.Change(ctx, "alex", "", true)
+	err = e.service.Change(ctx, "alex", "", true, false)
 	if !errors.As(err, &failure) || !strings.Contains(failure.Message, "syntax error") || !strings.Contains(failure.Message, "Nothing was changed") {
 		t.Errorf("error: %v", err)
 	}
@@ -370,7 +370,7 @@ func TestFailuresAreExplained(t *testing.T) {
 	// The confirmation loses a race with the clock.
 	e = newEnv(t)
 	e.root.installed = true
-	if err := e.service.Change(ctx, "alex", "", true); err != nil {
+	if err := e.service.Change(ctx, "alex", "", true, false); err != nil {
 		t.Fatal(err)
 	}
 	e.root.confirmErr = errors.New("nothing pending")
@@ -395,7 +395,7 @@ func TestWantedButOffAfterARestore(t *testing.T) {
 func TestAnOverdueChangeIsUndone(t *testing.T) {
 	e := newEnv(t)
 	e.root.installed = true
-	if err := e.service.Change(context.Background(), "alex", "", true); err != nil {
+	if err := e.service.Change(context.Background(), "alex", "", true, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -422,7 +422,7 @@ func TestAnOverdueChangeIsUndone(t *testing.T) {
 func TestRunSettlesWhatWasLeftOpen(t *testing.T) {
 	e := newEnv(t)
 	e.root.installed = true
-	if err := e.service.Change(context.Background(), "alex", "", true); err != nil {
+	if err := e.service.Change(context.Background(), "alex", "", true, false); err != nil {
 		t.Fatal(err)
 	}
 	e.root.end(firewall.ResultExpired)
@@ -440,4 +440,30 @@ func TestRunSettlesWhatWasLeftOpen(t *testing.T) {
 		"alex firewall.change_started switching on",
 		"system firewall.change_expired switching on, started by alex",
 	)
+}
+
+// A firewall that is on can be asked for its rules to be made afresh: that is
+// how one switched on before AdGuard Home was installed comes to let DNS in.
+// It is a change like any other, with the same confirmation.
+func TestTheRulesCanBeMadeAfreshWhileOn(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	if err := e.service.Change(ctx, "alex", "", false, true); !errors.Is(err, ErrNoChange) {
+		t.Fatalf("\"again\" on a firewall that is off: %v", err)
+	}
+	if err := e.service.Change(ctx, "alex", "", true, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.service.Confirm(ctx, "alex", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.service.Change(ctx, "alex", "", true, false); !errors.Is(err, ErrNoChange) {
+		t.Fatalf("switching on twice: %v", err)
+	}
+	if err := e.service.Change(ctx, "alex", "", true, true); err != nil {
+		t.Fatalf("making the rules afresh: %v", err)
+	}
+	if s := e.status(); s.State != StatePending || s.Pending == nil || !s.Pending.Enabled {
+		t.Errorf("after asking again: %+v", s)
+	}
 }

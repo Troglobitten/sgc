@@ -52,9 +52,12 @@ type System struct {
 	Run func(ctx context.Context, program string, args ...string) ([]byte, error)
 	// Exists reports whether a program is installed.
 	Exists func(program string) bool
-	Uptime func() (float64, error)
-	Now    func() time.Time
-	Log    *slog.Logger
+	// DNSInstalled reports whether a DNS server of SGC's is installed, in
+	// which case the rules let DNS in from inside.
+	DNSInstalled func() bool
+	Uptime       func() (float64, error)
+	Now          func() time.Time
+	Log          *slog.Logger
 }
 
 // Change puts the requested rules into effect, calls ready, and then waits
@@ -122,7 +125,7 @@ func (s *System) begin(ctx context.Context) (*Pending, error) {
 	if err != nil {
 		return fail(err)
 	}
-	cfg := Config{Enabled: request.Enabled, SSHPorts: ports, WebPort: s.WebPort}
+	cfg := Config{Enabled: request.Enabled, SSHPorts: ports, WebPort: s.WebPort, DNS: s.DNSInstalled != nil && s.DNSInstalled()}
 	rules, err := Render(cfg)
 	if err != nil {
 		return fail(err)

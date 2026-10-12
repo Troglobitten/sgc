@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Troglobitten/sgc/internal/adguard"
 	"github.com/Troglobitten/sgc/internal/firewall"
 	"github.com/Troglobitten/sgc/internal/layout"
 )
@@ -84,12 +85,14 @@ func firewallSystem() *firewall.System {
 	return &firewall.System{
 		Paths:   firewall.DefaultPaths(),
 		WebPort: layout.WebPort,
-		Window:  firewall.ConfirmWindow,
-		Run:     runProgram,
-		Exists:  programExists,
-		Uptime:  firewall.Uptime,
-		Now:     time.Now,
-		Log:     slog.New(slog.NewTextHandler(os.Stdout, nil)),
+		// DNS is let in from inside once there is something to answer it.
+		DNSInstalled: func() bool { return adguard.Installed(adguard.DefaultPaths()) },
+		Window:       firewall.ConfirmWindow,
+		Run:          runProgram,
+		Exists:       programExists,
+		Uptime:       firewall.Uptime,
+		Now:          time.Now,
+		Log:          slog.New(slog.NewTextHandler(os.Stdout, nil)),
 	}
 }
 

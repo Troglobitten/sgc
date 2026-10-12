@@ -1,0 +1,20 @@
+[Unit]
+Description=Server Gateway Control: remove AdGuard Home
+Documentation=https://github.com/Troglobitten/sgc
+# Never refused for having been started often (see sgc-firewall-change.service).
+StartLimitIntervalSec=0
+
+[Service]
+# Stops AdGuard Home and takes the program away. Its settings and data stay
+# in /var/lib/sgc-adguard, so that installing it again continues where it
+# left off. Started by the helper; see internal/adguard.
+Type=oneshot
+ExecStart=/opt/sgc/current/sgc-helper adguard remove
+TimeoutStartSec=120
+
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes

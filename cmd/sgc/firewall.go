@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Troglobitten/sgc/internal/adguard"
 	"github.com/Troglobitten/sgc/internal/audit"
 	"github.com/Troglobitten/sgc/internal/firewall"
 	"github.com/Troglobitten/sgc/internal/fwcontrol"
@@ -138,9 +139,10 @@ func firewallWorker(ctx context.Context, task, stateDir string, stderr io.Writer
 // machine: it can ask nftables directly.
 func consoleFirewall() *firewall.System {
 	return &firewall.System{
-		Paths:   firewall.DefaultPaths(),
-		WebPort: layout.WebPort,
-		Window:  firewall.ConfirmWindow,
+		Paths:        firewall.DefaultPaths(),
+		WebPort:      layout.WebPort,
+		DNSInstalled: func() bool { return adguard.Installed(adguard.DefaultPaths()) },
+		Window:       firewall.ConfirmWindow,
 		Run: func(ctx context.Context, program string, args ...string) ([]byte, error) {
 			ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 			defer cancel()

@@ -70,6 +70,10 @@ const (
 	ActionOSUpdatesInstallStarted = "os_updates.install_started"
 	ActionOSUpdatesInstalled      = "os_updates.installed"
 	ActionOSUpdatesInstallFailed  = "os_updates.install_failed"
+
+	// AdGuard Home was installed (or replaced by a newer release), or removed.
+	ActionDNSInstalled = "dns.installed"
+	ActionDNSRemoved   = "dns.removed"
 )
 
 // ActorConsole is recorded for actions taken with the command-line tool.

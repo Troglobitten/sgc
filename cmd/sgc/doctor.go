@@ -54,6 +54,8 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		checkFirewall,
 		checkSSH,
 		checkOSUpdates,
+		checkDNS,
+		checkPorts,
 	})
 	if doctor.Print(stdout, results) > 0 {
 		return exitFailed
@@ -170,6 +172,10 @@ func checkClock(ctx context.Context) []doctor.Result {
 	answer, err := ask(ctx, "/usr/bin/timedatectl", "show", "--property=NTPSynchronized", "--value")
 	if err == nil && answer == "yes" {
 		return one(doctor.Good("The clock is synchronised"))
+	}
+	// Right after start-up that is simply how it is, for some seconds.
+	if uptime, err := sshd.Uptime(); err == nil && uptime < 120 {
+		return one(doctor.Good(fmt.Sprintf("The clock is about to be set from the network (the device started %d seconds ago)", int(uptime))))
 	}
 	return one(doctor.Warn("The clock is not synchronised with the internet",
 		"Certificates and updates depend on the right time. Check: timedatectl status"))

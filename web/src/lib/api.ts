@@ -83,6 +83,8 @@ export interface FirewallStatus {
   pending: { enabled: boolean; secondsLeft: number } | null
   /** what is let in from the home network while the firewall is on */
   sshPorts: number[]
+  /** DNS is let in from inside (once AdGuard Home is installed) */
+  dns: boolean
   webPort: number
   /** how long a change waits for its confirmation */
   confirmSeconds: number
@@ -132,6 +134,22 @@ export interface OsUpdatesStatus {
   /** an installed update takes effect only after a restart */
   restartNeeded: boolean
   restartPackages: string[]
+}
+
+/** AdGuard Home, as SGC reports it (internal/dnscontrol). */
+export interface DnsStatus {
+  /** false when the device could not be asked */
+  available: boolean
+  installed: boolean
+  version: string
+  running: boolean
+  /** the version this SGC installs */
+  pinned: string
+  updateAvailable: boolean
+  /** installed on the device an export came from, not here yet */
+  wanted: boolean
+  /** settings from that export will be used when it is installed here */
+  restoredSettings: boolean
 }
 
 /** The maintenance window, as SGC reports it (internal/maintenance). */
@@ -325,8 +343,12 @@ export const api = {
   restoreConfirm: (token: string) =>
     request<void>('POST', '/api/setup/restore/confirm', { token }),
   firewall: () => request<FirewallStatus>('GET', '/api/firewall'),
-  changeFirewall: (enabled: boolean) =>
-    request<FirewallStatus>('POST', '/api/firewall/change', { enabled }),
+  /** again: make the rules afresh although the firewall is on (to let DNS in) */
+  changeFirewall: (enabled: boolean, again = false) =>
+    request<FirewallStatus>('POST', '/api/firewall/change', { enabled, again }),
+  dns: () => request<DnsStatus>('GET', '/api/dns'),
+  installDns: () => request<DnsStatus>('POST', '/api/dns/install', {}),
+  removeDns: () => request<DnsStatus>('POST', '/api/dns/remove', { confirm: true }),
   confirmFirewall,
   undoFirewall: () => request<FirewallStatus>('POST', '/api/firewall/undo', {}),
   ssh: () => request<SshStatus>('GET', '/api/ssh'),

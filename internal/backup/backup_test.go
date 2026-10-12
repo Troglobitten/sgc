@@ -51,6 +51,7 @@ func newSourceDB(t *testing.T) (*sql.DB, string) {
 		`INSERT INTO setting (key, value) VALUES ('ssh.keys_only', 'true')`,
 		`INSERT INTO setting (key, value) VALUES ('ssh.open_change', '{"id":78,"actor":"alex","what":"switching to keys only"}')`,
 		`INSERT INTO setting (key, value) VALUES ('os_updates.mode', 'automatic')`,
+		`INSERT INTO setting (key, value) VALUES ('adguard.installed', 'true'), ('adguard.settings_file', 'users: []' || char(10) || 'user_rules:' || char(10) || '  - "||ads.domain.tld^"' || char(10))`,
 		`INSERT INTO setting (key, value) VALUES ('maintenance.enabled', 'true'), ('maintenance.start', '03:00'), ('maintenance.end', '04:30'), ('update.auto_install', 'true')`,
 		`INSERT INTO setting (key, value) VALUES ('maintenance.last_restart', '1791000000'), ('maintenance.last_update_try', '1791000000'), ('update.first_seen', '{"version":"9.9.9","at":1791000000}')`,
 		`INSERT INTO setting (key, value) VALUES ('os_updates.open_install', '{"id":79,"actor":"alex","remote":"192.168.1.10"}')`,
@@ -128,6 +129,8 @@ func TestRoundTrip(t *testing.T) {
 		"SELECT value FROM setting WHERE key = 'ssh.account'",
 		"SELECT value FROM setting WHERE key = 'ssh.keys_only'",
 		"SELECT value FROM setting WHERE key = 'os_updates.mode'",
+		"SELECT value FROM setting WHERE key = 'adguard.installed'",
+		"SELECT value FROM setting WHERE key = 'adguard.settings_file'",
 		"SELECT group_concat(key || '=' || value, ';') FROM (SELECT key, value FROM setting WHERE key IN ('maintenance.enabled', 'maintenance.start', 'maintenance.end', 'update.auto_install') ORDER BY key)",
 		"SELECT group_concat(label || '|' || key_type || '|' || key_blob || '|' || fingerprint || '|' || added_at || '|' || added_by, ';') FROM ssh_key",
 	} {
