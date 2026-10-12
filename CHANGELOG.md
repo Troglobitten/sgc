@@ -12,6 +12,7 @@ What changed in each version of SGC, newest first. The section for a version is 
 - SGC downloads AdGuard Home from its makers and only installs the exact file this version of SGC expects. A newer AdGuard Home arrives with a newer SGC.
 - On a Debian that runs systemd-resolved (a Raspberry Pi does not), installing AdGuard Home makes that service give up the DNS port and points the device's own lookups at the real name servers. Removing AdGuard Home puts that back.
 - Your AdGuard Home settings are part of an export. After a restore, installing AdGuard Home on the new device starts it with them.
+- Fixed: right after installation, two of SGC's programs opening its new database in the same instant could, very rarely, fail with "database is locked".
 - `sudo sgc doctor` checks AdGuard Home, and tells you if another program sits on a port SGC needs. Right after a restart it no longer reports the clock as a problem.
 
 ## 0.10.0

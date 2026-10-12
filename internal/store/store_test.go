@@ -35,24 +35,29 @@ func TestOpenCreatesSchemaAndIsRepeatable(t *testing.T) {
 
 // Right after installation the service and `sgc setup-link` both open the
 // brand-new database within the same second.
+//
+// Many rounds, each on a new database: the failure this guards against
+// showed once in a few hundred single rounds, which is too rare to catch a
+// regression and common enough to fail a build now and then.
 func TestOpeningAFreshDatabaseFromSeveralPlacesAtOnce(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sgc.db")
-
-	const openers = 8
-	errs := make(chan error, openers)
-	for i := 0; i < openers; i++ {
-		go func() {
-			db, err := Open(ctx, path)
-			if err == nil {
-				db.Close()
+	const rounds, openers = 150, 8
+	for round := range rounds {
+		path := filepath.Join(t.TempDir(), "sgc.db")
+		errs := make(chan error, openers)
+		for range openers {
+			go func() {
+				db, err := Open(ctx, path)
+				if err == nil {
+					db.Close()
+				}
+				errs <- err
+			}()
+		}
+		for range openers {
+			if err := <-errs; err != nil {
+				t.Fatalf("round %d: simultaneous open failed: %v", round, err)
 			}
-			errs <- err
-		}()
-	}
-	for i := 0; i < openers; i++ {
-		if err := <-errs; err != nil {
-			t.Errorf("simultaneous open failed: %v", err)
 		}
 	}
 }
