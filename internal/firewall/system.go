@@ -75,8 +75,7 @@ func (s *System) Change(ctx context.Context, ready func()) error {
 	for {
 		select {
 		case <-ctx.Done():
-			// The undoing itself must not be cut short by the cancellation.
-			return s.Revert(context.WithoutCancel(ctx), ResultUndone, "")
+			return s.Revert(ctx, ResultUndone, "")
 		case <-ticker.C:
 		}
 		current, err := s.readPending()
@@ -220,6 +219,11 @@ func (s *System) Revert(ctx context.Context, result, message string) error {
 }
 
 func (s *System) revertLocked(ctx context.Context, result, message string) error {
+	// Undoing is never cut short. Being told to stop is often the very
+	// reason for it; and if the order to stop arrives in the instant new
+	// rules are being loaded, they may be in effect although the loading
+	// was reported as interrupted.
+	ctx = context.WithoutCancel(ctx)
 	pending, readErr := s.readPending()
 	if readErr == nil && pending == nil {
 		return nil
