@@ -57,6 +57,7 @@ type Server struct {
 	LastUpdate func() (*updater.Status, error)
 	Backups    Backups
 	Firewall   Firewall
+	SSH        SSH
 	// StartOver asks the process to wind down the web server and start
 	// again on the database a confirmed restore has put in place.
 	StartOver func()
@@ -95,6 +96,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/firewall/change", s.requireSession(s.handleFirewallChange))
 	mux.HandleFunc("POST /api/firewall/confirm", s.requireSession(s.handleFirewallConfirm))
 	mux.HandleFunc("POST /api/firewall/undo", s.requireSession(s.handleFirewallUndo))
+	mux.HandleFunc("GET /api/ssh", s.requireSession(s.handleSSHStatus))
+	mux.HandleFunc("POST /api/ssh/keys", s.requireSession(s.handleSSHAddKey))
+	mux.HandleFunc("POST /api/ssh/keys/remove", s.requireSession(s.handleSSHRemoveKey))
+	mux.HandleFunc("POST /api/ssh/keys/install", s.requireSession(s.handleSSHInstall))
+	mux.HandleFunc("POST /api/ssh/keys-only", s.requireSession(s.handleSSHKeysOnly))
+	mux.HandleFunc("POST /api/ssh/undo", s.requireSession(s.handleSSHUndo))
 	mux.HandleFunc("POST /api/setup/restore/preview", s.handleRestorePreview)
 	mux.HandleFunc("POST /api/setup/restore/confirm", s.handleRestoreConfirm)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {

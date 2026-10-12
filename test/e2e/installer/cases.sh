@@ -5,7 +5,7 @@
 # Runs the installer against the release variants in /tmp/release and checks
 # what it did, then drives SGC the way a browser would.
 #
-# Usage: cases.sh <mode> <expected version>
+# Usage: cases.sh <mode> <expected version> [<new version>]
 #
 #   refused        bad releases are refused and leave nothing behind
 #                  (needs a clean machine)
@@ -13,6 +13,8 @@
 #                  dashboard data work; the root helper is locked down
 #   firewall       the firewall: off until switched on, undone by itself
 #                  unless confirmed, refusing the outside once confirmed
+#   ssh            SSH keys added in the page; "keys only" is undone by
+#                  itself unless a login with a key is seen, and stays if one is
 #   update-setup   points the installed SGC at a local test update source
 #   update-refused a tampered update is refused and changes nothing
 #   update-good    a genuine update installs from the dashboard's API
@@ -22,9 +24,17 @@
 #   export         makes an export through the API (kept in the home folder)
 #   restart        asks SGC to restart the machine (the machine goes down)
 #   after-restart  SGC came back by itself and remembers everything
-#   firewall-cli   "sgc doctor" and "sgc firewall off" over SSH
+#   cli            "sgc doctor", "sgc firewall off" and "sgc ssh
+#                  allow-passwords" over SSH
 #   restore        on a freshly wiped machine: installs, then restores the
 #                  export made earlier and checks that SGC is what it was
+#
+# For Test-UpgradeFromPrevious.ps1, where /tmp/release holds the previous
+# published release and the current source as an update to it:
+#
+#   old-install    installs the previous release and creates the admin
+#   upgrade        the previous release updates itself to <new version>,
+#                  with its own updater
 
 exec 2>&1
 set -uo pipefail
@@ -198,6 +208,43 @@ rules_loaded() { sudo /usr/sbin/nft list table inet sgc; }
 # shellcheck disable=SC2317  # called indirectly through check()
 no_rules_loaded() { [ ! -x /usr/sbin/nft ] || ! sudo /usr/sbin/nft list table inet sgc; }
 
+# --- SSH -----------------------------------------------------------------------
+
+# Two key pairs made by the test, standing in for the owner's own. The second
+# is still in SGC when the export is made, so Test-Installer.ps1 carries its
+# private half across the wipe of the machine.
+ssh_key="$HOME/sgc-test-ssh-key"
+ssh_key2="$HOME/sgc-test-ssh-key2"
+lan_address="$(hostname -I | awk '{print $1}')"
+ssh_quiet=(-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5)
+
+# The ways of logging in the SSH server offers someone who has nothing yet,
+# for example "publickey,password". Asking is not a login.
+# shellcheck disable=SC2317  # called by the two functions below
+offered() {
+    ssh "${ssh_quiet[@]}" -o PreferredAuthentications=none "tester@$lan_address" true 2>&1 |
+        grep -o 'Permission denied ([a-z,-]*)' | head -1
+}
+# (Not "offered | grep": the ssh in there ends with an error by design, and
+# with pipefail that would count as "not offered".)
+# shellcheck disable=SC2317  # called indirectly through check()
+passwords_offered() { [[ "$(offered)" == *password* ]]; }
+# shellcheck disable=SC2317  # called indirectly through check()
+passwords_not_offered() { [ "$(offered)" = "Permission denied (publickey)" ]; }
+# gets_in <private key>: a login with that key and no other.
+# shellcheck disable=SC2317  # called indirectly through check()
+gets_in() { ssh "${ssh_quiet[@]}" -i "$1" -o IdentitiesOnly=yes "tester@$lan_address" true 2>/dev/null; }
+# shellcheck disable=SC2317  # called indirectly through check()
+does_not_get_in() { ! gets_in "$1"; }
+
+# shellcheck disable=SC2317  # called indirectly through check() and wait_for()
+ssh_state_has() { [ "$(http GET /api/ssh)" = 200 ] && grep -q "$1" /tmp/sgc-test-body; }
+# shellcheck disable=SC2317  # called indirectly through wait_for()
+ssh_settled() { ssh_state_has '"pending":null'; }
+add_key_request() { # add_key_request <password> <label> <the key as pasted>
+    printf '{"password":"%s","label":"%s","key":"%s","account":""}' "$1" "$2" "$3"
+}
+
 case "$mode" in
 refused)
     echo "Altered files must be refused before anything is installed"
@@ -216,6 +263,7 @@ accepted)
     check "service is running" systemctl is-active --quiet sgc
     check "service starts at boot" systemctl is-enabled --quiet sgc
     check "the unit that loads the firewall's rules at start-up is switched on" systemctl is-enabled --quiet sgc-firewall.service
+    check "and so is the one that puts the confirmed SSH settings in place" systemctl is-enabled --quiet sgc-ssh.service
     check "it has nothing to load yet" sh -c "[ ! -e /etc/sgc/firewall.nft ] && ! systemctl is-failed --quiet sgc-firewall.service"
     check "service runs as the unprivileged user sgc" sh -c "[ \"\$(ps -o user= -C sgc)\" = sgc ]"
     check "program files belong to root" sh -c "[ \"\$(stat -c %U:%G /opt/sgc/current/sgc)\" = root:root ]"
@@ -361,16 +409,22 @@ firewall)
     echo "Many changes in quick succession"
     # More starts within ten seconds than systemd allows a unit by default;
     # neither a change nor its undoing may ever be refused for that.
+    # After every single undo the rules must really be gone. This is also
+    # what catches an undo that is cut short: it once left the rules in
+    # effect about every other time, while SGC reported them as undone.
     quick=0
-    for _ in 1 2 3 4 5 6 7; do
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
         [ "$(http POST /api/firewall/change '{"enabled":true}')" = 202 ] &&
-            [ "$(http POST /api/firewall/undo '{}')" = 200 ] && quick=$((quick + 1))
+            [ "$(http POST /api/firewall/undo '{}')" = 200 ] &&
+            no_rules_loaded >/dev/null 2>&1 && quick=$((quick + 1))
     done
-    if [ "$quick" -eq 7 ]; then pass "seven times on and undone again, none refused"; else
-        fail "only $quick of seven quick changes went through"
+    if [ "$quick" -eq 10 ]; then pass "ten times on and undone again: never refused, and the rules gone every time"; else
+        fail "only $quick of ten quick changes were made and fully undone"
         indent </tmp/sgc-test-body
     fi
     check "the firewall is off after the last undo" no_rules_loaded
+    check "no unit of the firewall's is marked as failed" \
+        sh -c "! systemctl is-failed --quiet sgc-firewall-change.service && ! systemctl is-failed --quiet sgc-firewall-revert.service"
     check "none of the firewall's units was refused a start" \
         sh -c "! systemctl show -p Result sgc-firewall-change.service sgc-firewall-revert.service | grep -q start-limit"
 
@@ -401,6 +455,205 @@ firewall)
     check "a request with anything but on or off is refused" \
         sh -c "sudo -u sgc curl -s -m 5 -o /dev/null -w '%{http_code}' -X POST -d '{\"enabled\":false,\"rules\":\"accept\"}' --unix-socket /run/sgc-helper/helper.sock http://helper/v1/firewall/change | grep -q 400"
     check "the firewall is still on" rules_loaded
+    ;;
+
+ssh)
+    password="$(cat "$password_file")"
+    echo "A device that accepts passwords over SSH, as a Raspberry Pi usually does"
+    # The test machine's image comes with password logins switched off. Put it
+    # in the state SGC is most likely to meet.
+    sudo sed -i -E 's/^(PasswordAuthentication|KbdInteractiveAuthentication) no$/#&/' /etc/ssh/sshd_config
+    sudo rm -f /etc/ssh/sshd_config.d/50-cloud-init.conf
+    sudo systemctl reload ssh.service
+    sleep 1
+    check "the SSH server offers a password prompt" passwords_offered
+    expect_status "the SSH state is available" 200 GET /api/ssh
+    check "passwords are reported as accepted" body_has '"passwordLogins":true'
+    check "root is reported as able to log in with a key" body_has '"rootLogin":"key"'
+    check "the account a person logs in with is found, and no other" body_has '"accounts":\["tester"\]'
+    check "this test's own login with a key was seen" body_has '"recentLogin":{"account":"tester"'
+    check "nothing is restricted yet" body_has '"keysOnly":false'
+
+    echo "A key is added in the page"
+    rm -f "$ssh_key" "$ssh_key.pub" "$ssh_key2" "$ssh_key2.pub"
+    ssh-keygen -q -t ed25519 -N '' -C 'laptop of the test' -f "$ssh_key"
+    ssh-keygen -q -t ed25519 -N '' -C 'second key' -f "$ssh_key2"
+    public="$(cat "$ssh_key.pub")"
+    public2="$(cat "$ssh_key2.pub")"
+    check "the new key does not get in yet" does_not_get_in "$ssh_key"
+    expect_status "adding a key needs the admin password again" 403 POST /api/ssh/keys "$(add_key_request not-the-password laptop "$public")"
+    expect_status "being refused did not end the session" 200 GET /api/ssh
+    expect_status "a private key is refused" 400 POST /api/ssh/keys "$(add_key_request "$password" laptop '-----BEGIN OPENSSH PRIVATE KEY-----')"
+    check "and the message says why" body_has 'private key'
+    expect_status "a key with a login option in front of it is refused" 400 POST /api/ssh/keys \
+        "$(add_key_request "$password" laptop "command=\\\"/bin/sh\\\" $public")"
+    expect_status "two keys at once are refused" 400 POST /api/ssh/keys "$(add_key_request "$password" laptop "$public\\n$public2")"
+    check "nothing has been installed by the refused requests" sudo sh -c '[ ! -e /etc/sgc/ssh/keys/tester ]'
+    expect_status "the key is added" 200 POST /api/ssh/keys "$(add_key_request "$password" '' "$public")"
+    check "it is listed, named after the comment it came with" body_has '"label":"laptop of the test"'
+    check "with the fingerprint ssh-keygen reports for it" body_has "$(ssh-keygen -l -f "$ssh_key.pub" | awk '{print $2}')"
+    check "it is installed for the account" body_has '"account":"tester"'
+    check "the keys file belongs to root" sudo sh -c "[ \"\$(stat -c %U:%G:%a /etc/sgc/ssh/keys/tester)\" = root:root:644 ]"
+    check "and holds the key and nothing else: no option, no comment" \
+        sudo sh -c "[ \"\$(cat /etc/sgc/ssh/keys/tester)\" = \"$(cut -d' ' -f1,2 "$ssh_key.pub")\" ]"
+    check "the web process cannot change it" sh -c '! sudo -u sgc sh -c "echo >> /etc/sgc/ssh/keys/tester"'
+    check "nor SGC's part of the SSH settings" sh -c '! sudo -u sgc sh -c "echo >> /etc/ssh/sshd_config.d/00-sgc.conf"'
+    check "the new key gets in" gets_in "$ssh_key"
+    check "passwords are still offered: adding a key restricts nothing" passwords_offered
+    expect_status "the same key a second time is refused" 409 POST /api/ssh/keys "$(add_key_request "$password" again "$public")"
+    expect_in_audit "the key is in the history" '"action":"ssh.key_added"'
+
+    echo "Keys only, and nobody logs in with a key: undone after two minutes"
+    expect_status "switching to keys only" 200 POST /api/ssh/keys-only '{"enabled":true}'
+    check "it is in effect and waits for a login with a key" body_has '"what":"switching to keys only"'
+    check "it is not counted as switched on" body_has '"keysOnly":false'
+    check "passwords are no longer offered" passwords_not_offered
+    expect_status "nothing else about SSH can be changed meanwhile" 409 POST /api/ssh/keys-only '{"enabled":false}'
+    echo "        (waiting two minutes without logging in; the logins made before the change must not count)"
+    if wait_for 150 ssh_settled; then pass "after two minutes nothing is waiting any more"; else
+        fail "the change is still waiting"
+        indent </tmp/sgc-test-body
+    fi
+    check "keys only is not on" body_has '"keysOnly":false'
+    check "passwords are offered again" passwords_offered
+    check "the key that was added is still there and still gets in" gets_in "$ssh_key"
+    expect_in_audit "the history says no login with a key was seen" '"action":"ssh.change_expired"'
+
+    echo "The process that waits for the login is killed, then everything belonging to its unit"
+    expect_status "switching to keys only" 200 POST /api/ssh/keys-only '{"enabled":true}'
+    check "passwords are no longer offered" passwords_not_offered
+    sudo kill -KILL "$(systemctl show -p MainPID --value sgc-ssh-change.service)"
+    if wait_for 10 ssh_settled; then pass "undone within seconds"; else fail "the change survived its guard being killed"; fi
+    check "passwords are offered again" passwords_offered
+    expect_status "switching to keys only" 200 POST /api/ssh/keys-only '{"enabled":true}'
+    sudo systemctl kill --signal=KILL sgc-ssh-change.service
+    if wait_for 10 ssh_settled; then pass "undone within seconds again"; else fail "the change survived the whole unit being killed"; fi
+    check "passwords are offered again" passwords_offered
+
+    echo "Undone on request, several times in a row"
+    undone=0
+    for _ in 1 2 3 4 5; do
+        [ "$(http POST /api/ssh/keys-only '{"enabled":true}')" = 200 ] && passwords_not_offered &&
+            [ "$(http POST /api/ssh/undo '{}')" = 200 ] && passwords_offered && undone=$((undone + 1))
+    done
+    if [ "$undone" -eq 5 ]; then pass "five times switched and undone: passwords refused, then accepted again, every time"; else
+        fail "only $undone of five changes were made and fully undone"
+        indent </tmp/sgc-test-body
+    fi
+    expect_status "the SSH state is available" 200 GET /api/ssh
+    check "nothing is waiting" body_has '"pending":null'
+    check "no unit of SSH's is marked as failed" \
+        sh -c "! systemctl is-failed --quiet sgc-ssh-change.service && ! systemctl is-failed --quiet sgc-ssh-revert.service"
+
+    echo "Keys only, and a login with a key: it stays"
+    expect_status "switching to keys only" 200 POST /api/ssh/keys-only '{"enabled":true}'
+    check "passwords are no longer offered" passwords_not_offered
+    check "a login with the key" gets_in "$ssh_key"
+    if wait_for 15 ssh_state_has '"keysOnly":true'; then pass "SGC saw the login and keeps the change"; else
+        fail "the login with a key was not noticed"
+        indent </tmp/sgc-test-body
+    fi
+    check "and it is recorded as what the owner wants" body_has '"wanted":true'
+    check "nothing is waiting any more" body_has '"pending":null'
+    check "the SSH server reports: no passwords" body_has '"passwordLogins":false'
+    check "and no login as root" body_has '"rootLogin":"no"'
+    check "passwords are not offered" passwords_not_offered
+    check "the key still gets in" gets_in "$ssh_key"
+    expect_in_audit "the history says a login with a key confirmed it" '"action":"ssh.keys_only_on"'
+
+    echo "Under keys only, taking a key away needs a login with another one"
+    expect_status "a second key is added, which needs no proof" 200 POST /api/ssh/keys "$(add_key_request "$password" 'second key' "$public2")"
+    check "the second key gets in" gets_in "$ssh_key2"
+    first_id="$(grep -o '"id":[0-9]*,"label":"laptop of the test"' /tmp/sgc-test-body | grep -o '[0-9]*' | head -1)"
+    expect_status "removing the first key" 200 POST /api/ssh/keys/remove "{\"id\":$first_id}"
+    check "it waits for a login with a key" body_has '"what":"removing laptop of the test'
+    check "the key is still listed while that is open" body_has '"label":"laptop of the test"'
+    check "but no longer gets in" does_not_get_in "$ssh_key"
+    expect_status "undo" 200 POST /api/ssh/undo '{}'
+    check "undone: the first key gets in again" gets_in "$ssh_key"
+    expect_status "removing the first key again" 200 POST /api/ssh/keys/remove "{\"id\":$first_id}"
+    check "a login with the second key" gets_in "$ssh_key2"
+    if wait_for 15 ssh_settled; then pass "SGC saw the login and keeps the change"; else fail "the login with the other key was not noticed"; fi
+    check "the first key is gone from the list" sh -c "! grep -q 'laptop of the test' /tmp/sgc-test-body"
+    check "and no longer gets in" does_not_get_in "$ssh_key"
+    check "the second key does" gets_in "$ssh_key2"
+    check "keys only is still on" body_has '"keysOnly":true'
+    expect_in_audit "the removal is in the history" '"action":"ssh.key_removed"'
+
+    echo "The root helper takes keys only as keys"
+    check "a request with an option on a key is refused" \
+        sh -c "sudo -u sgc curl -s -m 5 -o /dev/null -w '%{http_code}' -X POST -d '{\"account\":\"tester\",\"keys\":[{\"type\":\"ssh-ed25519\",\"blob\":\"AAAA\",\"fingerprint\":\"\",\"options\":\"command\"}],\"keysOnly\":true}' --unix-socket /run/sgc-helper/helper.sock http://helper/v1/ssh/change | grep -q 400"
+    check "keys for root are refused" \
+        sh -c "sudo -u sgc curl -s -m 30 -o /dev/null -w '%{http_code}' -X POST -d '{\"account\":\"root\",\"keys\":[{\"type\":\"$(cut -d' ' -f1 "$ssh_key.pub")\",\"blob\":\"$(cut -d' ' -f2 "$ssh_key.pub")\",\"fingerprint\":\"\"}],\"keysOnly\":true}' --unix-socket /run/sgc-helper/helper.sock http://helper/v1/ssh/change | grep -q 500"
+    check "nothing was installed for root" sudo sh -c "[ \"\$(ls /etc/sgc/ssh/keys)\" = tester ]"
+    check "a refused request leaves no unit marked as failed" sh -c "! systemctl is-failed --quiet sgc-ssh-change.service"
+    check "the second key still gets in" gets_in "$ssh_key2"
+
+    # sgc.service wants the unit that puts the confirmed SSH settings in
+    # place, so that unit runs at every start of SGC, not only when the
+    # machine starts. With everything in place it has nothing to do.
+    echo "SGC's own service restarts: the SSH server is left alone"
+    since="$(date '+%Y-%m-%d %H:%M:%S')"
+    sudo systemctl restart sgc
+    # shellcheck disable=SC2317  # called indirectly through wait_for()
+    ssh_unit_done() { [ "$(systemctl is-active sgc-ssh.service)" != activating ] && [ "$(http GET /api/ssh)" = 200 ]; }
+    if wait_for 30 ssh_unit_done; then pass "SGC is back"; else fail "SGC did not come back"; fi
+    check "the unit ran" sh -c "sudo journalctl -u sgc-ssh.service --since '$since' --no-pager | grep -q 'Finished\|Deactivated'"
+    check "and did not fail" sh -c "! systemctl is-failed --quiet sgc-ssh.service"
+    check "the SSH server was not told to reload"         sh -c "! sudo journalctl -u ssh.service --since '$since' --no-pager | grep -q 'Server listening\|Reload'"
+    check "keys only is still on" body_has '"keysOnly":true'
+    check "passwords are still not offered" passwords_not_offered
+    check "the second key still gets in" gets_in "$ssh_key2"
+    ;;
+
+old-install)
+    echo "The previous release, as it was published"
+    if run_installer good >/tmp/install.log; then pass "its installer succeeded"; else
+        fail "its installer failed"
+        indent </tmp/install.log
+    fi
+    check "sgc reports version $version" sh -c "sgc version | grep -q '^sgc $version '"
+    check "service is running" systemctl is-active --quiet sgc
+    link="$(grep -o 'https://[^ ]*/setup#[A-Za-z0-9_-]*' /tmp/install.log)"
+    token="${link##*#}"
+    rm -f "$cookies"
+    head -c 18 /dev/urandom | base64 >"$password_file"
+    expect_status "its setup link creates the admin" 200 POST /api/setup \
+        "{\"token\":\"$token\",\"username\":\"$username\",\"password\":\"$(cat "$password_file")\"}"
+    expect_status "the admin is signed in" 200 GET /api/health
+    ;;
+
+upgrade)
+    target="${3:?usage: cases.sh upgrade <installed version> <new version>}"
+    echo "SGC $version updates itself to $target, with its own updater"
+    offer "$target"
+    expect_status "checking for updates" 200 POST /api/update/check '{}'
+    check "the new version is offered" body_has "\"latest\":\"$target\""
+    expect_status "the update starts" 202 POST /api/update/install "$(install_request "$target")"
+    if wait_for 120 version_is "$target"; then pass "SGC came back as $target"; else fail "SGC did not come back as $target (it reports '$(running_version)')"; fi
+    if wait_for 30 update_finished "$target"; then pass "the updater recorded the outcome"; else fail "the updater recorded no outcome"; fi
+    check "the outcome is a success" body_has '"state":"succeeded"'
+    check "the sgc command is the new version" sh -c "sgc version | grep -q '^sgc $target '"
+    check "service is running" systemctl is-active --quiet sgc
+    expect_status "the sign-in from before the update still works" 200 GET /api/health
+    check "the helper is the new version too" \
+        sh -c "sudo -u sgc curl -s -m 5 --unix-socket /run/sgc-helper/helper.sock http://helper/v1/ping | grep -q '\"version\":\"$target\"'"
+    expect_in_audit "the update is in the history" '"action":"update.succeeded"'
+
+    echo "What the old updater made of the new release"
+    missing=""
+    for unit in /opt/sgc/current/*.service /opt/sgc/current/*.socket; do
+        [ -f "/etc/systemd/system/$(basename "$unit")" ] || missing="$missing $(basename "$unit")"
+    done
+    if [ -z "$missing" ]; then pass "every unit of the new release is installed"; else fail "units of the new release that are not installed:$missing"; fi
+    # A unit that has to run at start-up gets there either by being switched
+    # on by the updater (which older updaters do not do) or by being wanted
+    # by sgc.service (which the new release sees to for that reason).
+    for unit in sgc-firewall.service sgc-ssh.service; do
+        check "$unit will be part of start-up" \
+            sh -c "systemctl is-enabled --quiet $unit || systemctl show --property=Wants --value sgc.service | grep -q $unit"
+    done
+    check "no unit of SGC's is marked as failed" sh -c "[ -z \"\$(systemctl list-units --failed --plain --no-legend 'sgc*')\" ]"
     ;;
 
 update-setup)
@@ -459,6 +712,9 @@ update-good)
     check "the firewall stayed on through the update" rules_loaded
     expect_status "the firewall's state is available" 200 GET /api/firewall
     check "and the new version knows it" body_has '"state":"on"'
+    check "SSH stayed on keys only through the update" passwords_not_offered
+    expect_status "the SSH state is available" 200 GET /api/ssh
+    check "and the new version knows it" body_has '"keysOnly":true'
     ;;
 
 update-broken)
@@ -476,12 +732,12 @@ update-broken)
     check "service is running" systemctl is-active --quiet sgc
     check "current points at the version from before" sh -c "[ \"\$(readlink /opt/sgc/current)\" = releases/$before ]"
     check "the firewall stayed on through the failed update" rules_loaded
+    check "SSH stayed on keys only through the failed update" passwords_not_offered
     expect_status "the earlier sign-in still works" 200 GET /api/health
     expect_in_audit "the rollback was recorded in the activity log" '"action":"update.rolled_back"'
     # The activity log shows the newest entries only, so this asks for what
     # happened shortly before the broken update.
-    check "the earlier history survived" body_has '"action":"firewall.change_confirmed"'
-    check "including the successful update before it" body_has '"action":"update.succeeded"'
+    check "the earlier history survived, with the successful update before it" body_has '"action":"update.succeeded"'
     expect_status "the broken version is still offered, not silently hidden" 200 GET /api/update
     check "still offered" body_has '"updateAvailable":true'
     ;;
@@ -608,12 +864,29 @@ restore)
     check "the export says the firewall was on" body_has '"wanted":true'
     check "but on this new machine nothing was switched on unasked" body_has '"state":"off"'
     check "no rules are loaded" no_rules_loaded
+
+    echo "The SSH key from the old machine is known, and not installed unasked"
+    # The private key travelled over the wipe by way of a Windows folder and
+    # lost its permissions there; ssh refuses a key others can read.
+    chmod 600 "$ssh_key2"
+    expect_status "the SSH state is available" 200 GET /api/ssh
+    check "the key is listed" body_has '"label":"second key"'
+    check "as not on this device yet" body_has '"installed":false'
+    check "keys only is known to have been on" body_has '"wanted":true'
+    check "and is not on here" body_has '"keysOnly":false'
+    check "nothing of SGC's is among the SSH settings" sudo sh -c '[ ! -e /etc/ssh/sshd_config.d/00-sgc.conf ] && [ ! -e /etc/sgc/ssh/keys/tester ]'
+    check "the key does not get in" does_not_get_in "$ssh_key2"
+    expect_status "installing it needs the admin password again" 403 POST /api/ssh/keys/install '{"password":"not-the-password","account":"tester"}'
+    expect_status "with the password it is installed" 200 POST /api/ssh/keys/install "{\"password\":\"$password\",\"account\":\"tester\"}"
+    check "it is listed as on this device" body_has '"installed":true'
+    check "the key from the old machine gets in" gets_in "$ssh_key2"
+    check "keys only is still not switched on by itself" body_has '"keysOnly":false'
+    expect_in_audit "the installation is in the history" '"action":"ssh.keys_installed"'
     # The activity log shows the newest entries only; everything asked for
     # here happened on the old machine shortly before the export. (That the
     # whole history survives, down to the first entry, is checked on the
     # database itself by the tests in internal/backup.)
-    expect_in_audit "the history came back" '"action":"firewall.change_confirmed"'
-    check "including the updates made on the old machine" body_has '"action":"update.succeeded"'
+    expect_in_audit "the history came back, with the updates made on the old machine" '"action":"update.succeeded"'
     expect_in_audit "the restore itself was recorded" '"action":"restore.completed"'
     expect_status "the fresh install's setup link is closed" 409 POST /api/setup \
         "{\"token\":\"$token\",\"username\":\"mallory\",\"password\":\"$password\"}"
@@ -647,9 +920,15 @@ after-restart)
     # network-pre.target is the point in start-up before which no network
     # interface is configured.
     check "before the network came up" sh -c "[ \"\$(systemctl show -p ActiveEnterTimestampMonotonic --value sgc-firewall.service)\" -lt \"\$(systemctl show -p ActiveEnterTimestampMonotonic --value network-pre.target)\" ]"
+    expect_status "the SSH state is available" 200 GET /api/ssh
+    check "SSH is still on keys only" body_has '"keysOnly":true'
+    check "passwords are not offered" passwords_not_offered
+    check "the key added in the page still gets in" gets_in "$ssh_key2"
+    check "the confirmed SSH settings were put in place at start-up" sh -c "[ \"\$(systemctl show -p Result --value sgc-ssh.service)\" = success ]"
+    check "before the SSH server started" sh -c "[ \"\$(systemctl show -p ExecMainExitTimestampMonotonic --value sgc-ssh.service)\" -le \"\$(systemctl show -p ExecMainStartTimestampMonotonic --value ssh.service)\" ]"
     ;;
 
-firewall-cli)
+cli)
     echo "'sgc doctor' looks at every part"
     if output="$(sgc doctor 2>&1)"; then
         fail "without sudo it was not refused"
@@ -666,7 +945,8 @@ firewall-cli)
         indent <<<"$output"
     fi
     for line in "The SGC service is running" "SGC's page answers on port 8443" "The root helper answers" \
-        "The firewall is on, and its rules are loaded" "The firewall's rules load at every start-up"; do
+        "The firewall is on, and its rules are loaded" "The firewall's rules load at every start-up" \
+        "SSH accepts keys only, and nobody logs in as root" "The 1 key(s) added in SGC's page are in place for the account tester"; do
         if echo "$output" | grep -q "ok    $line"; then pass "it says: $line"; else
             fail "it does not say: $line"
             indent <<<"$output"
@@ -689,6 +969,26 @@ firewall-cli)
     fi
     sudo systemctl restart sgc-firewall
     check "following that advice loads the rules again" rules_loaded
+    sudo rm /etc/ssh/sshd_config.d/00-sgc.conf /etc/sgc/ssh/keys/tester
+    sudo systemctl reload ssh.service
+    output="$(sudo sgc doctor 2>&1)"
+    code=$?
+    if [ "$code" -ne 0 ] && echo "$output" | grep -q 'FAIL  "Keys only" is switched on, but the SSH server accepts passwords or root' &&
+        echo "$output" | grep -q "FAIL  Of the 1 key(s) added in SGC's page, 0 are in place"; then
+        pass "SSH settings and keys removed behind SGC's back are reported as problems"
+    else
+        fail "the missing SSH settings were not reported (exit code $code)"
+        indent <<<"$output"
+    fi
+    if echo "$output" | grep -q 'sudo systemctl start sgc-ssh'; then pass "it says how to put them back"; else fail "it does not say how to put them back"; fi
+    if sudo systemctl start sgc-ssh; then pass "following that advice works on a running machine"; else
+        fail "the unit that puts them back failed"
+        sudo journalctl -u sgc-ssh.service -n 10 --no-pager | indent
+    fi
+    # The unit asks the SSH server to take the settings up and does not wait
+    # for it (it cannot: see Restore in internal/sshd).
+    if wait_for 10 passwords_not_offered; then pass "passwords are not offered again"; else fail "passwords are still offered"; fi
+    check "and the key gets in again" gets_in "$ssh_key2"
     sudo systemctl stop sgc
     output="$(sudo sgc doctor 2>&1)"
     code=$?
@@ -732,6 +1032,31 @@ firewall-cli)
     expect_status "switching on" 202 POST /api/firewall/change '{"enabled":true}'
     expect_status "confirming" 200 POST /api/firewall/confirm '{}'
     check "the rules are loaded" rules_loaded
+
+    echo "'sgc ssh' at the machine itself"
+    check "the state can be read without sudo" sh -c "sgc ssh status | grep -q 'SSH accepts keys only'"
+    if output="$(sgc ssh allow-passwords 2>&1)"; then
+        fail "allowing passwords without sudo was not refused"
+    elif echo "$output" | grep -q 'needs root'; then
+        pass "allowing passwords without sudo is refused"
+    else
+        fail "without sudo: unexpected message"
+        indent <<<"$output"
+    fi
+    check "passwords are still not offered" passwords_not_offered
+    output="$(sudo sgc ssh allow-passwords 2>&1)"
+    code=$?
+    if [ "$code" -eq 0 ] && echo "$output" | grep -q 'allowed again'; then pass "with sudo it allows passwords again"; else
+        fail "allowing passwords failed (exit code $code)"
+        indent <<<"$output"
+    fi
+    check "passwords are offered again" passwords_offered
+    check "the key added in the page still gets in" gets_in "$ssh_key2"
+    expect_status "SGC's page knows" 200 GET /api/ssh
+    check "it shows keys only as off" body_has '"keysOnly":false'
+    check "and no longer as wanted" body_has '"wanted":false'
+    check "SGC's own files still belong to its user" sudo sh -c "[ -z \"\$(find /var/lib/sgc ! -user sgc)\" ]"
+    expect_in_audit "the history says it was done at the machine" '"actor":"console","action":"ssh.keys_only_off"'
     ;;
 
 *)

@@ -1,0 +1,57 @@
+[Unit]
+Description=Server Gateway Control SSH settings, as last confirmed
+Documentation=https://github.com/Troglobitten/sgc
+# Before the SSH server starts. A change to the SSH settings that was still
+# waiting for its proof when the device went down is on disk, unlike an
+# unconfirmed firewall change, which only ever exists in memory. This writes
+# the confirmed settings over it, so that a restart undoes an unconfirmed
+# change here too.
+Before=ssh.service ssh.socket
+# It also runs whenever sgc.service starts, which wants it, and when the owner
+# follows the advice of "sgc doctor" and starts it by hand. Then the SSH server
+# is already up, and because of the line above systemd holds a reload of it
+# back until this unit has finished. The job must therefore never wait for
+# one (see Restore in internal/sshd).
+# Only where SGC has ever touched the SSH server.
+ConditionPathExists=|/etc/sgc/ssh/state.json
+ConditionPathExists=|/etc/ssh/sshd_config.d/00-sgc.conf
+
+[Service]
+Type=oneshot
+ExecStart=/opt/sgc/current/sgc-helper ssh restore
+TimeoutStartSec=60
+
+# --- Sandboxing ---------------------------------------------------------
+# Root, because the SSH server only tells root what its settings amount to,
+# but with no capabilities at all: the files this job writes belong to root
+# anyway. It can write to SGC's own configuration folder, to SGC's one file
+# among the SSH server's settings and to its folder in /run, nowhere else,
+# and it cannot open network connections.
+ConfigurationDirectory=sgc
+RuntimeDirectory=sgc-ssh
+RuntimeDirectoryPreserve=yes
+ReadWritePaths=-/etc/ssh/sshd_config.d
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@resources
+
+[Install]
+WantedBy=multi-user.target

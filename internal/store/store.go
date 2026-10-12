@@ -79,6 +79,24 @@ var migrations = []string{
 	);
 	INSERT INTO update_check (id) VALUES (1);
 	`,
+
+	// 3: SSH keys the owner added in SGC's page.
+	`
+	CREATE TABLE ssh_key (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		-- What the owner calls the key ("laptop").
+		label       TEXT    NOT NULL,
+		-- The key itself: its kind and the key in base64, as in a line of an
+		-- authorized_keys file. A public key: nothing secret.
+		key_type    TEXT    NOT NULL,
+		key_blob    TEXT    NOT NULL,
+		-- What the SSH server calls the key in its log. Unique, so the same
+		-- key is not added twice.
+		fingerprint TEXT    NOT NULL UNIQUE,
+		added_at    INTEGER NOT NULL,
+		added_by    TEXT    NOT NULL
+	);
+	`,
 }
 
 // Setting reads one setting. found is false if it was never set, in which

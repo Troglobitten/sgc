@@ -27,6 +27,8 @@ type machine struct {
 	sshdErr  error
 	checkErr error // "nft -c" refuses the rules
 	loadErr  map[string]error
+	// "nft destroy table" fails, as when the program is killed half-way.
+	destroyErr error
 }
 
 func newMachine(t *testing.T) *machine {
@@ -88,6 +90,10 @@ func (m *machine) run(ctx context.Context, program string, args ...string) ([]by
 	case len(args) > 0 && args[0] == "-f":
 		if err := m.loadErr[shown[1]]; err != nil {
 			return []byte("Error: could not process rule\n"), err
+		}
+	case len(args) > 0 && args[0] == "destroy":
+		if m.destroyErr != nil {
+			return nil, m.destroyErr
 		}
 	}
 	return nil, nil
@@ -328,6 +334,50 @@ func TestUndoFallsBackToNoFirewall(t *testing.T) {
 	}
 	if state := m.state(); state.Pending != nil || state.Last.Result != ResultFailed {
 		t.Errorf("state: pending %+v, outcome %+v", state.Pending, state.Last)
+	}
+}
+
+// The undoing itself fails: the program that removes the rules is killed
+// half-way (this happened on a real machine, when "stop" signalled it along
+// with the process that had started it). The rules are then still in effect,
+// and the change must stay marked as pending, or everything that would try
+// again finds nothing to do.
+func TestAFailedUndoStaysPendingUntilItSucceeds(t *testing.T) {
+	m := newMachine(t)
+	m.request(`{"enabled":true}`)
+	ctx, cancel := context.WithCancel(context.Background())
+	wait := m.startChange(ctx)
+	id := m.state().Pending.ID
+
+	m.mu.Lock()
+	m.destroyErr = errors.New("signal: terminated")
+	m.mu.Unlock()
+	cancel() // "undo now"
+	if err := wait(); err == nil {
+		t.Fatal("the failed undo was reported as done")
+	}
+	state := m.state()
+	if state.Pending == nil || state.Pending.ID != id {
+		t.Fatalf("the change is no longer marked as pending although its rules are still in effect: %+v", state)
+	}
+	if state.Last != nil && state.Last.ID == id {
+		t.Errorf("an outcome was recorded for a change that is not over: %+v", state.Last)
+	}
+
+	// What systemd runs next finds it and finishes the job.
+	m.mu.Lock()
+	m.destroyErr = nil
+	m.mu.Unlock()
+	if err := m.system.Revert(context.Background(), ResultUndone, "interrupted"); err != nil {
+		t.Fatal(err)
+	}
+	state = m.state()
+	if state.Pending != nil || state.Last == nil || state.Last.ID != id || state.Last.Result != ResultUndone {
+		t.Fatalf("after the second attempt: %+v, outcome %+v", state, state.Last)
+	}
+	calls := m.nftCalls()
+	if last := calls[len(calls)-1]; last != "nft destroy table inet sgc" {
+		t.Errorf("last command %q", last)
 	}
 }
 

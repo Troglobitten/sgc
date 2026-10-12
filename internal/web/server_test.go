@@ -22,6 +22,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/backup"
 	"github.com/Troglobitten/sgc/internal/fwcontrol"
 	"github.com/Troglobitten/sgc/internal/health"
+	"github.com/Troglobitten/sgc/internal/sshcontrol"
 	"github.com/Troglobitten/sgc/internal/store"
 	"github.com/Troglobitten/sgc/internal/update"
 	"github.com/Troglobitten/sgc/internal/updater"
@@ -138,10 +139,45 @@ func (f *fakeFirewall) Undo(_ context.Context, actor, remoteAddr string) error {
 	return nil
 }
 
+// fakeSSH stands in for internal/sshcontrol.
+type fakeSSH struct {
+	status sshcontrol.Status
+	calls  []string
+	err    error
+}
+
+func (f *fakeSSH) Status(context.Context) (sshcontrol.Status, error) { return f.status, nil }
+
+func (f *fakeSSH) AddKey(_ context.Context, actor, remote, label, pasted, account string) error {
+	f.calls = append(f.calls, fmt.Sprintf("add %q %q for %q by %s", label, pasted, account, actor))
+	return f.err
+}
+
+func (f *fakeSSH) RemoveKey(_ context.Context, actor, remote string, id int64) error {
+	f.calls = append(f.calls, fmt.Sprintf("remove %d by %s", id, actor))
+	return f.err
+}
+
+func (f *fakeSSH) SetKeysOnly(_ context.Context, actor, remote string, enabled bool) error {
+	f.calls = append(f.calls, fmt.Sprintf("keys-only %v by %s", enabled, actor))
+	return f.err
+}
+
+func (f *fakeSSH) Install(_ context.Context, actor, remote, account string) error {
+	f.calls = append(f.calls, fmt.Sprintf("install for %q by %s", account, actor))
+	return f.err
+}
+
+func (f *fakeSSH) Undo(_ context.Context, actor, remote string) error {
+	f.calls = append(f.calls, "undo by "+actor)
+	return f.err
+}
+
 type testEnv struct {
 	t        *testing.T
 	url      string
 	firewall *fakeFirewall
+	ssh      *fakeSSH
 	// When set, requests appear to come from this address.
 	pretendFrom string
 	client      *http.Client // keeps cookies, like a browser
@@ -175,7 +211,8 @@ func newTestEnv(t *testing.T) *testEnv {
 	updates := &fakeUpdates{status: update.Status{Current: "9.9.9", AutoCheck: true}}
 	backups := &fakeBackups{}
 	fw := &fakeFirewall{status: fwcontrol.Status{State: fwcontrol.StateOff, ConfirmSeconds: 60}}
-	e := &testEnv{t: t, auth: authService, helper: helper, updates: updates, backups: backups, firewall: fw, setupToken: token}
+	sshFake := &fakeSSH{status: sshcontrol.Status{Available: true, Accounts: []string{"alex"}, Keys: []sshcontrol.KeyStatus{}, ProofSeconds: 120}}
+	e := &testEnv{t: t, auth: authService, helper: helper, updates: updates, backups: backups, firewall: fw, ssh: sshFake, setupToken: token}
 	server := &Server{
 		Auth:       authService,
 		Audit:      audit.New(db),
@@ -185,6 +222,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		LastUpdate: func() (*updater.Status, error) { return e.lastUpdate, nil },
 		Backups:    backups,
 		Firewall:   fw,
+		SSH:        sshFake,
 		StartOver:  func() { backups.startOvers++ },
 		Version:    "9.9.9",
 		UI: fstest.MapFS{

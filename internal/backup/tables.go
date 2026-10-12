@@ -10,6 +10,7 @@ var exportedTables = []string{
 	"admin",     // the admin account
 	"audit_log", // history of who did what
 	"setting",   // settings (with a few bookkeeping keys removed below)
+	"ssh_key",   // SSH keys added in SGC's page (public keys)
 }
 
 // transientTables only make sense on the machine they were written on.
@@ -32,6 +33,7 @@ var resetStatements = map[string]string{
 var transientSettings = []string{
 	"update.last_reported_id", // which update outcome was already written to the audit log
 	"firewall.open_change",    // a firewall change whose end is not in the audit log yet
+	"ssh.open_change",         // an SSH change that waits for a login with a key
 }
 
 func cleanupStatements() []string {

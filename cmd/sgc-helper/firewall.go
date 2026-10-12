@@ -54,7 +54,23 @@ func startFirewallChange(request firewall.Request) error {
 	if err := os.Rename(temporary, path); err != nil {
 		return fmt.Errorf("hand over the request: %w", err)
 	}
-	return runSystemctl("start", firewallChangeUnit)
+	return startChangeUnit(firewallChangeUnit)
+}
+
+// startChangeUnit starts a unit that carries out a change and waits until
+// the change is in effect. If the unit refuses the change, the caller is
+// told, and the unit's record of why is in its folder under /run. systemd
+// would also keep showing the unit as "failed" from then on; that mark is
+// cleared, because a refused request is not something wrong with the device.
+// A unit that fails later, while waiting, keeps its mark: that one is worth
+// seeing ("sgc doctor" lists it).
+func startChangeUnit(unit string) error {
+	err := runSystemctl("start", unit)
+	if err != nil {
+		runSystemctl("reset-failed", unit)
+		return errors.New("the change was refused or could not be put into effect")
+	}
+	return nil
 }
 
 func confirmFirewallChange() error {

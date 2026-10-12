@@ -321,9 +321,36 @@ function describeActivity(entry: AuditEntry): string {
       return `Switching the firewall ${to} was not confirmed in time and was undone`
     case 'firewall.change_failed':
       return `Switching the firewall ${to} failed`
+    case 'ssh.key_added':
+      return `${entry.actor} added the SSH key ${keyName(entry.detail)}`
+    case 'ssh.key_removed':
+      return `${entry.actor} removed the SSH key ${keyName(entry.detail)}`
+    case 'ssh.keys_installed':
+      return `${entry.actor} installed ${entry.detail.replace(/\(s\)/, 's')} on this device`
+    case 'ssh.keys_only_on':
+      return 'SSH now accepts keys only (a login with a key was seen)'
+    case 'ssh.keys_only_off':
+      return entry.actor === 'console'
+        ? 'Password logins over SSH were allowed again at the device'
+        : `${entry.actor} allowed password logins over SSH again`
+    case 'ssh.change_started':
+      return `${entry.actor}: ${entry.detail}, waiting for a login with a key`
+    case 'ssh.change_undone':
+      return entry.actor === 'system'
+        ? 'A change to SSH was undone: the wait for a login with a key was interrupted'
+        : `${entry.actor} undid a change to SSH (${entry.detail})`
+    case 'ssh.change_expired':
+      return 'A change to SSH was undone: no login with a key was seen in time'
+    case 'ssh.change_failed':
+      return 'A change to SSH failed'
     default:
       return entry.action
   }
+}
+
+// "laptop (ED25519 SHA256:...) for the account alex" -> "laptop"
+function keyName(detail: string): string {
+  return detail.replace(/^removing /, '').replace(/ \((ED25519|ECDSA|RSA)[^)]*\).*$/, '')
 }
 
 function bootMediumLabel(medium: Health['bootMedium']): string {

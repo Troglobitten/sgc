@@ -61,7 +61,7 @@ func firewallCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		if os.Geteuid() != 0 {
 			return fail("this command needs root. Run: sudo sgc firewall off")
 		}
-		if err := turnFirewallOff(ctx); err != nil {
+		if err := runHelperProgram(ctx, "firewall", "off"); err != nil {
 			return fail("the firewall could not be switched off: %v", err)
 		}
 		// The database belongs to the service user; root does not touch it.
@@ -112,21 +112,6 @@ func firewallStatus(stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "The firewall is off.")
 	}
 	return exitOK
-}
-
-// turnFirewallOff runs the root helper program's "firewall off", which
-// carries the knowledge of how. It sits next to this program.
-func turnFirewallOff(ctx context.Context) error {
-	self, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	cmd := exec.CommandContext(ctx, filepath.Join(filepath.Dir(self), "sgc-helper"), "firewall", "off")
-	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin"}
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
-	}
-	return nil
 }
 
 // firewallWorker is the part of `sgc firewall` that runs as the service user.

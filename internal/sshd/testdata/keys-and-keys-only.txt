@@ -1,0 +1,15 @@
+--- settings file ---
+# Written by SGC. Do not edit: SGC replaces this file.
+# Removing it puts the SSH server back to this machine's own settings.
+
+# Keys added in SGC's page are kept in a file of SGC's own, in addition to
+# the ones each account keeps in its home folder. %u is the account's name.
+AuthorizedKeysFile .ssh/authorized_keys .ssh/authorized_keys2 /etc/sgc/ssh/keys/%u
+
+# Keys only: no passwords, and nobody logs in as root.
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+--- keys file ---
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID25i1+d/VGOmeRQ2ZPpnryBGMe/B28pdc623ONJVCV1

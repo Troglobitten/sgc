@@ -3,6 +3,7 @@ package backup
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,30 +12,40 @@ import (
 	"github.com/Troglobitten/sgc/internal/store"
 )
 
-// testdata/export-schema2.age is an export written by SGC 0.6.0, when the
-// database layout was at version 2. It is kept forever: every later SGC must
-// still be able to restore it, which is the promise "a newer SGC can import
-// an older export". When the layout changes, this test proves the old file
-// is brought up to date; add a new fixture alongside it, never replace it.
+// The files in testdata are exports written by earlier versions of SGC, one
+// for each layout the database has had:
 //
-// Regenerating (only ever needed if the fixture is lost):
+//	export-schema2.age   SGC 0.6.0: admin, history, settings
+//	export-schema3.age   SGC 0.8.0: adds SSH keys, and the settings for the
+//	                     firewall and for "keys only"
 //
-//	SGC_WRITE_FIXTURE=1 go test ./internal/backup -run WriteFixture
+// They are kept forever: every later SGC must still be able to restore them,
+// which is the promise "a newer SGC can import an older export". When the
+// layout changes, the tests below prove the old files are brought up to
+// date; add a new file alongside them, never replace one.
+//
+// Writing the file for the current layout (once, when the layout changes;
+// it refuses to overwrite):
+//
+//	SGC_WRITE_FIXTURE=<version> go test ./internal/backup -run WriteFixture
 const (
 	fixtureFile       = "testdata/export-schema2.age"
+	fixtureSchema3    = "testdata/export-schema3.age"
 	fixturePassphrase = "fixture passphrase, not a secret"
 )
 
 func TestWriteFixture(t *testing.T) {
-	if os.Getenv("SGC_WRITE_FIXTURE") != "1" {
+	version := os.Getenv("SGC_WRITE_FIXTURE")
+	if version == "" {
 		t.Skip("only run on purpose, to create the fixture")
 	}
+	fixtureFile := fmt.Sprintf("testdata/export-schema%d.age", store.SchemaVersion())
 	if _, err := os.Stat(fixtureFile); err == nil {
 		t.Fatalf("%s already exists; fixtures are never replaced", fixtureFile)
 	}
 	db, stateDir := newSourceDB(t)
 	var file bytes.Buffer
-	if _, err := Export(context.Background(), db, &file, fixturePassphrase, Source{SGCVersion: "0.6.0", Hostname: "old-gateway"}, filepath.Join(stateDir, "tmp")); err != nil {
+	if _, err := Export(context.Background(), db, &file, fixturePassphrase, Source{SGCVersion: version, Hostname: "old-gateway"}, filepath.Join(stateDir, "tmp")); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll("testdata", 0o755); err != nil {
@@ -86,6 +97,62 @@ func TestRestoresAnExportMadeBySGC060(t *testing.T) {
 		t.Errorf("setting = %q, %v", autoCheck, err)
 	}
 	// ...and the database has today's layout.
+	var version int
+	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil || version != store.SchemaVersion() {
+		t.Errorf("layout version = %d, want %d", version, store.SchemaVersion())
+	}
+	// What that version did not have yet is simply empty.
+	var keys int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM ssh_key").Scan(&keys); err != nil || keys != 0 {
+		t.Errorf("SSH keys = %d, %v", keys, err)
+	}
+}
+
+func TestRestoresAnExportMadeBySGC080(t *testing.T) {
+	ctx := context.Background()
+	file, err := os.ReadFile(fixtureSchema3)
+	if err != nil {
+		t.Fatalf("the fixture is missing: %v", err)
+	}
+	targetDir := t.TempDir()
+
+	manifest, err := Stage(ctx, bytes.NewReader(file), fixturePassphrase, targetDir)
+	if err != nil {
+		t.Fatalf("an export made by SGC 0.8.0 can no longer be restored: %v", err)
+	}
+	if manifest.SGCVersion != "0.8.0" || manifest.SchemaVersion != 3 || manifest.AdminUsername != "alex" || manifest.Hostname != "old-gateway" {
+		t.Errorf("manifest = %+v", manifest)
+	}
+	if err := Confirm(targetDir, manifest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyStaged(targetDir); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open(ctx, filepath.Join(targetDir, layout.DatabaseFile))
+	if err != nil {
+		t.Fatalf("open the restored database: %v", err)
+	}
+	defer db.Close()
+
+	for query, want := range map[string]string{
+		"SELECT password_hash FROM admin":                                 "the-password-hash",
+		"SELECT COUNT(*) FROM audit_log":                                  "2",
+		"SELECT value FROM setting WHERE key = 'update.auto_check'":       "0",
+		"SELECT value FROM setting WHERE key = 'firewall.enabled'":        "true",
+		"SELECT value FROM setting WHERE key = 'ssh.account'":             "alex",
+		"SELECT value FROM setting WHERE key = 'ssh.keys_only'":           "true",
+		"SELECT label || '|' || key_type || '|' || added_by FROM ssh_key": "laptop|ssh-ed25519|alex",
+		"SELECT fingerprint FROM ssh_key":                                 "SHA256:ZcQJrTJFZ1DO2xgEpCKluYro6G3ehPZvDrs/oGfuJG4",
+		// Bookkeeping of the old installation did not travel.
+		"SELECT COUNT(*) FROM setting WHERE key LIKE '%open_change'": "0",
+		"SELECT COUNT(*) FROM session":                               "0",
+	} {
+		var got string
+		if err := db.QueryRowContext(ctx, query).Scan(&got); err != nil || got != want {
+			t.Errorf("%s = %q, %v; want %q", query, got, err, want)
+		}
+	}
 	var version int
 	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil || version != store.SchemaVersion() {
 		t.Errorf("layout version = %d, want %d", version, store.SchemaVersion())

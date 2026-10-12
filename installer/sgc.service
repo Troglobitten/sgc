@@ -10,6 +10,9 @@ Wants=sgc-helper.socket
 # of every start-up even where that unit was never switched on by itself,
 # which is the case after updating from a version that did not have it.
 Wants=sgc-firewall.service
+# The same for the unit that puts the confirmed SSH settings in place before
+# the SSH server starts.
+Wants=sgc-ssh.service
 
 [Service]
 Type=simple

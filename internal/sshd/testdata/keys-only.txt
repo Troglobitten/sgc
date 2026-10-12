@@ -1,0 +1,10 @@
+--- settings file ---
+# Written by SGC. Do not edit: SGC replaces this file.
+# Removing it puts the SSH server back to this machine's own settings.
+
+# Keys only: no passwords, and nobody logs in as root.
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+--- keys file ---

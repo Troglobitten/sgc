@@ -4,6 +4,7 @@ import { RotateCw, TriangleAlert } from 'lucide-react'
 import { AppShell, type ShellProps } from '@/components/app-shell'
 import { ExportCard } from '@/components/export-card'
 import { FirewallCard } from '@/components/firewall-card'
+import { SshCard } from '@/components/ssh-card'
 import { Logo } from '@/components/logo'
 import {
   AlertDialog,
@@ -60,6 +61,7 @@ export function SystemPage({
       <Section title="Protection">
         <div className="grid gap-3 md:grid-cols-2">
           <FirewallCard onError={handleError} />
+          <SshCard onError={handleError} />
         </div>
       </Section>
 

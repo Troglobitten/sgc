@@ -17,6 +17,9 @@
 //	POST /v1/firewall/change   put firewall rules into effect, pending confirmation
 //	POST /v1/firewall/confirm  keep the pending firewall rules
 //	POST /v1/firewall/undo     go back to the confirmed firewall rules now
+//	GET  /v1/ssh/status        the SSH server's settings, accounts and recent key logins
+//	POST /v1/ssh/change        put SSH keys and settings into effect
+//	POST /v1/ssh/undo          go back to the confirmed SSH keys and settings now
 package helper
 
 import (
@@ -32,6 +35,7 @@ import (
 
 	"github.com/Troglobitten/sgc/internal/firewall"
 	"github.com/Troglobitten/sgc/internal/release"
+	"github.com/Troglobitten/sgc/internal/sshd"
 )
 
 // How long each kind of request may take. Most are answered at once; a few
@@ -40,6 +44,10 @@ const (
 	defaultTimeout = 10 * time.Second
 	// A firewall change is answered once the new rules are in effect.
 	firewallTimeout = 45 * time.Second
+	// An SSH change is answered once the SSH server has taken it up.
+	sshTimeout = 75 * time.Second
+	// The largest SSH request: a few dozen public keys.
+	maxSSHRequest = 64 * 1024
 	// Installing a package includes downloading it, on any line and any disk.
 	// (Shorter than the web server allows such a request, longer than the
 	// unit that does the work may run, so each layer reports its own limit.)
@@ -123,6 +131,27 @@ func (c *Client) FirewallUndo(ctx context.Context) error {
 	return c.call(ctx, firewallTimeout, http.MethodPost, "/v1/firewall/undo", nil, nil)
 }
 
+// SSHStatus asks what the SSH server's settings amount to, which accounts
+// can log in, and which of them logged in with a key lately.
+func (c *Client) SSHStatus(ctx context.Context) (sshd.Status, error) {
+	var status sshd.Status
+	err := c.call(ctx, firewallTimeout, http.MethodGet, "/v1/ssh/status", nil, &status)
+	return status, err
+}
+
+// SSHChange puts keys and settings for the SSH server into effect. It
+// returns once they are. A change that takes away a way of logging in then
+// waits for a login with a key and is undone without one (internal/sshd).
+func (c *Client) SSHChange(ctx context.Context, cfg sshd.Config) error {
+	return c.call(ctx, sshTimeout, http.MethodPost, "/v1/ssh/change", cfg, nil)
+}
+
+// SSHUndo goes back to the confirmed SSH keys and settings without waiting
+// for the time to run out.
+func (c *Client) SSHUndo(ctx context.Context) error {
+	return c.call(ctx, sshTimeout, http.MethodPost, "/v1/ssh/undo", nil, nil)
+}
+
 func (c *Client) call(ctx context.Context, timeout time.Duration, method, path string, in, out any) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -181,6 +210,10 @@ type Server struct {
 	FirewallChange  func(request firewall.Request) error
 	FirewallConfirm func() error
 	FirewallUndo    func() error
+	// The SSH operations; see internal/sshd.
+	SSHStatus func() (sshd.Status, error)
+	SSHChange func(cfg sshd.Config) error
+	SSHUndo   func() error
 }
 
 type peerUIDKey struct{}
@@ -291,6 +324,42 @@ func (s *Server) Handler() http.Handler {
 		allow(w, firewallTimeout)
 		if err := s.FirewallUndo(); err != nil {
 			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "could not undo the firewall change: " + err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, struct{}{})
+	})
+
+	mux.HandleFunc("GET /v1/ssh/status", func(w http.ResponseWriter, _ *http.Request) {
+		status, err := s.SSHStatus()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "could not read the SSH server's state: " + err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, status)
+	})
+	mux.HandleFunc("POST /v1/ssh/change", func(w http.ResponseWriter, r *http.Request) {
+		// Only the shape is checked here: an account name, a list of keys
+		// and one switch, nothing else. Whether the account exists and the
+		// keys are keys is checked by the unit that uses them, which is the
+		// one that has to be sure.
+		var cfg sshd.Config
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSSHRequest))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&cfg); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "the request could not be read"})
+			return
+		}
+		allow(w, sshTimeout)
+		if err := s.SSHChange(cfg); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "could not change SSH: " + err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, struct{}{})
+	})
+	mux.HandleFunc("POST /v1/ssh/undo", func(w http.ResponseWriter, _ *http.Request) {
+		allow(w, sshTimeout)
+		if err := s.SSHUndo(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "could not undo the SSH change: " + err.Error()})
 			return
 		}
 		writeJSON(w, http.StatusOK, struct{}{})

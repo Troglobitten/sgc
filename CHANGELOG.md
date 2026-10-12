@@ -2,6 +2,17 @@
 
 What changed in each version of SGC, newest first. The section for a version is what SGC shows before you update to it, so it is written for the person running SGC, not for developers.
 
+## 0.8.0
+
+- SSH keys: the System page can add SSH keys for an account on the device. You paste the public key; SGC asks for your password again, because a key is a way to log in to the device itself. The keys travel with an export.
+- "Keys only": one switch makes SSH refuse passwords and logins as root. It takes effect at once and stays only if SGC then sees a login with a key within two minutes. Otherwise passwords are accepted again by themselves, and so they are after a restart during that time.
+- The switch is only offered once SGC has seen a login with a key, so that a key is known to work before passwords are refused.
+- Under "keys only", removing a key works the same way: it comes back unless a login with another key is seen.
+- `sudo sgc ssh allow-passwords` makes SSH accept passwords again from the device itself, should a key ever stop working.
+- `sudo sgc doctor` also checks SSH now.
+- After restoring an export, the keys are listed but not installed, and "keys only" is not switched on. Both are steps for you to take on the new device.
+- Fixed: undoing a firewall change with the "Undo" button could, now and then, leave the firewall's rules in effect while SGC showed the firewall as off. If you used "Undo" in 0.7.0, check with `sudo sgc doctor`; it reports that state and how to clear it.
+
 ## 0.7.0
 
 - Firewall: the new System page can switch on a firewall for this device. With it on, SGC's page and SSH answer only to devices in your home network; anything else that arrives uninvited is ignored.

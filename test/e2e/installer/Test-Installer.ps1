@@ -10,14 +10,17 @@
     3. Installs the genuine release and checks the service, the one-time
        setup link, sign-in, the dashboard data and the root helper.
        Then the firewall: an unconfirmed change undoes itself, a confirmed
-       one stays, and from then on a public address is refused.
+       one stays, and from then on a public address is refused. And SSH: a
+       key added in the page gets in; "keys only" undoes itself unless a
+       login with a key is seen, and stays if one is.
     4. Points SGC at a local test update source and checks updating: a
        tampered update is refused, a genuine one installs, a signed but
        broken one is rolled back, an older one is never installed, and
        "sgc update" works over SSH.
     5. Makes an export, then restarts the machine through SGC and checks
        that everything comes back by itself, the firewall included. Then
-       "sgc doctor" and "sgc firewall off" over SSH.
+       "sgc doctor", "sgc firewall off" and "sgc ssh allow-passwords"
+       over SSH.
     6. Wipes the machine, installs again and restores the export: the
        account, the settings and the history must be what they were.
 
@@ -34,9 +37,11 @@ $releaseDir  = Join-Path $StateDir 'test-release'
 $carryDir    = Join-Path $StateDir 'test-carry'
 $version     = (Get-Content (Join-Path $repo 'VERSION') -Raw).Trim()
 
-# What has to survive the wipe in step 6: the export, its passphrase, and the
-# password of the account inside it. All throwaway values made by the test.
-$carried = 'sgc-test-export.age', 'sgc-test-passphrase', 'sgc-test-password'
+# What has to survive the wipe in step 6: the export, its passphrase, the
+# password of the account inside it, and the private half of the SSH key
+# that is in the export (the owner's own computer keeps that one in real
+# life). All throwaway values made by the test.
+$carried = 'sgc-test-export.age', 'sgc-test-passphrase', 'sgc-test-password', 'sgc-test-ssh-key2'
 
 Write-Host "Building a test release of $version ..."
 wsl -d $WslDistro --exec bash (ConvertTo-WslPath "$PSScriptRoot\make-test-release.sh") (ConvertTo-WslPath $releaseDir)
@@ -74,6 +79,11 @@ Invoke-Cases accepted
 # check that SSH from this PC still gets in.
 Invoke-Cases firewall
 
+# SSH keys and "keys only", likewise before the rest. A change that waits for
+# a login with a key must never be left waiting at the end of a step: the
+# next step's own SSH connection would be that login.
+Invoke-Cases ssh
+
 # Updating: a tampered update, a genuine one, a signed-but-broken one that
 # must roll back, an older one, and the command-line way.
 Invoke-Cases update-setup
@@ -105,7 +115,7 @@ Invoke-Cases after-restart
 
 # The command line: the doctor, and switching the firewall off from the
 # machine itself.
-Invoke-Cases firewall-cli
+Invoke-Cases cli
 
 # The promise of the export: wipe the machine, install again, restore.
 Write-Host ""

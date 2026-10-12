@@ -229,7 +229,15 @@ func (s *System) revertLocked(ctx context.Context, result, message string) error
 		return nil
 	}
 	// An unreadable pending file still means something is pending.
-	loadErr := s.loadConfirmed(ctx)
+	safe, loadErr := s.loadConfirmed(ctx)
+	if !safe {
+		// The unconfirmed rules may still be in effect. The record that a
+		// change is pending stays, so that whatever runs next (systemd's
+		// cleanup after this process, the separate revert unit, SGC's own
+		// last resort) tries again instead of finding nothing to do.
+		s.Log.Error("undoing the firewall change failed; it stays marked as pending", "error", loadErr)
+		return loadErr
+	}
 	removeIfExists(s.Paths.pendingFile())
 	removeIfExists(s.Paths.pendingRules())
 
@@ -249,22 +257,26 @@ func (s *System) revertLocked(ctx context.Context, result, message string) error
 // loadConfirmed makes the confirmed rules the ones in effect. If they cannot
 // be loaded it removes SGC's table altogether: no firewall is better than
 // unconfirmed rules that may be keeping the owner out.
-func (s *System) loadConfirmed(ctx context.Context) error {
+//
+// safe reports whether no unconfirmed rules are in effect any more. It can
+// be true together with an error: the confirmed rules would not load, and
+// the firewall is now off.
+func (s *System) loadConfirmed(ctx context.Context) (safe bool, err error) {
 	if !s.Exists(NftProgram) {
-		return nil // without nftables nothing of ours can be loaded
+		return true, nil // without nftables nothing of ours can be loaded
 	}
 	var loadErr error
 	if _, err := os.Stat(s.Paths.ConfirmedFile); err == nil {
 		output, err := s.Run(ctx, NftProgram, "-f", s.Paths.ConfirmedFile)
 		if err == nil {
-			return nil
+			return true, nil
 		}
 		loadErr = errors.New(lastLine(output, err))
 	}
 	if output, err := s.Run(ctx, NftProgram, "destroy", "table", "inet", tableName); err != nil {
-		return fmt.Errorf("remove the firewall table: %s", lastLine(output, err))
+		return false, fmt.Errorf("remove the firewall table: %s", lastLine(output, err))
 	}
-	return loadErr
+	return true, loadErr
 }
 
 // Off switches the firewall off for good, without a confirmation period. It
@@ -290,7 +302,7 @@ func (s *System) Off(ctx context.Context) error {
 	}
 	removeIfExists(s.Paths.pendingFile())
 	removeIfExists(s.Paths.pendingRules())
-	if err := s.loadConfirmed(ctx); err != nil {
+	if _, err := s.loadConfirmed(ctx); err != nil {
 		return err
 	}
 	s.recordOutcome(Outcome{ID: s.Now().UnixMilli(), Result: ResultConfirmed, At: s.Now().UTC()})

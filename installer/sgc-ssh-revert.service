@@ -1,0 +1,46 @@
+[Unit]
+Description=Server Gateway Control SSH: back to the confirmed settings
+Documentation=https://github.com/Troglobitten/sgc
+# Never refused for having been started often (see sgc-firewall-change.service).
+StartLimitIntervalSec=0
+
+[Service]
+# Puts the confirmed SSH keys and settings back if a change is still
+# unconfirmed, and does nothing otherwise. systemd starts it whenever the
+# unit that carries out a change has ended, and the helper starts it for
+# "undo".
+Type=oneshot
+ExecStart=/opt/sgc/current/sgc-helper ssh revert
+TimeoutStartSec=60
+
+# --- Sandboxing ---------------------------------------------------------
+# Root, because the SSH server only tells root what its settings amount to,
+# but with no capabilities at all: the files this job writes belong to root
+# anyway. It can write to SGC's own configuration folder, to SGC's one file
+# among the SSH server's settings and to its folder in /run, nowhere else,
+# and it cannot open network connections.
+ConfigurationDirectory=sgc
+RuntimeDirectory=sgc-ssh
+RuntimeDirectoryPreserve=yes
+ReadWritePaths=-/etc/ssh/sshd_config.d
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@resources
