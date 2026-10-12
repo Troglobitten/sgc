@@ -2,7 +2,7 @@
 
 A secure front door for your home network, running on a Raspberry Pi or any small Debian machine.
 
-> **Status: early development.** The installer, the admin account, a dashboard with system health, self-updating, export and restore, and the device's firewall work. VPN, DNS and the reverse proxy are not built yet.
+> **Status: early development.** The installer, the admin account, a dashboard with system health, self-updating, export and restore, the device's firewall, and SSH keys with "keys only" work. VPN, DNS and the reverse proxy are not built yet.
 
 ## What it will do
 
@@ -84,13 +84,33 @@ Should you ever need to switch it off from the device itself:
 sudo sgc firewall off
 ```
 
+### SSH keys and "keys only"
+
+The **System** page can add SSH keys for an account on the device: you paste the public key, and SGC asks for your password again, because a key is a way to log in to the device itself. SGC keeps these keys in a root-owned file of its own (`/etc/sgc/ssh/keys/<account>`) next to the ones the account keeps in its home folder, which go on working. A key is parsed and written out again, never copied as text: options in front of it, a second line or a private key are refused.
+
+**Keys only** makes the SSH server refuse passwords and logins as root. That is the one step that could lock you out, so it works on proof:
+
+1. It is only offered once SGC has seen a login with a key in the SSH server's log.
+2. It takes effect at once.
+3. It stays only if SGC then sees another login with a key within two minutes. Otherwise the previous settings come back, as they do if the device restarts in the meantime.
+
+The proof is a login that the device itself observes. Nothing the page sends can stand in for it. Removing a key while "keys only" is on works the same way: the key comes back unless a login with another key is seen.
+
+Should a key ever stop working, at the device itself:
+
+```sh
+sudo sgc ssh allow-passwords
+```
+
+Being able to add keys in the page means that whoever gets into SGC's page, with your password, can get a login on the device. That is a trade of safety for convenience, made on purpose; it is why the password is asked for again, why every key change is in the activity log, and why the page is only reachable from inside your network.
+
 ### When something is wrong
 
 ```sh
 sudo sgc doctor
 ```
 
-checks every part of SGC on the machine (the service, its page, the root helper, storage, the clock, the firewall) and says what to do about each problem it finds. It asks the machine directly, so it also works when SGC's page does not answer.
+checks every part of SGC on the machine (the service, its page, the root helper, storage, the clock, the firewall, SSH) and says what to do about each problem it finds. It asks the machine directly, so it also works when SGC's page does not answer.
 
 ### How releases are verified
 
@@ -132,11 +152,12 @@ To work on the interface, run `sgc serve --dev-insecure-http --state-dir <folder
 | `sgc-helper` | root, in a systemd sandbox, started on demand | The few operations that need root, as a fixed list; no "run a command" |
 | `sgc-helper update` | root, as a one-off systemd unit | Installs a downloaded release and rolls it back if it does not come up |
 | `sgc-helper firewall` | root with only the right to load firewall rules, as one-off systemd units | Puts firewall rules into effect, keeps them on confirmation, undoes them otherwise |
+| `sgc-helper ssh` | root without any capabilities, as one-off systemd units | Installs SSH keys and settings, keeps a restricting change only if a login with a key is seen, undoes it otherwise; puts the confirmed settings in place before the SSH server starts |
 | `sgc-helper packages` | root, as a one-off systemd unit | Installs the Debian packages SGC needs from a list fixed in the program (at present: nftables) |
 | `nft -f /etc/sgc/firewall.nft` | systemd, early at start-up | Loads the confirmed firewall rules; uses none of SGC's own programs |
 | `sgc setup-link` | from the installer or `sudo` | Prints the one-time link for creating the admin account |
 | `sgc update` | `sudo` | Looks for a newer version and installs it |
-| `sgc doctor`, `sgc firewall` | `sudo` | Checks every part; shows the firewall's state or switches it off |
+| `sgc doctor`, `sgc firewall`, `sgc ssh` | `sudo` | Checks every part; shows the firewall's or SSH's state; switches the firewall off or allows SSH passwords again |
 
 The web process never has root. It reaches the helper through a Unix socket that only it may open, and the helper additionally checks who is calling. The helper itself can do next to nothing: for real work it starts a unit that has exactly the privileges that job needs.
 
@@ -144,7 +165,9 @@ The firewall is split the same way. The web process can ask for "on" or "off" an
 
 Updating is split the same way: the unprivileged web process downloads a release, and the root updater, which never talks to the internet, verifies it again by itself before installing.
 
-Whole-machine tests run against a disposable Hyper-V virtual machine; see [`test/e2e/vm`](test/e2e/vm) and [`test/e2e/installer`](test/e2e/installer).
+SSH is split the same way again, with one difference the owner chose: the web process may pass on public keys, which is more than a yes or no. The root side checks each one itself and accepts them for ordinary accounts only, never for root.
+
+Whole-machine tests run against a disposable Hyper-V virtual machine; see [`test/e2e/vm`](test/e2e/vm) and [`test/e2e/installer`](test/e2e/installer). One of them installs the previous published release and lets it update itself to the current source, because an update is always carried out by the version that is already installed.
 
 A release is published by pushing a tag that matches the `VERSION` file (for example `v0.5.0`). Its description is that version's section of [CHANGELOG.md](CHANGELOG.md), which is also what SGC shows before an update; `make check` fails if the section is missing.
 

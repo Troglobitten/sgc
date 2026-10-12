@@ -28,6 +28,12 @@ ExecStart=/opt/sgc/current/sgc-helper firewall change
 ExecStopPost=/opt/sgc/current/sgc-helper firewall revert
 TimeoutStartSec=30
 TimeoutStopSec=30
+# On "stop", systemd signals only the main process, which then undoes the
+# change. Without this line it signals every process of the unit, and that
+# includes the small programs the main process starts to do the undoing
+# (nft; for SSH: sshd, systemctl). They were sometimes killed in the middle,
+# which left an unconfirmed change in effect. Found by the whole-machine test.
+KillMode=mixed
 # A process still here long after the confirmation time is stuck. systemd
 # ends it, and the line above undoes the change.
 RuntimeMaxSec=180

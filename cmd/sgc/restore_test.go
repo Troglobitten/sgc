@@ -36,7 +36,8 @@ func startInstance(t *testing.T) *instance {
 	// state) is pointed inside the test's own folder, so nothing on the
 	// machine running the test is read.
 	_, out, _ := startServe(t, "--state-dir", stateDir, "--update-work-dir", stateDir+"/update-work",
-		"--firewall-file", stateDir+"/firewall/firewall.nft", "--firewall-run-dir", stateDir+"/firewall/run")
+		"--firewall-file", stateDir+"/firewall/firewall.nft", "--firewall-run-dir", stateDir+"/firewall/run",
+		"--ssh-state-file", stateDir+"/ssh/state.json", "--ssh-run-dir", stateDir+"/ssh/run")
 	jar, _ := cookiejar.New(nil)
 	return &instance{
 		t: t, stateDir: stateDir, out: out,
@@ -126,6 +127,17 @@ func TestExportFromOneInstallRestoresIntoAFreshOne(t *testing.T) {
 	if err := store.SetSetting(context.Background(), oldDB, fwcontrol.SettingEnabled, "true"); err != nil {
 		t.Fatal(err)
 	}
+	// The same for SSH: a key that was added, for an account, and "keys
+	// only" confirmed. (A throwaway public key made for the tests.)
+	for _, statement := range []string{
+		`INSERT INTO ssh_key (label, key_type, key_blob, fingerprint, added_at, added_by) VALUES ('laptop', 'ssh-ed25519',
+			'AAAAC3NzaC1lZDI1NTE5AAAAID25i1+d/VGOmeRQ2ZPpnryBGMe/B28pdc623ONJVCV1', 'SHA256:ZcQJrTJFZ1DO2xgEpCKluYro6G3ehPZvDrs/oGfuJG4', 100, 'alex')`,
+		`INSERT INTO setting (key, value) VALUES ('ssh.account', 'alex'), ('ssh.keys_only', 'true')`,
+	} {
+		if _, err := oldDB.ExecContext(context.Background(), statement); err != nil {
+			t.Fatal(err)
+		}
+	}
 	oldDB.Close()
 
 	resp, exportFile := old.postJSON("/api/export", map[string]string{"password": password, "passphrase": passphrase})
@@ -202,6 +214,24 @@ func TestExportFromOneInstallRestoresIntoAFreshOne(t *testing.T) {
 	}
 	if fresh.getJSON("/api/firewall", &fw) != http.StatusOK || !fw.Wanted || fw.State != "off" {
 		t.Errorf("the firewall after the restore: %+v, want it wanted and off", fw)
+	}
+	// The SSH key is known again, with the account it was for, and that
+	// "keys only" was on. None of it is in effect here: installing the key
+	// on this device is a step for the owner, with their password.
+	var ssh struct {
+		Account      string
+		NeedsInstall bool
+		KeysOnly     bool
+		Wanted       bool
+		Keys         []struct {
+			Label, Fingerprint string
+			Installed          bool
+		}
+	}
+	if fresh.getJSON("/api/ssh", &ssh) != http.StatusOK || len(ssh.Keys) != 1 || ssh.Keys[0].Label != "laptop" ||
+		ssh.Keys[0].Fingerprint != "SHA256:ZcQJrTJFZ1DO2xgEpCKluYro6G3ehPZvDrs/oGfuJG4" || ssh.Keys[0].Installed ||
+		ssh.Account != "alex" || !ssh.NeedsInstall || ssh.KeysOnly || !ssh.Wanted {
+		t.Errorf("SSH after the restore: %+v", ssh)
 	}
 	var history []struct{ Actor, Action, Detail string }
 	fresh.getJSON("/api/audit", &history)

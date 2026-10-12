@@ -43,6 +43,22 @@ const (
 	ActionFirewallChangeExpired = "firewall.change_expired"
 	// It could not be put into effect at all.
 	ActionFirewallChangeFailed = "firewall.change_failed"
+
+	// An SSH key was added to, or taken from, the keys that may log in. The
+	// detail names the key by its label and fingerprint.
+	ActionSSHKeyAdded   = "ssh.key_added"
+	ActionSSHKeyRemoved = "ssh.key_removed"
+	// The keys known from an export were installed on this device.
+	ActionSSHKeysInstalled = "ssh.keys_installed"
+	// "Keys only" was confirmed by a login with a key, or switched off.
+	ActionSSHKeysOnlyOn  = "ssh.keys_only_on"
+	ActionSSHKeysOnlyOff = "ssh.keys_only_off"
+	// A change to SSH that takes away a way of logging in is in effect and
+	// waits for a login with a key; and the ways it can end without one.
+	ActionSSHChangeStarted = "ssh.change_started"
+	ActionSSHChangeUndone  = "ssh.change_undone"
+	ActionSSHChangeExpired = "ssh.change_expired"
+	ActionSSHChangeFailed  = "ssh.change_failed"
 )
 
 // ActorConsole is recorded for actions taken with the command-line tool.

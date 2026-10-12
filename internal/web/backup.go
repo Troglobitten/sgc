@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/Troglobitten/sgc/internal/audit"
-	"github.com/Troglobitten/sgc/internal/auth"
 	"github.com/Troglobitten/sgc/internal/backup"
 )
 
@@ -55,17 +54,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	extendDeadlines(w)
 	username := sessionFrom(r).Username
 
-	if err := s.Auth.VerifyAdminPassword(r.Context(), req.Password, remoteIP(r)); err != nil {
-		var locked *auth.TooManyAttemptsError
-		switch {
-		case errors.As(err, &locked):
-			s.authError(w, r, err)
-		case errors.Is(err, auth.ErrWrongPassword):
-			// Not 401: that would tell the interface the session has ended.
-			writeError(w, http.StatusForbidden, sentence(err))
-		default:
-			s.internalError(w, r, err)
-		}
+	if !s.passwordAgain(w, r, req.Password) {
 		return
 	}
 

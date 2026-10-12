@@ -90,6 +90,50 @@ export interface FirewallStatus {
   client: { address: string; inside: boolean }
 }
 
+/** One SSH key added in SGC's page (internal/sshcontrol). */
+export interface SshKey {
+  id: number
+  label: string
+  /** "ED25519", "RSA", ... */
+  kind: string
+  fingerprint: string
+  addedAt: string
+  /** false after a restore, until the keys are installed on this device */
+  installed: boolean
+  /** the latest login with this key in the last quarter of an hour */
+  lastLogin: string | null
+}
+
+/** SSH keys and "keys only", as SGC reports them (internal/sshcontrol). */
+export interface SshStatus {
+  /** false when the device could not be asked about its SSH server */
+  available: boolean
+  running: boolean
+  /** the account the keys are for, and the accounts there are on the device */
+  account: string
+  accounts: string[]
+  keys: SshKey[]
+  needsInstall: boolean
+  /** what the SSH server allows right now */
+  passwordLogins: boolean
+  rootLogin: 'no' | 'key' | 'yes' | ''
+  /** SGC's switch as confirmed here; wanted: as last confirmed anywhere */
+  keysOnly: boolean
+  wanted: boolean
+  loginsVisible: boolean
+  /** the latest login with a key in the last quarter of an hour */
+  recentLogin: {
+    account: string
+    /** the key's label, or '' for a key the account keeps for itself */
+    key: string
+    fingerprint: string
+    at: string
+  } | null
+  /** a change that is in effect and waits for a login with a key */
+  pending: { what: string; secondsLeft: number } | null
+  proofSeconds: number
+}
+
 /** An error with a message that is fit to show to the user as it is. */
 export class ApiError extends Error {
   /** HTTP status, or 0 when SGC could not be reached at all. */
@@ -218,6 +262,15 @@ export const api = {
     request<FirewallStatus>('POST', '/api/firewall/change', { enabled }),
   confirmFirewall,
   undoFirewall: () => request<FirewallStatus>('POST', '/api/firewall/undo', {}),
+  ssh: () => request<SshStatus>('GET', '/api/ssh'),
+  addSshKey: (password: string, label: string, key: string, account: string) =>
+    request<SshStatus>('POST', '/api/ssh/keys', { password, label, key, account }),
+  removeSshKey: (id: number) => request<SshStatus>('POST', '/api/ssh/keys/remove', { id }),
+  installSshKeys: (password: string, account: string) =>
+    request<SshStatus>('POST', '/api/ssh/keys/install', { password, account }),
+  setSshKeysOnly: (enabled: boolean) =>
+    request<SshStatus>('POST', '/api/ssh/keys-only', { enabled }),
+  undoSsh: () => request<SshStatus>('POST', '/api/ssh/undo', {}),
 }
 
 /** The message to show for any thrown value. */

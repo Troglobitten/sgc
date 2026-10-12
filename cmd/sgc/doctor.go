@@ -20,6 +20,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/firewall"
 	"github.com/Troglobitten/sgc/internal/helper"
 	"github.com/Troglobitten/sgc/internal/layout"
+	"github.com/Troglobitten/sgc/internal/sshd"
 )
 
 // doctorCommand is `sgc doctor`: look at every part of SGC on this machine
@@ -51,6 +52,7 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		checkStorage,
 		checkClock,
 		checkFirewall,
+		checkSSH,
 	})
 	if doctor.Print(stdout, results) > 0 {
 		return exitFailed
@@ -170,6 +172,63 @@ func checkClock(ctx context.Context) []doctor.Result {
 	}
 	return one(doctor.Warn("The clock is not synchronised with the internet",
 		"Certificates and updates depend on the right time. Check: timedatectl status"))
+}
+
+func checkSSH(ctx context.Context) []doctor.Result {
+	state, err := sshd.ReadState(sshd.DefaultPaths())
+	if err != nil {
+		return one(doctor.Bad("What SGC has set up for SSH cannot be read: "+err.Error(),
+			"Put it back in order: sudo sgc ssh allow-passwords, then set it up again in SGC's page"))
+	}
+	status, err := consoleSSH().Status(ctx)
+	switch {
+	case err != nil:
+		return one(doctor.Bad("The SSH server could not be asked about its settings: "+err.Error(),
+			"Its own check says more: sudo sshd -t"))
+	case !status.Installed:
+		return one(doctor.Good("This device has no SSH server"))
+	}
+
+	var results []doctor.Result
+	if !status.Running {
+		results = append(results, doctor.Warn("The SSH server is not running",
+			"Start it: sudo systemctl start ssh"))
+	}
+	settings := status.Settings
+	open := settings.PasswordLogins || settings.RootLogin != "no"
+	switch {
+	case state.Pending != nil && state.Pending.NeedsProof:
+		results = append(results, doctor.Warn("A change to SSH is in effect and waits for a login with a key",
+			"Log in over SSH with your key. Without that it is undone by itself two minutes after it was made."))
+	case state.Confirmed.KeysOnly && open:
+		results = append(results, doctor.Bad("\"Keys only\" is switched on, but the SSH server accepts passwords or root",
+			"Put SGC's settings back in place: sudo systemctl start sgc-ssh"))
+	case state.Confirmed.KeysOnly:
+		results = append(results, doctor.Good("SSH accepts keys only, and nobody logs in as root"))
+	case settings.PasswordLogins:
+		results = append(results, doctor.Warn("SSH accepts passwords",
+			"Add your key in SGC's page (System), log in with it, then switch to \"keys only\" there."))
+	default:
+		results = append(results, doctor.Good("SSH does not accept passwords (by this device's own settings)"))
+	}
+	if n := len(state.Confirmed.Keys); n > 0 {
+		// The file the SSH server reads must be the one SGC confirmed.
+		file := sshd.DefaultPaths().KeysDir + "/" + state.Confirmed.Account
+		data, err := os.ReadFile(file)
+		installed := 0
+		for _, key := range state.Confirmed.Keys {
+			if err == nil && strings.Contains(string(data), key.Line()) {
+				installed++
+			}
+		}
+		if installed != n {
+			results = append(results, doctor.Bad(fmt.Sprintf("Of the %d key(s) added in SGC's page, %d are in place for the account %s", n, installed, state.Confirmed.Account),
+				"Put them back in place: sudo systemctl start sgc-ssh"))
+		} else {
+			results = append(results, doctor.Good(fmt.Sprintf("The %d key(s) added in SGC's page are in place for the account %s", n, state.Confirmed.Account)))
+		}
+	}
+	return results
 }
 
 func checkFirewall(ctx context.Context) []doctor.Result {

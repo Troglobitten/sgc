@@ -28,6 +28,8 @@ import (
 	"github.com/Troglobitten/sgc/internal/health"
 	"github.com/Troglobitten/sgc/internal/helper"
 	"github.com/Troglobitten/sgc/internal/layout"
+	"github.com/Troglobitten/sgc/internal/sshcontrol"
+	"github.com/Troglobitten/sgc/internal/sshd"
 	"github.com/Troglobitten/sgc/internal/store"
 	"github.com/Troglobitten/sgc/internal/tlscert"
 	"github.com/Troglobitten/sgc/internal/updater"
@@ -43,7 +45,10 @@ type serveOptions struct {
 	// Where the root side keeps the firewall's state (internal/firewall).
 	firewallFile   string
 	firewallRunDir string
-	devHTTP        bool
+	// The same for SSH keys and settings (internal/sshd).
+	sshStateFile string
+	sshRunDir    string
+	devHTTP      bool
 }
 
 // serve runs the web UI and API until ctx is cancelled, which is how systemd
@@ -58,6 +63,8 @@ func serve(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags.StringVar(&opts.updateWorkDir, "update-work-dir", layout.UpdateWorkDir, "folder where the updater records its outcome")
 	flags.StringVar(&opts.firewallFile, "firewall-file", firewall.DefaultPaths().ConfirmedFile, "file in which the root side keeps the confirmed firewall rules")
 	flags.StringVar(&opts.firewallRunDir, "firewall-run-dir", firewall.DefaultPaths().RunDir, "folder in which the root side keeps a firewall change that waits for confirmation")
+	flags.StringVar(&opts.sshStateFile, "ssh-state-file", sshd.DefaultPaths().StateFile, "file in which the root side keeps the confirmed SSH keys and settings")
+	flags.StringVar(&opts.sshRunDir, "ssh-run-dir", sshd.DefaultPaths().RunDir, "folder in which the root side keeps an SSH change that waits for a key login")
 	flags.BoolVar(&opts.devHTTP, "dev-insecure-http", false, "development only: plain http, reachable from this machine only")
 	if err := flags.Parse(args); err != nil {
 		return exitUsage
@@ -150,6 +157,18 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 	// Writes down how firewall changes ended that nobody ended by hand.
 	background.Go(func() { firewallControl.Run(runCtx) })
 
+	sshControl := sshcontrol.New(sshcontrol.Config{
+		DB:     db,
+		Helper: helperClient,
+		Audit:  auditLog,
+		Paths:  sshd.Paths{StateFile: opts.sshStateFile, RunDir: opts.sshRunDir},
+		Uptime: sshd.Uptime,
+		Now:    time.Now,
+		Log:    log,
+	})
+	// Catches up with SSH changes that the root side confirmed or undid.
+	background.Go(func() { sshControl.Run(runCtx) })
+
 	ui, err := fs.Sub(webui.Dist, "dist")
 	if err != nil {
 		return fail("load web interface", err)
@@ -165,6 +184,7 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 		LastUpdate: func() (*updater.Status, error) { return updater.ReadStatus(opts.updateWorkDir) },
 		Backups:    backups{db: db, stateDir: opts.stateDir},
 		Firewall:   firewallControl,
+		SSH:        sshControl,
 		StartOver: func() {
 			select {
 			case startOver <- struct{}{}:

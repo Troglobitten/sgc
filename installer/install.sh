@@ -151,9 +151,17 @@ start_service() {
         install -m 0644 "$unit" "/etc/systemd/system/$(basename "$unit")"
     done
     systemctl daemon-reload
-    # The firewall unit loads the confirmed firewall rules at start-up. It
-    # does nothing until a firewall has been switched on in SGC.
-    systemctl enable --quiet sgc-helper.socket sgc.service sgc-firewall.service
+    # Every unit that says how it wants to be part of start-up (an [Install]
+    # section) is made part of it: SGC itself, the helper's socket, and the
+    # units that load the confirmed firewall rules and put the confirmed SSH
+    # settings in place. The last two do nothing until SGC has been told to
+    # manage those things. Units started on demand have no such section.
+    for unit in "$INSTALL_ROOT/current/"*.service "$INSTALL_ROOT/current/"*.socket; do
+        case "$(basename "$unit")" in *@.*) continue ;; esac
+        if grep -q '^\[Install\]' "$unit"; then
+            systemctl enable --quiet "$(basename "$unit")"
+        fi
+    done
 
     # On an update the old helper may still be running. Stop it, so the next
     # request starts the new one; then make sure its socket is listening.

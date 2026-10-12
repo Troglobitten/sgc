@@ -17,6 +17,9 @@
 //   - "sgc-helper firewall <job>" changes the firewall (sgc-firewall-*.service,
 //     see firewall.go).
 //
+//   - "sgc-helper ssh <job>" changes which keys the SSH server accepts and
+//     whether it accepts anything else (sgc-ssh-*.service, see ssh.go).
+//
 //   - "sgc-helper packages" installs the Debian packages SGC needs
 //     (sgc-packages.service, see packages.go).
 package main
@@ -56,6 +59,8 @@ func main() {
 		err = runUpdate(os.Args[2:])
 	case "firewall":
 		err = runFirewall(os.Args[2:])
+	case "ssh":
+		err = runSSH(os.Args[2:])
 	case "packages":
 		err = runPackages()
 	default:
@@ -90,6 +95,9 @@ func runService() error {
 			FirewallChange:  startFirewallChange,
 			FirewallConfirm: confirmFirewallChange,
 			FirewallUndo:    undoFirewallChange,
+			SSHStatus:       sshStatus,
+			SSHChange:       startSSHChange,
+			SSHUndo:         undoSSHChange,
 		}).Handler(),
 		ConnContext:       helper.ConnContext,
 		ReadHeaderTimeout: 5 * time.Second,

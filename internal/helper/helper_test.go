@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/Troglobitten/sgc/internal/firewall"
+	"github.com/Troglobitten/sgc/internal/sshd"
+	"github.com/Troglobitten/sgc/internal/sshkeys"
 )
 
 // startHelper runs a helper on a socket in a temporary folder and returns a
@@ -98,6 +100,10 @@ func TestOnlyListedOperationsExist(t *testing.T) {
 		{http.MethodGet, "/v1/firewall/confirm"},
 		{http.MethodGet, "/v1/firewall/undo"},
 		{http.MethodPost, "/v1/firewall/off"},
+		{http.MethodGet, "/v1/ssh/change"},
+		{http.MethodGet, "/v1/ssh/undo"},
+		{http.MethodPost, "/v1/ssh/status"},
+		{http.MethodPost, "/v1/ssh/keys"},
 		{http.MethodGet, "/"},
 	} {
 		if err := client.call(context.Background(), defaultTimeout, probe.method, probe.path, nil, nil); err == nil {
@@ -227,6 +233,84 @@ func TestFirewallIsRefusedForOtherUsers(t *testing.T) {
 		if err == nil {
 			t.Errorf("%s was accepted from a user who is not allowed", name)
 		}
+	}
+	if touched {
+		t.Error("an operation ran for a refused user")
+	}
+}
+
+func TestSSHOperations(t *testing.T) {
+	var changes []sshd.Config
+	undone := 0
+	client := startHelper(t, &Server{
+		AllowedUID: uint32(os.Getuid()),
+		SSHStatus: func() (sshd.Status, error) {
+			return sshd.Status{Installed: true, Running: true, Accounts: []string{"alex"}, Logins: []sshd.Login{{Account: "alex", Kind: "ED25519"}}}, nil
+		},
+		SSHChange: func(cfg sshd.Config) error { changes = append(changes, cfg); return nil },
+		SSHUndo:   func() error { undone++; return errors.New("nothing was waiting") },
+	})
+	ctx := context.Background()
+
+	status, err := client.SSHStatus(ctx)
+	if err != nil || !status.Installed || len(status.Accounts) != 1 || len(status.Logins) != 1 {
+		t.Errorf("SSHStatus = %+v, %v", status, err)
+	}
+	key := sshkeys.Key{Type: "ssh-ed25519", Blob: "AAAAC3NzaC1lZDI1NTE5AAAAID25i1+d/VGOmeRQ2ZPpnryBGMe/B28pdc623ONJVCV1"}
+	if err := client.SSHChange(ctx, sshd.Config{Account: "alex", Keys: []sshkeys.Key{key}, KeysOnly: true}); err != nil {
+		t.Errorf("SSHChange: %v", err)
+	}
+	if len(changes) != 1 || changes[0].Account != "alex" || !changes[0].KeysOnly || len(changes[0].Keys) != 1 || changes[0].Keys[0].Blob != key.Blob {
+		t.Errorf("changes = %+v", changes)
+	}
+	if err := client.SSHUndo(ctx); err == nil || !strings.Contains(err.Error(), "nothing was waiting") || undone != 1 {
+		t.Errorf("SSHUndo: err = %v, called %d times", err, undone)
+	}
+
+	// The shape of a request is fixed: an account, keys, one switch. There
+	// is no place in it for an option, a command or a file name.
+	for _, body := range []any{
+		map[string]any{"account": "alex", "keysOnly": true, "options": "command=x"},
+		map[string]any{"account": "alex", "keys": []map[string]any{{"type": "ssh-ed25519", "blob": key.Blob, "options": "command=x"}}},
+		map[string]any{"account": "alex", "keysFile": "/root/.ssh/authorized_keys"},
+		map[string]any{"account": []string{"alex"}},
+		map[string]any{"keysOnly": "yes"},
+		"keys only",
+	} {
+		if err := client.call(ctx, defaultTimeout, http.MethodPost, "/v1/ssh/change", body, nil); err == nil {
+			t.Errorf("%v was accepted", body)
+		}
+	}
+	// A request far larger than any list of keys is cut off, not read.
+	huge := map[string]any{"account": "alex", "keys": []map[string]any{{"type": "ssh-ed25519", "blob": strings.Repeat("A", 2*maxSSHRequest)}}}
+	if err := client.call(ctx, defaultTimeout, http.MethodPost, "/v1/ssh/change", huge, nil); err == nil {
+		t.Error("an oversized request was accepted")
+	}
+	if len(changes) != 1 {
+		t.Errorf("refused requests reached the SSH change: %+v", changes[1:])
+	}
+}
+
+func TestSSHIsRefusedForOtherUsers(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root is always allowed; this test needs an ordinary user")
+	}
+	touched := false
+	client := startHelper(t, &Server{
+		AllowedUID: uint32(os.Getuid()) + 1, // somebody else
+		SSHStatus:  func() (sshd.Status, error) { touched = true; return sshd.Status{}, nil },
+		SSHChange:  func(sshd.Config) error { touched = true; return nil },
+		SSHUndo:    func() error { touched = true; return nil },
+	})
+	ctx := context.Background()
+	if _, err := client.SSHStatus(ctx); err == nil {
+		t.Error("SSHStatus was answered for a user who is not allowed")
+	}
+	if err := client.SSHChange(ctx, sshd.Config{}); err == nil {
+		t.Error("SSHChange was accepted from a user who is not allowed")
+	}
+	if err := client.SSHUndo(ctx); err == nil {
+		t.Error("SSHUndo was accepted from a user who is not allowed")
 	}
 	if touched {
 		t.Error("an operation ran for a refused user")
