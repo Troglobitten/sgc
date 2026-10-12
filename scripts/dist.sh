@@ -18,6 +18,13 @@
 
 set -euo pipefail
 
+# The same result on every machine. The order in which file names sort, and
+# with it the order of the files inside the archives, depends on the
+# machine's language setting; this pins it. (Release 0.7.0 was built before
+# this line existed, on a machine that happened to use this setting;
+# verify-release.sh sets it for that reason.)
+export LC_ALL=C
+
 cd "$(dirname "$0")/.."
 
 out="${1:-dist}"

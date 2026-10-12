@@ -50,3 +50,14 @@ jobs:
 
       - name: Build the release files
         run: make dist
+
+      # A release must be the same files whoever builds it, so that anyone
+      # can rebuild one and compare (scripts/verify-release.sh). This catches
+      # one way of losing that: the result depending on the build machine's
+      # language setting, which once changed the order of the files inside
+      # the archives.
+      - name: The release files do not depend on the machine's language setting
+        run: |
+          locale -a | grep -qi '^en_US\.utf-\?8$' || sudo locale-gen en_US.UTF-8
+          LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 SGC_SKIP_WEB_BUILD=1 bash scripts/dist.sh /tmp/dist-other-language
+          diff dist/SHA256SUMS /tmp/dist-other-language/SHA256SUMS
