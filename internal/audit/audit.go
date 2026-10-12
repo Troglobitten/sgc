@@ -59,6 +59,17 @@ const (
 	ActionSSHChangeUndone  = "ssh.change_undone"
 	ActionSSHChangeExpired = "ssh.change_expired"
 	ActionSSHChangeFailed  = "ssh.change_failed"
+
+	// The owner chose how the device gets Debian's updates: by themselves,
+	// or started in SGC's page. Or the choice could not be put into effect.
+	ActionOSUpdatesAutomatic    = "os_updates.mode_automatic"
+	ActionOSUpdatesByHand       = "os_updates.mode_by_hand"
+	ActionOSUpdatesChangeFailed = "os_updates.change_failed"
+	// An installation of Debian's updates was started in SGC's page, and how
+	// it ended. The detail names what was installed.
+	ActionOSUpdatesInstallStarted = "os_updates.install_started"
+	ActionOSUpdatesInstalled      = "os_updates.installed"
+	ActionOSUpdatesInstallFailed  = "os_updates.install_failed"
 )
 
 // ActorConsole is recorded for actions taken with the command-line tool.

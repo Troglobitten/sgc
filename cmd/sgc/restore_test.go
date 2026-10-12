@@ -37,7 +37,8 @@ func startInstance(t *testing.T) *instance {
 	// machine running the test is read.
 	_, out, _ := startServe(t, "--state-dir", stateDir, "--update-work-dir", stateDir+"/update-work",
 		"--firewall-file", stateDir+"/firewall/firewall.nft", "--firewall-run-dir", stateDir+"/firewall/run",
-		"--ssh-state-file", stateDir+"/ssh/state.json", "--ssh-run-dir", stateDir+"/ssh/run")
+		"--ssh-state-file", stateDir+"/ssh/state.json", "--ssh-run-dir", stateDir+"/ssh/run",
+		"--os-updates-file", stateDir+"/apt/52sgc-updates", "--os-updates-run-dir", stateDir+"/os-updates/run")
 	jar, _ := cookiejar.New(nil)
 	return &instance{
 		t: t, stateDir: stateDir, out: out,
@@ -133,6 +134,8 @@ func TestExportFromOneInstallRestoresIntoAFreshOne(t *testing.T) {
 		`INSERT INTO ssh_key (label, key_type, key_blob, fingerprint, added_at, added_by) VALUES ('laptop', 'ssh-ed25519',
 			'AAAAC3NzaC1lZDI1NTE5AAAAID25i1+d/VGOmeRQ2ZPpnryBGMe/B28pdc623ONJVCV1', 'SHA256:ZcQJrTJFZ1DO2xgEpCKluYro6G3ehPZvDrs/oGfuJG4', 100, 'alex')`,
 		`INSERT INTO setting (key, value) VALUES ('ssh.account', 'alex'), ('ssh.keys_only', 'true')`,
+		// And updates for the device: set to install by themselves.
+		`INSERT INTO setting (key, value) VALUES ('os_updates.mode', 'automatic')`,
 	} {
 		if _, err := oldDB.ExecContext(context.Background(), statement); err != nil {
 			t.Fatal(err)
@@ -232,6 +235,12 @@ func TestExportFromOneInstallRestoresIntoAFreshOne(t *testing.T) {
 		ssh.Keys[0].Fingerprint != "SHA256:ZcQJrTJFZ1DO2xgEpCKluYro6G3ehPZvDrs/oGfuJG4" || ssh.Keys[0].Installed ||
 		ssh.Account != "alex" || !ssh.NeedsInstall || ssh.KeysOnly || !ssh.Wanted {
 		t.Errorf("SSH after the restore: %+v", ssh)
+	}
+	// How the old device got its updates is known, and this device is not
+	// set up that way unasked.
+	var osUpdates struct{ Mode, Wanted string }
+	if fresh.getJSON("/api/os-updates", &osUpdates) != http.StatusOK || osUpdates.Wanted != "automatic" || osUpdates.Mode != "" {
+		t.Errorf("updates for the device after the restore: %+v", osUpdates)
 	}
 	var history []struct{ Actor, Action, Detail string }
 	fresh.getJSON("/api/audit", &history)

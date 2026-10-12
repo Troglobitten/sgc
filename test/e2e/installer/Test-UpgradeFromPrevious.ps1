@@ -47,6 +47,8 @@ Write-Host "Resetting the test machine ..."
 & "$PSScriptRoot\..\vm\Reset-TestVM.ps1" | Out-Null
 $address = Get-TestVMAddress
 Invoke-TestVMCommand -Address $address -Command 'rm -rf /tmp/release ~/cases.sh ~/sgc-test-*'
+# Keeps Debian's own daily run from starting in the middle (see Test-Installer.ps1).
+Invoke-TestVMCommand -Address $address -Command 'sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer; sudo touch /var/lib/systemd/timers/stamp-apt-daily.timer /var/lib/systemd/timers/stamp-apt-daily-upgrade.timer'
 & scp @sshArguments -q -r $releaseDir "${VmUser}@${address}:/tmp/release"
 & scp @sshArguments -q "$PSScriptRoot\cases.sh" "${VmUser}@${address}:cases.sh"
 if ($LASTEXITCODE -ne 0) { throw 'Copying the releases to the test machine failed.' }
@@ -69,6 +71,9 @@ Invoke-Cases upgrade $previous $new
 # The current version's features, on the machine that got here by updating.
 Invoke-Cases firewall $new
 Invoke-Cases ssh $new
+# Updates for the device, the other way round from Test-Installer.ps1: set to
+# install by themselves, and Debian's own daily run then does the installing.
+Invoke-Cases os-updates-auto $new
 Invoke-Cases restart $new
 
 Write-Host ""

@@ -3,6 +3,7 @@ import {
   BadgeCheck,
   Globe,
   HardDrive,
+  PackageCheck,
   Route,
   Shield,
   ShieldCheck,
@@ -20,6 +21,7 @@ import {
   type AuditEntry,
   type FirewallStatus,
   type Health,
+  type OsUpdatesStatus,
 } from '@/lib/api'
 import { formatDuration, formatGigabytes, formatTimeAgo, percentOf } from '@/lib/format'
 
@@ -30,6 +32,7 @@ export function DashboardPage({ shell }: { shell: ShellProps }) {
   const [health, setHealth] = useState<Health | null>(null)
   const [activity, setActivity] = useState<AuditEntry[] | null>(null)
   const [firewall, setFirewall] = useState<FirewallStatus | null>(null)
+  const [osUpdates, setOsUpdates] = useState<OsUpdatesStatus | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
   // While an update runs: the number of the attempt before it (or null).
   const [updating, setUpdating] = useState<{ previousAttempt: number | null } | null>(null)
@@ -79,6 +82,10 @@ export function DashboardPage({ shell }: { shell: ShellProps }) {
       )
       api.firewall().then(
         (status) => !stopped && setFirewall(status),
+        (e) => !stopped && handleError(e),
+      )
+      api.osUpdates().then(
+        (status) => !stopped && setOsUpdates(status),
         (e) => !stopped && handleError(e),
       )
     }
@@ -152,8 +159,9 @@ export function DashboardPage({ shell }: { shell: ShellProps }) {
       </Section>
 
       <Section title="Services">
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
           <FirewallTile status={firewall} onOpen={() => onNavigate('system')} />
+          <OsUpdatesTile status={osUpdates} onOpen={() => onNavigate('system')} />
           <ServiceTile icon={<ShieldCheck />} name="VPN" />
           <ServiceTile icon={<Globe />} name="DNS" />
           <ServiceTile icon={<Route />} name="Proxy" />
@@ -255,6 +263,45 @@ function FirewallTile({
   )
 }
 
+/** Updates for the device itself, in a few words; the System page has the rest. */
+function OsUpdatesTile({
+  status,
+  onOpen,
+}: {
+  status: OsUpdatesStatus | null
+  onOpen: () => void
+}) {
+  const calm = 'text-muted-foreground'
+  const good = 'text-emerald-700 dark:text-emerald-400'
+  const attention = 'text-amber-700 dark:text-amber-400'
+  let text = '…'
+  let tone = calm
+  if (status) {
+    const waiting = status.waiting.length
+    if (status.mode === '') [text, tone] = ['Not set up', attention]
+    else if (status.running === 'install') [text, tone] = ['Installing', calm]
+    else if (status.restartNeeded) [text, tone] = ['Restart needed', attention]
+    else if (status.problem) [text, tone] = ['Needs attention', attention]
+    else if (waiting > 0 && status.mode === 'by-hand') [text, tone] = [`${waiting} waiting`, attention]
+    else if (waiting > 0) [text, tone] = [`${waiting} waiting`, calm]
+    else if (status.mode === 'automatic') [text, tone] = ['By themselves', good]
+    else [text, tone] = ['By hand', calm]
+  }
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="rounded-xl bg-card p-3 text-left ring-1 ring-foreground/10 outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
+    >
+      <span className="flex items-center gap-2 text-sm font-medium">
+        <PackageCheck className="size-4" aria-hidden="true" />
+        Updates
+      </span>
+      <span className={`mt-1 block text-xs ${tone}`}>{text}</span>
+    </button>
+  )
+}
+
 function ActivityList({ entries }: { entries: AuditEntry[] | null }) {
   if (entries === null) return <p className="text-sm text-muted-foreground">…</p>
   if (entries.length === 0) return <p className="text-sm text-muted-foreground">Nothing yet.</p>
@@ -343,6 +390,24 @@ function describeActivity(entry: AuditEntry): string {
       return 'A change to SSH was undone: no login with a key was seen in time'
     case 'ssh.change_failed':
       return 'A change to SSH failed'
+    case 'os_updates.mode_automatic':
+      return `${entry.actor} set updates for the device to install by themselves`
+    case 'os_updates.mode_by_hand':
+      return `${entry.actor} set updates for the device to be started by hand`
+    case 'os_updates.change_failed':
+      return 'Changing how the device gets its updates failed'
+    case 'os_updates.install_started':
+      return `${entry.actor} started installing updates for the device`
+    case 'os_updates.installed': {
+      // "2 updates: liblzma5, xz-utils, started by alex"
+      const what = entry.detail.replace(/, started by .*$/, '')
+      const [count, names] = what.split(': ')
+      return names
+        ? `Installed for the device: ${count} (${names})`
+        : `Updates for the device: ${what}`
+    }
+    case 'os_updates.install_failed':
+      return 'Installing updates for the device did not finish'
     default:
       return entry.action
   }

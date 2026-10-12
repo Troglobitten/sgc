@@ -50,6 +50,8 @@ func newSourceDB(t *testing.T) (*sql.DB, string) {
 		`INSERT INTO setting (key, value) VALUES ('ssh.account', 'alex')`,
 		`INSERT INTO setting (key, value) VALUES ('ssh.keys_only', 'true')`,
 		`INSERT INTO setting (key, value) VALUES ('ssh.open_change', '{"id":78,"actor":"alex","what":"switching to keys only"}')`,
+		`INSERT INTO setting (key, value) VALUES ('os_updates.mode', 'automatic')`,
+		`INSERT INTO setting (key, value) VALUES ('os_updates.open_install', '{"id":79,"actor":"alex","remote":"192.168.1.10"}')`,
 		`INSERT INTO ssh_key (label, key_type, key_blob, fingerprint, added_at, added_by) VALUES ('laptop', 'ssh-ed25519', 'AAAAC3NzaC1lZDI1NTE5AAAAID25i1+d/VGOmeRQ2ZPpnryBGMe/B28pdc623ONJVCV1', 'SHA256:ZcQJrTJFZ1DO2xgEpCKluYro6G3ehPZvDrs/oGfuJG4', 103, 'alex')`,
 		`INSERT INTO setup_token (id, token_hash, expires_at) VALUES (1, x'00', 999)`,
 		`UPDATE update_check SET latest_version = '9.9.9', notes = 'cached notes', checked_at = 500`,
@@ -123,6 +125,7 @@ func TestRoundTrip(t *testing.T) {
 		"SELECT value FROM setting WHERE key = 'firewall.enabled'",
 		"SELECT value FROM setting WHERE key = 'ssh.account'",
 		"SELECT value FROM setting WHERE key = 'ssh.keys_only'",
+		"SELECT value FROM setting WHERE key = 'os_updates.mode'",
 		"SELECT group_concat(label || '|' || key_type || '|' || key_blob || '|' || fingerprint || '|' || added_at || '|' || added_by, ';') FROM ssh_key",
 	} {
 		var want, got sql.NullString
@@ -144,6 +147,7 @@ func TestRoundTrip(t *testing.T) {
 		"SELECT COUNT(*) FROM setting WHERE key = 'update.last_reported_id'":             0,
 		"SELECT COUNT(*) FROM setting WHERE key = 'firewall.open_change'":                0,
 		"SELECT COUNT(*) FROM setting WHERE key = 'ssh.open_change'":                     0,
+		"SELECT COUNT(*) FROM setting WHERE key = 'os_updates.open_install'":             0,
 		"SELECT COUNT(*) FROM update_check":                                              1, // the row itself must exist
 		"SELECT COUNT(*) FROM update_check WHERE latest_version = '' AND checked_at = 0": 1,
 	} {

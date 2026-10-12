@@ -58,6 +58,7 @@ type Server struct {
 	Backups    Backups
 	Firewall   Firewall
 	SSH        SSH
+	OSUpdates  OSUpdates
 	// StartOver asks the process to wind down the web server and start
 	// again on the database a confirmed restore has put in place.
 	StartOver func()
@@ -102,6 +103,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/ssh/keys/install", s.requireSession(s.handleSSHInstall))
 	mux.HandleFunc("POST /api/ssh/keys-only", s.requireSession(s.handleSSHKeysOnly))
 	mux.HandleFunc("POST /api/ssh/undo", s.requireSession(s.handleSSHUndo))
+	mux.HandleFunc("GET /api/os-updates", s.requireSession(s.handleOSUpdatesStatus))
+	mux.HandleFunc("POST /api/os-updates/mode", s.requireSession(s.handleOSUpdatesMode))
+	mux.HandleFunc("POST /api/os-updates/check", s.requireSession(s.handleOSUpdatesCheck))
+	mux.HandleFunc("POST /api/os-updates/install", s.requireSession(s.handleOSUpdatesInstall))
 	mux.HandleFunc("POST /api/setup/restore/preview", s.handleRestorePreview)
 	mux.HandleFunc("POST /api/setup/restore/confirm", s.handleRestoreConfirm)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
@@ -326,6 +331,12 @@ func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 	}
 	if !req.Confirm {
 		writeError(w, http.StatusBadRequest, "restarting the device needs confirmation")
+		return
+	}
+	// A restart in the middle of an installation would cut it short. It
+	// recovers from that, but there is no reason to make it.
+	if s.OSUpdates.Installing() {
+		writeError(w, http.StatusConflict, "Updates for the device are being installed. Restart when that has finished.")
 		return
 	}
 	// Recorded before the restart: afterwards there may be nobody left to

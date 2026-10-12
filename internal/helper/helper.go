@@ -13,13 +13,16 @@
 //	GET  /v1/ping              is the helper there, and which version?
 //	POST /v1/restart-device    restart the machine cleanly
 //	POST /v1/start-update      install an already downloaded SGC version
-//	POST /v1/install-packages  install the Debian packages SGC needs (a fixed list)
+//	POST /v1/install-packages  install the Debian packages one of SGC's features needs (fixed lists)
 //	POST /v1/firewall/change   put firewall rules into effect, pending confirmation
 //	POST /v1/firewall/confirm  keep the pending firewall rules
 //	POST /v1/firewall/undo     go back to the confirmed firewall rules now
 //	GET  /v1/ssh/status        the SSH server's settings, accounts and recent key logins
 //	POST /v1/ssh/change        put SSH keys and settings into effect
 //	POST /v1/ssh/undo          go back to the confirmed SSH keys and settings now
+//	GET  /v1/os-updates/settings  whether the device installs Debian's updates by itself
+//	POST /v1/os-updates/mode      make it do so, or leave that to the owner's button
+//	POST /v1/os-updates/start     look for Debian's updates, or install them
 package helper
 
 import (
@@ -34,6 +37,7 @@ import (
 	"time"
 
 	"github.com/Troglobitten/sgc/internal/firewall"
+	"github.com/Troglobitten/sgc/internal/osupdate"
 	"github.com/Troglobitten/sgc/internal/release"
 	"github.com/Troglobitten/sgc/internal/sshd"
 )
@@ -52,7 +56,30 @@ const (
 	// (Shorter than the web server allows such a request, longer than the
 	// unit that does the work may run, so each layer reports its own limit.)
 	packagesTimeout = 14 * time.Minute
+	// Changing the update settings, and starting a look or an installation
+	// (answered once it has started, not when it has finished).
+	osUpdateTimeout = 60 * time.Second
 )
+
+// The features whose Debian packages the helper can install. Which packages
+// those are is the helper's business (cmd/sgc-helper/packages.go).
+const (
+	PackagesFirewall = "firewall"
+	PackagesUpdates  = "updates"
+)
+
+type installPackagesRequest struct {
+	For string `json:"for"`
+}
+
+type startJobRequest struct {
+	Job string `json:"job"`
+}
+
+type startJobResponse struct {
+	// ID is how the job is found again in the report it writes.
+	ID int64 `json:"id"`
+}
 
 type pingResponse struct {
 	Version string `json:"version"`
@@ -106,11 +133,36 @@ func (c *Client) StartUpdate(ctx context.Context, version string) error {
 	return c.call(ctx, defaultTimeout, http.MethodPost, "/v1/start-update", startUpdateRequest{Version: version}, nil)
 }
 
-// InstallPackages installs the Debian packages SGC needs and that a clean
-// machine does not have. Which ones is the helper's business; the caller
-// cannot name any. It returns when they are installed.
-func (c *Client) InstallPackages(ctx context.Context) error {
-	return c.call(ctx, packagesTimeout, http.MethodPost, "/v1/install-packages", nil, nil)
+// InstallPackages installs the Debian packages one of SGC's features needs
+// and a clean machine does not have. The caller names the feature
+// (PackagesFirewall, PackagesUpdates), never a package. It returns when they
+// are installed.
+func (c *Client) InstallPackages(ctx context.Context, feature string) error {
+	return c.call(ctx, packagesTimeout, http.MethodPost, "/v1/install-packages", installPackagesRequest{For: feature}, nil)
+}
+
+// OSUpdateSettings asks what the device's settings for Debian's updates
+// amount to and whether Debian's daily machinery is running.
+func (c *Client) OSUpdateSettings(ctx context.Context) (osupdate.Settings, error) {
+	var settings osupdate.Settings
+	err := c.call(ctx, firewallTimeout, http.MethodGet, "/v1/os-updates/settings", nil, &settings)
+	return settings, err
+}
+
+// OSUpdateSetMode makes Debian's updates install by themselves, or only when
+// the owner starts them. It returns when the settings are in place.
+func (c *Client) OSUpdateSetMode(ctx context.Context, request osupdate.ModeRequest) error {
+	return c.call(ctx, osUpdateTimeout, http.MethodPost, "/v1/os-updates/mode", request, nil)
+}
+
+// OSUpdateStart starts a look for Debian's updates (osupdate.JobCheck) or
+// their installation (osupdate.JobInstall). It returns once the job is
+// running; the job then keeps a report (osupdate.ReadReport) in which it is
+// found by the returned ID.
+func (c *Client) OSUpdateStart(ctx context.Context, job string) (int64, error) {
+	var resp startJobResponse
+	err := c.call(ctx, osUpdateTimeout, http.MethodPost, "/v1/os-updates/start", startJobRequest{Job: job}, &resp)
+	return resp.ID, err
 }
 
 // FirewallChange puts the requested firewall rules into effect. It returns
@@ -204,8 +256,9 @@ type Server struct {
 	// StartUpdate starts the installation of a version. It is only ever
 	// called with a string that is a plain version number.
 	StartUpdate func(version string) error
-	// InstallPackages installs SGC's fixed list of Debian packages.
-	InstallPackages func() error
+	// InstallPackages installs the Debian packages of one feature. It is only
+	// ever called with one of the Packages constants.
+	InstallPackages func(feature string) error
 	// The firewall operations; see internal/firewall for what they mean.
 	FirewallChange  func(request firewall.Request) error
 	FirewallConfirm func() error
@@ -214,6 +267,11 @@ type Server struct {
 	SSHStatus func() (sshd.Status, error)
 	SSHChange func(cfg sshd.Config) error
 	SSHUndo   func() error
+	// Debian's updates; see internal/osupdate. OSUpdateStart is only ever
+	// called with one of the two jobs.
+	OSUpdateSettings func() (osupdate.Settings, error)
+	OSUpdateSetMode  func(request osupdate.ModeRequest) error
+	OSUpdateStart    func(job string) (int64, error)
 }
 
 type peerUIDKey struct{}
@@ -287,9 +345,18 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, http.StatusOK, struct{}{})
 	})
-	mux.HandleFunc("POST /v1/install-packages", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("POST /v1/install-packages", func(w http.ResponseWriter, r *http.Request) {
+		// The request names a feature, from a list of two. No package name
+		// can be sent.
+		var req installPackagesRequest
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&req); err != nil || (req.For != PackagesFirewall && req.For != PackagesUpdates) {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "the request could not be read"})
+			return
+		}
 		allow(w, packagesTimeout)
-		if err := s.InstallPackages(); err != nil {
+		if err := s.InstallPackages(req.For); err != nil {
 			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "could not install the packages: " + err.Error()})
 			return
 		}
@@ -363,6 +430,51 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, struct{}{})
+	})
+
+	mux.HandleFunc("GET /v1/os-updates/settings", func(w http.ResponseWriter, _ *http.Request) {
+		allow(w, firewallTimeout)
+		settings, err := s.OSUpdateSettings()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "could not read the device's update settings: " + err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, settings)
+	})
+	mux.HandleFunc("POST /v1/os-updates/mode", func(w http.ResponseWriter, r *http.Request) {
+		// One yes or no. The settings file is written from it by the unit
+		// that does the work; nothing in the request ends up in that file.
+		var req osupdate.ModeRequest
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "the request could not be read"})
+			return
+		}
+		allow(w, osUpdateTimeout)
+		if err := s.OSUpdateSetMode(req); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "could not change the update settings: " + err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, struct{}{})
+	})
+	mux.HandleFunc("POST /v1/os-updates/start", func(w http.ResponseWriter, r *http.Request) {
+		// One of two jobs. What "the updates" are is not in the request:
+		// Debian's update tool works that out from the device's settings.
+		var req startJobRequest
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&req); err != nil || (req.Job != osupdate.JobCheck && req.Job != osupdate.JobInstall) {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "the request could not be read"})
+			return
+		}
+		allow(w, osUpdateTimeout)
+		id, err := s.OSUpdateStart(req.Job)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "could not start it: " + err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, startJobResponse{ID: id})
 	})
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

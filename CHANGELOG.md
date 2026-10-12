@@ -2,6 +2,17 @@
 
 What changed in each version of SGC, newest first. The section for a version is what SGC shows before you update to it, so it is written for the person running SGC, not for developers.
 
+## 0.9.0
+
+- Updates for the device: the System page now looks after the updates of the device itself (Debian's security fixes and corrections), which are separate from SGC's own updates. You choose once how they are installed: by themselves, once a day, or by hand, when you press "Install now" on that page.
+- Either way the same updates are installed, by Debian's own update tool. On a Raspberry Pi that includes its kernel and firmware, which come from Raspberry Pi and not from Debian.
+- The page shows what is waiting. SGC looks once a day; "Look now" does it at once.
+- Nothing restarts the device by itself. When an installed update needs a restart to take effect, the System page and the dashboard say so, and you restart when it suits you. (A time window in which SGC may do that for you comes with the next version.)
+- Until you have chosen, SGC changes nothing about how the device gets its updates, and the page tells you what the device does of its own accord.
+- The Restart button refuses while updates are being installed.
+- `sudo sgc doctor` also checks the device's updates now.
+- After restoring an export, the page shows how the old device got its updates. The new device is not set up until you choose.
+
 ## 0.8.0
 
 - SSH keys: the System page can add SSH keys for an account on the device. You paste the public key; SGC asks for your password again, because a key is a way to log in to the device itself. The keys travel with an export.

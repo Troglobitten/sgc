@@ -104,13 +104,28 @@ sudo sgc ssh allow-passwords
 
 Being able to add keys in the page means that whoever gets into SGC's page, with your password, can get a login on the device. That is a trade of safety for convenience, made on purpose; it is why the password is asked for again, why every key change is in the activity log, and why the page is only reachable from inside your network.
 
+### Updates for the device
+
+SGC's own updates are one thing (see [Updating](#updating)); the device underneath it gets its updates from Debian, and on a Raspberry Pi its kernel and firmware from Raspberry Pi. The **System** page looks after those too. You choose once:
+
+- **By themselves.** Once a day, Debian's own tool for the job (`unattended-upgrades`) installs what is waiting.
+- **By hand.** Nothing installs until you press **Install now** on that page. SGC looks once a day and shows what is waiting.
+
+Either way it is the same tool installing the same updates: what Debian's own automatic updates cover (security fixes and the corrections of its point releases), plus Raspberry Pi's archive where the device uses it. That archive has no separate channel for security fixes, so without it a Pi's kernel would never be updated.
+
+What SGC adds to the device is one small file among apt's settings (`/etc/apt/apt.conf.d/52sgc-updates`), which says whether the daily run installs anything and adds the Raspberry Pi archive. Debian's own settings stay as they are. The page can ask for exactly two things, "look" and "install"; it cannot name a package or an archive.
+
+**Nothing restarts the device by itself.** Some updates, a new kernel above all, only take effect after a restart. The System page and the dashboard say when one is needed, and the restart is yours to start.
+
+Until you have chosen, SGC changes nothing here. A Debian that already installs its updates by itself keeps doing so.
+
 ### When something is wrong
 
 ```sh
 sudo sgc doctor
 ```
 
-checks every part of SGC on the machine (the service, its page, the root helper, storage, the clock, the firewall, SSH) and says what to do about each problem it finds. It asks the machine directly, so it also works when SGC's page does not answer.
+checks every part of SGC on the machine (the service, its page, the root helper, storage, the clock, the firewall, SSH, the device's updates) and says what to do about each problem it finds. It asks the machine directly, so it also works when SGC's page does not answer.
 
 ### How releases are verified
 
@@ -153,7 +168,8 @@ To work on the interface, run `sgc serve --dev-insecure-http --state-dir <folder
 | `sgc-helper update` | root, as a one-off systemd unit | Installs a downloaded release and rolls it back if it does not come up |
 | `sgc-helper firewall` | root with only the right to load firewall rules, as one-off systemd units | Puts firewall rules into effect, keeps them on confirmation, undoes them otherwise |
 | `sgc-helper ssh` | root without any capabilities, as one-off systemd units | Installs SSH keys and settings, keeps a restricting change only if a login with a key is seen, undoes it otherwise; puts the confirmed settings in place before the SSH server starts |
-| `sgc-helper packages` | root, as a one-off systemd unit | Installs the Debian packages SGC needs from a list fixed in the program (at present: nftables) |
+| `sgc-helper packages` | root, as a one-off systemd unit | Installs the Debian packages one of SGC's features needs, from lists fixed in the program (nftables for the firewall, unattended-upgrades for the device's updates) |
+| `sgc-helper os-updates` | root, as one-off systemd units | Writes SGC's one file among apt's settings; runs Debian's update tool to look for the device's updates or to install them |
 | `nft -f /etc/sgc/firewall.nft` | systemd, early at start-up | Loads the confirmed firewall rules; uses none of SGC's own programs |
 | `sgc setup-link` | from the installer or `sudo` | Prints the one-time link for creating the admin account |
 | `sgc update` | `sudo` | Looks for a newer version and installs it |
@@ -164,6 +180,8 @@ The web process never has root. It reaches the helper through a Unix socket that
 The firewall is split the same way. The web process can ask for "on" or "off" and nothing more; the rules are written by the root side, checked by nftables before they are loaded, and loaded completely or not at all.
 
 Updating is split the same way: the unprivileged web process downloads a release, and the root updater, which never talks to the internet, verifies it again by itself before installing.
+
+So are the device's own updates: the web process can ask for "look" or "install" and choose between "by themselves" and "by hand". Which updates there are is worked out by Debian's update tool from the device's settings; no request carries a package name.
 
 SSH is split the same way again, with one difference the owner chose: the web process may pass on public keys, which is more than a yes or no. The root side checks each one itself and accepts them for ordinary accounts only, never for root.
 

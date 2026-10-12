@@ -54,6 +54,12 @@ function Reset-AndPrepare {
     & "$PSScriptRoot\..\vm\Reset-TestVM.ps1" | Out-Null
     $script:address = Get-TestVMAddress
     Invoke-TestVMCommand -Address $script:address -Command 'rm -rf /tmp/release ~/cases.sh ~/sgc-test-*'
+    # Debian installs its updates by itself once a day, and after a reset it
+    # believes it has missed a day: within the hour it would start installing,
+    # at a moment of its own choosing in the middle of the test. Its two
+    # timers are stopped and marked as having just run. The test starts
+    # Debian's daily run itself where it wants to see it.
+    Invoke-TestVMCommand -Address $script:address -Command 'sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer; sudo touch /var/lib/systemd/timers/stamp-apt-daily.timer /var/lib/systemd/timers/stamp-apt-daily-upgrade.timer'
     & scp @sshArguments -q -r $releaseDir "${VmUser}@${script:address}:/tmp/release"
     & scp @sshArguments -q "$PSScriptRoot\cases.sh" "${VmUser}@${script:address}:cases.sh"
     if ($LASTEXITCODE -ne 0) { throw 'Copying the test release to the test machine failed.' }
@@ -83,6 +89,11 @@ Invoke-Cases firewall
 # a login with a key must never be left waiting at the end of a step: the
 # next step's own SSH connection would be that login.
 Invoke-Cases ssh
+
+# Updates for the device itself (Debian's packages): by hand first, which
+# installs what the machine's image has waiting, then set to install by
+# themselves, which is how the rest of the test finds it.
+Invoke-Cases os-updates
 
 # Updating: a tampered update, a genuine one, a signed-but-broken one that
 # must roll back, an older one, and the command-line way.

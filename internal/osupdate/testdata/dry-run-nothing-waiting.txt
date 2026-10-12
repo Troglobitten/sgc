@@ -1,0 +1,8 @@
+Checking if system is running on battery is skipped. Please install powermgmt-base package to check power status and skip installing updates when the system is running on battery.
+Checking if connection is metered is skipped. Please install python3-gi package to detect metered connections and skip downloading updates.
+Starting unattended upgrades script
+Allowed origins are: origin=Debian,codename=trixie,label=Debian, origin=Debian,codename=trixie,label=Debian-Security, origin=Debian,codename=trixie-security,label=Debian-Security, origin=Raspberry Pi Foundation,codename=trixie,label=Raspberry Pi Foundation
+Initial blacklist: 
+Initial whitelist (not strict): 
+No packages found that can be upgraded unattended and no pending auto-removals
+The list of kept packages can't be calculated in dry-run mode.

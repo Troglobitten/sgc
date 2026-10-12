@@ -22,6 +22,7 @@ import (
 
 	"github.com/Troglobitten/sgc/internal/audit"
 	"github.com/Troglobitten/sgc/internal/firewall"
+	"github.com/Troglobitten/sgc/internal/helper"
 	"github.com/Troglobitten/sgc/internal/store"
 )
 
@@ -64,7 +65,7 @@ func (e *ChangeError) Error() string { return e.Message }
 
 // Helper is what this package asks the root helper to do.
 type Helper interface {
-	InstallPackages(ctx context.Context) error
+	InstallPackages(ctx context.Context, feature string) error
 	FirewallChange(ctx context.Context, request firewall.Request) error
 	FirewallConfirm(ctx context.Context) error
 	FirewallUndo(ctx context.Context) error
@@ -193,7 +194,7 @@ func (s *Service) Change(ctx context.Context, actor, remoteAddr string, enabled 
 	}
 
 	if !s.cfg.Installed() {
-		if err := s.cfg.Helper.InstallPackages(ctx); err != nil {
+		if err := s.cfg.Helper.InstallPackages(ctx, helper.PackagesFirewall); err != nil {
 			s.cfg.Log.Error("install the firewall software", "error", err)
 			return &ChangeError{"The firewall software (nftables) could not be installed from Debian. " +
 				"Check that this device can reach the internet, then try again. Nothing was changed."}
