@@ -333,10 +333,13 @@ function describeActivity(entry: AuditEntry): string {
     case 'logout':
       return `${entry.actor} signed out`
     case 'device.restart':
-      return `${entry.actor} restarted the device`
+      return entry.actor === 'system'
+        ? 'SGC restarted the device in the maintenance window, to finish an update'
+        : `${entry.actor} restarted the device`
     case 'device.restart_failed':
       return 'Restarting the device failed'
     case 'update.started':
+      if (entry.actor === 'system') return `SGC started updating itself ${entry.detail}`
       return entry.actor === 'console'
         ? `An update ${entry.detail} was started over SSH`
         : `${entry.actor} started an update ${entry.detail}`

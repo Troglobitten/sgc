@@ -28,6 +28,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/health"
 	"github.com/Troglobitten/sgc/internal/helper"
 	"github.com/Troglobitten/sgc/internal/layout"
+	"github.com/Troglobitten/sgc/internal/maintenance"
 	"github.com/Troglobitten/sgc/internal/oscontrol"
 	"github.com/Troglobitten/sgc/internal/osupdate"
 	"github.com/Troglobitten/sgc/internal/sshcontrol"
@@ -191,6 +192,23 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 	// installations started in the page ended.
 	background.Go(func() { osControl.Run(runCtx) })
 
+	maintenanceWindow := maintenance.New(maintenance.Config{
+		DB:            db,
+		Updates:       updates,
+		Helper:        helperClient,
+		Audit:         auditLog,
+		RestartNeeded: func() (bool, []string) { return osupdate.RestartNeeded(osUpdatePaths) },
+		Installing:    osControl.Installing,
+		Uptime:        sshd.Uptime,
+		// systemd's time service leaves this file once it has set the clock
+		// from the network. /run starts empty, so it means: since start-up.
+		ClockSynchronised: func() bool { _, err := os.Stat("/run/systemd/timesync/synchronized"); return err == nil },
+		Now:               time.Now,
+		Log:               log,
+	})
+	// Restarts the device, and updates SGC, in the owner's maintenance window.
+	background.Go(func() { maintenanceWindow.Run(runCtx) })
+
 	ui, err := fs.Sub(webui.Dist, "dist")
 	if err != nil {
 		return fail("load web interface", err)
@@ -198,16 +216,17 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 
 	startOver := make(chan struct{}, 1)
 	server := &web.Server{
-		Auth:       authService,
-		Audit:      auditLog,
-		Health:     monitor,
-		Helper:     helperClient,
-		Updates:    updates,
-		LastUpdate: func() (*updater.Status, error) { return updater.ReadStatus(opts.updateWorkDir) },
-		Backups:    backups{db: db, stateDir: opts.stateDir},
-		Firewall:   firewallControl,
-		SSH:        sshControl,
-		OSUpdates:  osControl,
+		Auth:        authService,
+		Audit:       auditLog,
+		Health:      monitor,
+		Helper:      helperClient,
+		Updates:     updates,
+		LastUpdate:  func() (*updater.Status, error) { return updater.ReadStatus(opts.updateWorkDir) },
+		Backups:     backups{db: db, stateDir: opts.stateDir},
+		Firewall:    firewallControl,
+		SSH:         sshControl,
+		OSUpdates:   osControl,
+		Maintenance: maintenanceWindow,
 		StartOver: func() {
 			select {
 			case startOver <- struct{}{}:

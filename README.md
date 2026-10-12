@@ -119,6 +119,14 @@ What SGC adds to the device is one small file among apt's settings (`/etc/apt/ap
 
 Until you have chosen, SGC changes nothing here. A Debian that already installs its updates by itself keeps doing so.
 
+### Maintenance window
+
+Some updates only take effect after a restart. The **System** page can set a time of day, for example 04:00 to 05:00, at which SGC may restart the device by itself when that is needed. It is off until you switch it on, and the times are those of the device's own clock, which the page shows.
+
+Inside the window SGC restarts the device only if an installed update asked for it, at most once, never in the first minutes after start-up, never while updates are being installed, and only once the device's clock has been set from the network. It is SGC that does this, so if SGC is not running, nothing happens.
+
+On the dashboard, SGC's own updates can be set to install by themselves in the same window (off by default). A new version then waits until your device has known it for three days, counted from when the device first saw it, not from a date the release carries. That leaves time for a faulty release to be noticed and withdrawn. With this on, a release reaches the device without a click from you; the wait is what stands between a bad release and your gateway.
+
 ### When something is wrong
 
 ```sh

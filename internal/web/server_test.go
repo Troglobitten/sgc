@@ -22,6 +22,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/backup"
 	"github.com/Troglobitten/sgc/internal/fwcontrol"
 	"github.com/Troglobitten/sgc/internal/health"
+	"github.com/Troglobitten/sgc/internal/maintenance"
 	"github.com/Troglobitten/sgc/internal/oscontrol"
 	"github.com/Troglobitten/sgc/internal/sshcontrol"
 	"github.com/Troglobitten/sgc/internal/store"
@@ -201,12 +202,33 @@ func (f *fakeOSUpdates) Install(_ context.Context, actor, remote string) error {
 
 func (f *fakeOSUpdates) Installing() bool { return f.installing }
 
+// fakeMaintenance stands in for internal/maintenance.
+type fakeMaintenance struct {
+	status maintenance.Status
+	calls  []string
+	err    error
+}
+
+func (f *fakeMaintenance) Status(context.Context) (maintenance.Status, error) { return f.status, nil }
+
+func (f *fakeMaintenance) Set(_ context.Context, actor, remote string, enabled bool, start, end string) error {
+	f.calls = append(f.calls, fmt.Sprintf("window %v %s-%s by %s", enabled, start, end, actor))
+	return f.err
+}
+
+func (f *fakeMaintenance) SetAutoUpdate(_ context.Context, actor, remote string, enabled bool) error {
+	f.calls = append(f.calls, fmt.Sprintf("auto-update %v by %s", enabled, actor))
+	f.status.AutoUpdate = enabled
+	return f.err
+}
+
 type testEnv struct {
-	t         *testing.T
-	url       string
-	firewall  *fakeFirewall
-	ssh       *fakeSSH
-	osUpdates *fakeOSUpdates
+	t           *testing.T
+	maintenance *fakeMaintenance
+	url         string
+	firewall    *fakeFirewall
+	ssh         *fakeSSH
+	osUpdates   *fakeOSUpdates
 	// When set, requests appear to come from this address.
 	pretendFrom string
 	client      *http.Client // keeps cookies, like a browser
@@ -242,20 +264,22 @@ func newTestEnv(t *testing.T) *testEnv {
 	fw := &fakeFirewall{status: fwcontrol.Status{State: fwcontrol.StateOff, ConfirmSeconds: 60}}
 	sshFake := &fakeSSH{status: sshcontrol.Status{Available: true, Accounts: []string{"alex"}, Keys: []sshcontrol.KeyStatus{}, ProofSeconds: 120}}
 	osFake := &fakeOSUpdates{status: oscontrol.Status{Available: true, ToolInstalled: true, Waiting: []string{}, RestartPackages: []string{}}}
-	e := &testEnv{t: t, auth: authService, helper: helper, updates: updates, backups: backups, firewall: fw, ssh: sshFake, osUpdates: osFake, setupToken: token}
+	maintenanceFake := &fakeMaintenance{status: maintenance.Status{Start: "04:00", End: "05:00", UpdateWaitDays: 3}}
+	e := &testEnv{t: t, auth: authService, helper: helper, updates: updates, backups: backups, firewall: fw, ssh: sshFake, osUpdates: osFake, maintenance: maintenanceFake, setupToken: token}
 	server := &Server{
-		Auth:       authService,
-		Audit:      audit.New(db),
-		Health:     health.NewMonitor(),
-		Helper:     helper,
-		Updates:    updates,
-		LastUpdate: func() (*updater.Status, error) { return e.lastUpdate, nil },
-		Backups:    backups,
-		Firewall:   fw,
-		SSH:        sshFake,
-		OSUpdates:  osFake,
-		StartOver:  func() { backups.startOvers++ },
-		Version:    "9.9.9",
+		Auth:        authService,
+		Audit:       audit.New(db),
+		Health:      health.NewMonitor(),
+		Helper:      helper,
+		Updates:     updates,
+		LastUpdate:  func() (*updater.Status, error) { return e.lastUpdate, nil },
+		Backups:     backups,
+		Firewall:    fw,
+		SSH:         sshFake,
+		OSUpdates:   osFake,
+		Maintenance: maintenanceFake,
+		StartOver:   func() { backups.startOvers++ },
+		Version:     "9.9.9",
 		UI: fstest.MapFS{
 			"index.html":    {Data: []byte("<!doctype html><title>SGC</title>")},
 			"assets/app.js": {Data: []byte("console.log('sgc')")},

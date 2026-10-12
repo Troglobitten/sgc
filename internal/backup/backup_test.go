@@ -51,6 +51,8 @@ func newSourceDB(t *testing.T) (*sql.DB, string) {
 		`INSERT INTO setting (key, value) VALUES ('ssh.keys_only', 'true')`,
 		`INSERT INTO setting (key, value) VALUES ('ssh.open_change', '{"id":78,"actor":"alex","what":"switching to keys only"}')`,
 		`INSERT INTO setting (key, value) VALUES ('os_updates.mode', 'automatic')`,
+		`INSERT INTO setting (key, value) VALUES ('maintenance.enabled', 'true'), ('maintenance.start', '03:00'), ('maintenance.end', '04:30'), ('update.auto_install', 'true')`,
+		`INSERT INTO setting (key, value) VALUES ('maintenance.last_restart', '1791000000'), ('maintenance.last_update_try', '1791000000'), ('update.first_seen', '{"version":"9.9.9","at":1791000000}')`,
 		`INSERT INTO setting (key, value) VALUES ('os_updates.open_install', '{"id":79,"actor":"alex","remote":"192.168.1.10"}')`,
 		`INSERT INTO ssh_key (label, key_type, key_blob, fingerprint, added_at, added_by) VALUES ('laptop', 'ssh-ed25519', 'AAAAC3NzaC1lZDI1NTE5AAAAID25i1+d/VGOmeRQ2ZPpnryBGMe/B28pdc623ONJVCV1', 'SHA256:ZcQJrTJFZ1DO2xgEpCKluYro6G3ehPZvDrs/oGfuJG4', 103, 'alex')`,
 		`INSERT INTO setup_token (id, token_hash, expires_at) VALUES (1, x'00', 999)`,
@@ -126,6 +128,7 @@ func TestRoundTrip(t *testing.T) {
 		"SELECT value FROM setting WHERE key = 'ssh.account'",
 		"SELECT value FROM setting WHERE key = 'ssh.keys_only'",
 		"SELECT value FROM setting WHERE key = 'os_updates.mode'",
+		"SELECT group_concat(key || '=' || value, ';') FROM (SELECT key, value FROM setting WHERE key IN ('maintenance.enabled', 'maintenance.start', 'maintenance.end', 'update.auto_install') ORDER BY key)",
 		"SELECT group_concat(label || '|' || key_type || '|' || key_blob || '|' || fingerprint || '|' || added_at || '|' || added_by, ';') FROM ssh_key",
 	} {
 		var want, got sql.NullString
@@ -142,14 +145,15 @@ func TestRoundTrip(t *testing.T) {
 
 	// Everything that belongs to one running installation is gone.
 	for query, want := range map[string]int{
-		"SELECT COUNT(*) FROM session":                                                   0,
-		"SELECT COUNT(*) FROM setup_token":                                               0,
-		"SELECT COUNT(*) FROM setting WHERE key = 'update.last_reported_id'":             0,
-		"SELECT COUNT(*) FROM setting WHERE key = 'firewall.open_change'":                0,
-		"SELECT COUNT(*) FROM setting WHERE key = 'ssh.open_change'":                     0,
-		"SELECT COUNT(*) FROM setting WHERE key = 'os_updates.open_install'":             0,
-		"SELECT COUNT(*) FROM update_check":                                              1, // the row itself must exist
-		"SELECT COUNT(*) FROM update_check WHERE latest_version = '' AND checked_at = 0": 1,
+		"SELECT COUNT(*) FROM session":                                                                                               0,
+		"SELECT COUNT(*) FROM setup_token":                                                                                           0,
+		"SELECT COUNT(*) FROM setting WHERE key = 'update.last_reported_id'":                                                         0,
+		"SELECT COUNT(*) FROM setting WHERE key = 'firewall.open_change'":                                                            0,
+		"SELECT COUNT(*) FROM setting WHERE key = 'ssh.open_change'":                                                                 0,
+		"SELECT COUNT(*) FROM setting WHERE key = 'os_updates.open_install'":                                                         0,
+		"SELECT COUNT(*) FROM setting WHERE key IN ('maintenance.last_restart', 'maintenance.last_update_try', 'update.first_seen')": 0,
+		"SELECT COUNT(*) FROM update_check":                                                                                          1, // the row itself must exist
+		"SELECT COUNT(*) FROM update_check WHERE latest_version = '' AND checked_at = 0":                                             1,
 	} {
 		var got int
 		if err := restored.QueryRowContext(ctx, query).Scan(&got); err != nil {

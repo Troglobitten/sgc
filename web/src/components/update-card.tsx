@@ -15,11 +15,31 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
-import { api, errorMessage, type UpdateOutcome, type UpdateStatus } from '@/lib/api'
+import {
+  api,
+  errorMessage,
+  type MaintenanceStatus,
+  type UpdateOutcome,
+  type UpdateStatus,
+} from '@/lib/api'
 import { formatTimeAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 const refreshInterval = 60_000
+
+/** What "install by itself" means right now, in one line. */
+function autoUpdateHint(m: MaintenanceStatus): string {
+  if (m.autoUpdate && !m.enabled) {
+    return 'The maintenance window is switched off (System page), so nothing installs by itself yet.'
+  }
+  if (m.autoUpdate && m.updateVersion && m.updateInstallableFrom) {
+    const from = new Date(m.updateInstallableFrom)
+    return from.getTime() <= Date.now()
+      ? `SGC ${m.updateVersion} installs in the next window, from ${m.start}.`
+      : `SGC ${m.updateVersion} installs in the first window after ${from.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}.`
+  }
+  return `A new version installs once this device has known it for ${m.updateWaitDays} days. The button installs it sooner.`
+}
 const dismissedKey = 'sgc-dismissed-update'
 
 /**
@@ -39,14 +59,22 @@ export function UpdateCard({
   const [checking, setChecking] = useState(false)
   const [dialogOpen, setDialogOpen] = useState(false)
   const switchId = useId()
+  // The maintenance window, for the "install by itself" switch.
+  const [maintenance, setMaintenance] = useState<MaintenanceStatus | null>(null)
+  const autoId = useId()
 
   useEffect(() => {
     let stopped = false
-    const load = () =>
+    const load = () => {
       api.update().then(
         (s) => !stopped && setStatus(s),
         (e) => !stopped && onError(e),
       )
+      api.maintenance().then(
+        (m) => !stopped && setMaintenance(m),
+        (e) => !stopped && onError(e),
+      )
+    }
     load()
     const timer = setInterval(load, refreshInterval)
     return () => {
@@ -69,6 +97,18 @@ export function UpdateCard({
   async function setAutoCheck(enabled: boolean) {
     try {
       setStatus(await api.setAutoCheck(enabled))
+      // Switching the daily check off takes "install by itself" with it.
+      setMaintenance(await api.maintenance())
+    } catch (e) {
+      onError(e)
+    }
+  }
+
+  async function setAutoUpdate(enabled: boolean) {
+    try {
+      setMaintenance(await api.setAutoUpdate(enabled))
+      // Switching it on switches the daily check on as well.
+      setStatus(await api.update())
     } catch (e) {
       onError(e)
     }
@@ -111,6 +151,22 @@ export function UpdateCard({
                   {status.checkError}.
                 </span>
               </p>
+            )}
+
+            {maintenance && (
+              <div className="flex flex-col gap-1 border-t pt-3">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id={autoId}
+                    checked={maintenance.autoUpdate}
+                    onCheckedChange={setAutoUpdate}
+                  />
+                  <Label htmlFor={autoId} className="font-normal">
+                    Install by itself in the maintenance window
+                  </Label>
+                </div>
+                <p className="text-xs text-muted-foreground">{autoUpdateHint(maintenance)}</p>
+              </div>
             )}
 
             <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t pt-3">

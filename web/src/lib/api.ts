@@ -134,6 +134,29 @@ export interface OsUpdatesStatus {
   restartPackages: string[]
 }
 
+/** The maintenance window, as SGC reports it (internal/maintenance). */
+export interface MaintenanceStatus {
+  enabled: boolean
+  /** "04:00", by the device's own clock */
+  start: string
+  end: string
+  /** what the device's clock says now, and its time zone */
+  deviceTime: string
+  timeZone: string
+  inWindow: boolean
+  /** false: nothing happens in the window until the clock has been set */
+  clockSynchronised: boolean
+  restartNeeded: boolean
+  /** when SGC last restarted the device by itself */
+  lastRestart: string | null
+  /** SGC's own updates install in the window */
+  autoUpdate: boolean
+  updateWaitDays: number
+  /** a newer SGC this device knows of, and from when it may install by itself */
+  updateVersion: string
+  updateInstallableFrom: string | null
+}
+
 /** One SSH key added in SGC's page (internal/sshcontrol). */
 export interface SshKey {
   id: number
@@ -315,6 +338,11 @@ export const api = {
   setSshKeysOnly: (enabled: boolean) =>
     request<SshStatus>('POST', '/api/ssh/keys-only', { enabled }),
   undoSsh: () => request<SshStatus>('POST', '/api/ssh/undo', {}),
+  maintenance: () => request<MaintenanceStatus>('GET', '/api/maintenance'),
+  setMaintenance: (enabled: boolean, start: string, end: string) =>
+    request<MaintenanceStatus>('POST', '/api/maintenance', { enabled, start, end }),
+  setAutoUpdate: (enabled: boolean) =>
+    request<MaintenanceStatus>('POST', '/api/maintenance/auto-update', { enabled }),
   osUpdates: () => request<OsUpdatesStatus>('GET', '/api/os-updates'),
   setOsUpdatesMode: (automatic: boolean) =>
     request<OsUpdatesStatus>('POST', '/api/os-updates/mode', { automatic }),

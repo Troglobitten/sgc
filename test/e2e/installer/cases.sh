@@ -26,7 +26,11 @@
 #   update-cli     "sgc update" over SSH
 #   export         makes an export through the API (kept in the home folder)
 #   restart        asks SGC to restart the machine (the machine goes down)
+#   maintenance    the maintenance window: with a restart needed, nothing
+#                  happens outside it, and inside it SGC restarts the machine
+#                  by itself (the machine goes down)
 #   after-restart  SGC came back by itself and remembers everything
+#   after-window-restart  it was the window that restarted the machine
 #   cli            "sgc doctor", "sgc firewall off" and "sgc ssh
 #                  allow-passwords" over SSH
 #   restore        on a freshly wiped machine: installs, then restores the
@@ -284,6 +288,10 @@ helper_status() { # helper_status <path> <json>
 # SGC's one file among apt's settings, and nothing else of SGC's beside it.
 # shellcheck disable=SC2317  # called indirectly through check()
 one_file_of_sgc() { [ "$(find /etc/apt/apt.conf.d -maxdepth 1 -name '*sgc*' | wc -l)" = 1 ]; }
+# A full hour some hours from now, by the machine's own clock: "14:00".
+hour() { date -d "$1" +%H:00; }
+# shellcheck disable=SC2317  # called indirectly through check()
+window_is() { grep -q "\"enabled\":$1" /tmp/sgc-test-body && grep -q "\"inWindow\":$2" /tmp/sgc-test-body; }
 # A settings file that apt reads after SGC's and that says otherwise.
 overruling_file=/etc/apt/apt.conf.d/99zz-sgc-test
 
@@ -990,6 +998,13 @@ update-cli)
     ;;
 
 export)
+    echo "A setting for the export to carry: the maintenance window"
+    expect_status "the window's state is available" 200 GET /api/maintenance
+    check "it is off until switched on" body_has '"enabled":false'
+    # Hours from now, so that nothing happens in it during this test or on
+    # the machine the export is restored to.
+    expect_status "switched on, for some hours from now" 200 POST /api/maintenance \
+        "{\"enabled\":true,\"start\":\"$(hour '+5 hours')\",\"end\":\"$(hour '+6 hours')\"}"
     echo "Exporting everything into one encrypted file"
     password="$(cat "$password_file")"
     head -c 18 /dev/urandom | base64 >"$passphrase_file"
@@ -1061,6 +1076,11 @@ restore)
     check "but on this new machine nothing was switched on unasked" body_has '"state":"off"'
     check "no rules are loaded" no_rules_loaded
 
+    echo "The maintenance window came back as it was set"
+    expect_status "the window's state is available" 200 GET /api/maintenance
+    check "it is on and hours away, as on the old machine" window_is true false
+    check "what belongs to the old machine alone did not travel" body_has '"lastRestart":null'
+
     echo "How the old machine got its updates is known, and this one is not set up unasked"
     expect_status "the state of the device's updates is available" 200 GET /api/os-updates
     check "on the old machine they installed by themselves" body_has '"wanted":"automatic"'
@@ -1101,6 +1121,53 @@ restart)
     echo "Restarting the machine through SGC"
     expect_status "a restart without confirmation is refused" 400 POST /api/device/restart '{"confirm":false}'
     expect_status "a confirmed restart is accepted" 202 POST /api/device/restart '{"confirm":true}'
+    ;;
+
+maintenance)
+    echo "The maintenance window"
+    boot_id="$(cat /proc/sys/kernel/random/boot_id)"
+    expect_status "the state is available" 200 GET /api/maintenance
+    check "it is on and hours away, as it was set before the export" window_is true false
+    if grep -q '"clockSynchronised":true' /tmp/sgc-test-body; then pass "the machine's clock has been set from the network"; else
+        fail "the machine's clock has not been set from the network, so nothing will happen in the window"
+    fi
+    expect_status "a time that is none is refused" 400 POST /api/maintenance '{"enabled":true,"start":"25:00","end":"05:00"}'
+    expect_status "and so is a window without a length" 400 POST /api/maintenance '{"enabled":true,"start":"04:00","end":"04:00"}'
+    expect_status "and a request that leaves something out" 400 POST /api/maintenance '{"enabled":true}'
+
+    echo "A restart is needed, and it is not the window's time"
+    # What a kernel package's script does.
+    sudo touch /run/reboot-required
+    echo "linux-image-0.0.0-test-amd64" | sudo tee /run/reboot-required.pkgs >/dev/null
+    expect_status "a window some hours from now" 200 POST /api/maintenance \
+        "{\"enabled\":true,\"start\":\"$(hour '+2 hours')\",\"end\":\"$(hour '+3 hours')\"}"
+    check "the page knows that it is not now" body_has '"inWindow":false'
+    check "and that a restart is waiting" body_has '"restartNeeded":true'
+    # SGC looks at the window twice a minute.
+    sleep 75
+    if [ "$(cat /proc/sys/kernel/random/boot_id)" = "$boot_id" ]; then pass "outside the window the machine is left alone"; else fail "the machine restarted outside the window"; fi
+    expect_in_audit "the setting is in the history" 'maintenance window: every day from'
+
+    echo "The window opens"
+    expect_status "a window around now" 200 POST /api/maintenance \
+        "{\"enabled\":true,\"start\":\"$(hour '-1 hour')\",\"end\":\"$(hour '+2 hours')\"}"
+    check "the page knows that it is now" body_has '"inWindow":true'
+    # From here SGC restarts the machine by itself, within half a minute. This
+    # script cannot watch that; Test-Installer.ps1 waits for the machine to go
+    # down, and "after-window-restart" looks at what SGC wrote down.
+    ;;
+
+after-window-restart)
+    echo "It was SGC that restarted the machine, in the window"
+    expect_status "the activity log is available" 200 GET /api/audit
+    check "the history says so, and for what" body_has '"actor":"system","action":"device.restart","detail":"in the maintenance window, needed by linux-image-0.0.0-test-amd64"'
+    expect_status "the window's state is available" 200 GET /api/maintenance
+    check "SGC remembers that it restarted the machine" sh -c "! grep -q '\"lastRestart\":null' /tmp/sgc-test-body"
+    check "no restart is needed any more" body_has '"restartNeeded":false'
+    check "the window is still on" body_has '"enabled":true'
+    sleep 45
+    uptime_seconds="$(cut -d. -f1 /proc/uptime)"
+    if [ "$uptime_seconds" -gt 45 ]; then pass "and it restarted once, not again (up for $uptime_seconds s)"; else fail "the machine restarted again (up for $uptime_seconds s)"; fi
     ;;
 
 after-restart)

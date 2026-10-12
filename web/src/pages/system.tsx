@@ -4,6 +4,7 @@ import { RotateCw, TriangleAlert } from 'lucide-react'
 import { AppShell, type ShellProps } from '@/components/app-shell'
 import { ExportCard } from '@/components/export-card'
 import { FirewallCard } from '@/components/firewall-card'
+import { MaintenanceCard } from '@/components/maintenance-card'
 import { OsUpdatesCard } from '@/components/os-updates-card'
 import { SshCard } from '@/components/ssh-card'
 import { Logo } from '@/components/logo'
@@ -69,6 +70,7 @@ export function SystemPage({
       <Section title="This device">
         <div className="grid gap-3 md:grid-cols-2">
           <OsUpdatesCard onError={handleError} />
+          <MaintenanceCard onError={handleError} />
           <ExportCard minPassphraseLength={minPassphraseLength} />
           <Card>
             <CardContent className="flex flex-col gap-3">
