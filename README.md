@@ -103,6 +103,14 @@ sha256sum --check --ignore-missing SHA256SUMS
 
 The signing key is held by this repository's release workflow on GitHub. A signature therefore shows that a file was published through that workflow; it is not independent of GitHub.
 
+What is independent of GitHub is the build: a release is built so that the same source gives the same files, byte for byte, on any machine.
+
+```sh
+bash scripts/verify-release.sh 0.7.0
+```
+
+checks the published signature of that version, builds its tag in a clean temporary copy and compares the result with the published files.
+
 ## Development
 
 SGC is built on Linux. The backend is Go (compiler version pinned in `go.mod`); the browser interface in `web/` is React, TypeScript and Tailwind CSS, built with Node.js (version pinned in `.node-version`, packages pinned in `web/package-lock.json`) and embedded into the `sgc` binary.
