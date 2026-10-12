@@ -56,9 +56,14 @@ func newMachine(t *testing.T) *machine {
 	return m
 }
 
-func (m *machine) run(_ context.Context, program string, args ...string) ([]byte, error) {
+func (m *machine) run(ctx context.Context, program string, args ...string) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Like a real program started with a cancelled context: it never runs.
+	if ctx.Err() != nil {
+		m.calls = append(m.calls, filepath.Base(program)+" (not run: cancelled)")
+		return nil, ctx.Err()
+	}
 	// File names differ per test; record what kind of file it was.
 	shown := make([]string, len(args))
 	for i, arg := range args {
@@ -350,6 +355,52 @@ func TestAChangeLeftBehindIsUndoneFirst(t *testing.T) {
 	}
 	if len(m.nftCalls()) != before || m.state().Last.Message != "interrupted" {
 		t.Error("reverting with nothing pending did something")
+	}
+}
+
+// The order to stop arrives while the new rules are being loaded. Whether
+// they made it in is then unknown, so the confirmed state must be put back,
+// and the cancellation must not stop that from happening.
+func TestUndoingIsNotCutShortByBeingToldToStop(t *testing.T) {
+	m := newMachine(t)
+	m.request(`{"enabled":true}`)
+	ctx, cancel := context.WithCancel(context.Background())
+	inner := m.system.Run
+	m.system.Run = func(ctx context.Context, program string, args ...string) ([]byte, error) {
+		if len(args) == 2 && args[0] == "-f" && args[1] == m.system.Paths.pendingRules() {
+			// The rules are loaded, and in that instant the order to stop arrives.
+			output, _ := inner(ctx, program, args...)
+			cancel()
+			return output, context.Canceled
+		}
+		return inner(ctx, program, args...)
+	}
+
+	if err := m.system.Change(ctx, func() { t.Error("reported ready") }); err == nil {
+		t.Fatal("no error")
+	}
+	expectCalls(t, m.nftCalls(), "nft -c -f <pending>", "nft -f <pending>", "nft destroy table inet sgc")
+	if state := m.state(); state.Pending != nil || state.Last == nil || state.Last.Result != ResultFailed {
+		t.Errorf("state: pending %+v, outcome %+v", state.Pending, state.Last)
+	}
+
+	// The same for an undo asked for with a context that is already cancelled.
+	m = newMachine(t)
+	m.request(`{"enabled":true}`)
+	if _, err := m.system.begin(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancelNow := context.WithCancel(context.Background())
+	cancelNow()
+	if err := m.system.Revert(cancelled, ResultUndone, ""); err != nil {
+		t.Fatal(err)
+	}
+	calls := m.nftCalls()
+	if last := calls[len(calls)-1]; last != "nft destroy table inet sgc" {
+		t.Errorf("last command %q: the undo did not run", last)
+	}
+	if m.state().Pending != nil {
+		t.Error("the change is still pending")
 	}
 }
 
