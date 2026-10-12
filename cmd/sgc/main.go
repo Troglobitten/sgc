@@ -49,6 +49,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return setupLink(ctx, args[1:], stdout, stderr)
 	case "update":
 		return updateCommand(ctx, args[1:], os.Stdin, stdout, stderr)
+	case "firewall":
+		return firewallCommand(ctx, args[1:], stdout, stderr)
+	case "doctor":
+		return doctorCommand(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return exitOK
@@ -66,6 +70,8 @@ Commands:
   serve        Run SGC as a service (started by systemd)
   setup-link   Print a new one-time link for creating the admin account
   update       Look for a newer SGC version and install it (--check: only look)
+  doctor       Check every part of SGC and say what to do about problems
+  firewall     Show the firewall's state ("firewall off": switch it off)
   version      Print the installed SGC version
   help         Show this help
 `)

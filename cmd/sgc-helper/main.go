@@ -1,16 +1,24 @@
 // Command sgc-helper performs the few SGC operations that need root.
 //
-// It has two modes, both started by systemd and never by hand:
+// It has several modes, all started by systemd and never by hand:
 //
 //   - With no arguments it is the helper service: started when the web
 //     process first connects to its socket (sgc-helper.socket), it offers the
 //     fixed list of operations in internal/helper. See that package for why
-//     this is a separate program.
+//     this is a separate program. The service itself can do next to nothing;
+//     for real work it starts one of the units below, each of which has
+//     exactly the privileges its job needs.
 //
 //   - "sgc-helper update <version>" installs an already downloaded release
 //     and rolls it back if it does not come up (sgc-update@.service). It runs
 //     as its own unit so that it survives SGC itself being stopped and
 //     restarted during the update.
+//
+//   - "sgc-helper firewall <job>" changes the firewall (sgc-firewall-*.service,
+//     see firewall.go).
+//
+//   - "sgc-helper packages" installs the Debian packages SGC needs
+//     (sgc-packages.service, see packages.go).
 package main
 
 import (
@@ -39,9 +47,18 @@ const systemctl = "/usr/bin/systemctl"
 
 func main() {
 	var err error
-	if len(os.Args) >= 2 && os.Args[1] == "update" {
+	mode := ""
+	if len(os.Args) >= 2 {
+		mode = os.Args[1]
+	}
+	switch mode {
+	case "update":
 		err = runUpdate(os.Args[2:])
-	} else {
+	case "firewall":
+		err = runFirewall(os.Args[2:])
+	case "packages":
+		err = runPackages()
+	default:
 		err = runService()
 	}
 	if err != nil {
@@ -65,10 +82,14 @@ func runService() error {
 
 	server := &http.Server{
 		Handler: (&helper.Server{
-			AllowedUID:  uint32(uid),
-			Version:     sgc.Version(),
-			Restart:     restartDevice,
-			StartUpdate: startUpdate,
+			AllowedUID:      uint32(uid),
+			Version:         sgc.Version(),
+			Restart:         restartDevice,
+			StartUpdate:     startUpdate,
+			InstallPackages: installPackages,
+			FirewallChange:  startFirewallChange,
+			FirewallConfirm: confirmFirewallChange,
+			FirewallUndo:    undoFirewallChange,
 		}).Handler(),
 		ConnContext:       helper.ConnContext,
 		ReadHeaderTimeout: 5 * time.Second,
@@ -127,6 +148,8 @@ func systemdListener() (net.Listener, error) {
 
 // runSystemctl runs systemctl with fixed arguments. Nothing from a request
 // reaches it except a version number that has been checked to be one.
+// Without --no-block it returns when the unit has finished starting, which
+// for a one-shot job means when the job is done.
 func runSystemctl(args ...string) error {
 	cmd := exec.Command(systemctl, args...)
 	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin"}

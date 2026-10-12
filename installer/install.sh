@@ -151,7 +151,9 @@ start_service() {
         install -m 0644 "$unit" "/etc/systemd/system/$(basename "$unit")"
     done
     systemctl daemon-reload
-    systemctl enable --quiet sgc-helper.socket sgc.service
+    # The firewall unit loads the confirmed firewall rules at start-up. It
+    # does nothing until a firewall has been switched on in SGC.
+    systemctl enable --quiet sgc-helper.socket sgc.service sgc-firewall.service
 
     # On an update the old helper may still be running. Stop it, so the next
     # request starts the new one; then make sure its socket is listening.

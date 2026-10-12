@@ -45,6 +45,8 @@ func newSourceDB(t *testing.T) (*sql.DB, string) {
 		`INSERT INTO audit_log (at, actor, action, detail, remote_addr) VALUES (102, 'alex', 'login.success', '', '192.168.1.10')`,
 		`INSERT INTO setting (key, value) VALUES ('update.auto_check', '0')`,
 		`INSERT INTO setting (key, value) VALUES ('update.last_reported_id', '12345')`,
+		`INSERT INTO setting (key, value) VALUES ('firewall.enabled', 'true')`,
+		`INSERT INTO setting (key, value) VALUES ('firewall.open_change', '{"id":77,"enabled":false,"actor":"alex"}')`,
 		`INSERT INTO setup_token (id, token_hash, expires_at) VALUES (1, x'00', 999)`,
 		`UPDATE update_check SET latest_version = '9.9.9', notes = 'cached notes', checked_at = 500`,
 	}
@@ -114,6 +116,7 @@ func TestRoundTrip(t *testing.T) {
 		"SELECT group_concat(username || '|' || password_hash || '|' || created_at) FROM admin",
 		"SELECT group_concat(at || '|' || actor || '|' || action || '|' || detail || '|' || remote_addr, ';') FROM audit_log",
 		"SELECT value FROM setting WHERE key = 'update.auto_check'",
+		"SELECT value FROM setting WHERE key = 'firewall.enabled'",
 	} {
 		var want, got sql.NullString
 		if err := source.QueryRowContext(ctx, query).Scan(&want); err != nil {
@@ -132,6 +135,7 @@ func TestRoundTrip(t *testing.T) {
 		"SELECT COUNT(*) FROM session":                                                   0,
 		"SELECT COUNT(*) FROM setup_token":                                               0,
 		"SELECT COUNT(*) FROM setting WHERE key = 'update.last_reported_id'":             0,
+		"SELECT COUNT(*) FROM setting WHERE key = 'firewall.open_change'":                0,
 		"SELECT COUNT(*) FROM update_check":                                              1, // the row itself must exist
 		"SELECT COUNT(*) FROM update_check WHERE latest_version = '' AND checked_at = 0": 1,
 	} {

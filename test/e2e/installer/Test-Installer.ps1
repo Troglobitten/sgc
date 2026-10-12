@@ -9,12 +9,15 @@
        and leaves nothing behind.
     3. Installs the genuine release and checks the service, the one-time
        setup link, sign-in, the dashboard data and the root helper.
+       Then the firewall: an unconfirmed change undoes itself, a confirmed
+       one stays, and from then on a public address is refused.
     4. Points SGC at a local test update source and checks updating: a
        tampered update is refused, a genuine one installs, a signed but
        broken one is rolled back, an older one is never installed, and
        "sgc update" works over SSH.
     5. Makes an export, then restarts the machine through SGC and checks
-       that everything comes back by itself.
+       that everything comes back by itself, the firewall included. Then
+       "sgc doctor" and "sgc firewall off" over SSH.
     6. Wipes the machine, installs again and restores the export: the
        account, the settings and the history must be what they were.
 
@@ -65,6 +68,12 @@ Reset-AndPrepare
 Invoke-Cases refused
 Invoke-Cases accepted
 
+# The firewall, switched on before the rest, so that everything after it
+# (updating, exporting, restarting) is tested with the firewall on. Every
+# later step also arrives over a new SSH connection, which is itself the
+# check that SSH from this PC still gets in.
+Invoke-Cases firewall
+
 # Updating: a tampered update, a genuine one, a signed-but-broken one that
 # must roll back, an older one, and the command-line way.
 Invoke-Cases update-setup
@@ -93,6 +102,10 @@ Wait-TestVMSshDown -Address $address
 $address = Wait-TestVMSsh
 
 Invoke-Cases after-restart
+
+# The command line: the doctor, and switching the firewall off from the
+# machine itself.
+Invoke-Cases firewall-cli
 
 # The promise of the export: wipe the machine, install again, restore.
 Write-Host ""

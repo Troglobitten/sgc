@@ -1,0 +1,63 @@
+[Unit]
+Description=Server Gateway Control firewall change, waiting for confirmation
+Documentation=https://github.com/Troglobitten/sgc
+# The second safety net (the first is ExecStopPost below). Whenever this unit
+# has ended, cleanly or not, systemd starts the unit that puts the confirmed
+# rules back if the change is still unconfirmed. That unit is separate from
+# this one on purpose: whatever kills everything belonging to this unit,
+# cleanup included, does not reach it.
+OnSuccess=sgc-firewall-revert.service
+OnFailure=sgc-firewall-revert.service
+# systemd normally refuses to start a unit that was started more than five
+# times within ten seconds. For this unit that would mean a firewall change,
+# or worse its undoing, being refused after a few quick changes in a row.
+StartLimitIntervalSec=0
+
+[Service]
+# One run per firewall change. The process puts the new rules into effect,
+# reports "ready", and then stays for as long as the change is unconfirmed
+# (60 seconds at most). Started by the helper; see internal/firewall.
+Type=notify
+NotifyAccess=main
+ExecStart=/opt/sgc/current/sgc-helper firewall change
+# The first safety net. systemd runs this after the process above has ended,
+# however it ended: finished, stopped, crashed, killed or timed out. If the
+# change is still unconfirmed at that point, the confirmed rules go back in.
+# Normally the process has already done that itself and this finds nothing
+# to do.
+ExecStopPost=/opt/sgc/current/sgc-helper firewall revert
+TimeoutStartSec=30
+TimeoutStopSec=30
+# A process still here long after the confirmation time is stuck. systemd
+# ends it, and the line above undoes the change.
+RuntimeMaxSec=180
+
+# --- Sandboxing ---------------------------------------------------------
+# Loading firewall rules is the one privilege this job has. It can write to
+# SGC's own configuration folder and to its folder in /run, nowhere else,
+# and it cannot open network connections: nftables is configured over a
+# netlink socket, and systemd is told "ready" over a unix one.
+ConfigurationDirectory=sgc
+RuntimeDirectory=sgc-firewall
+RuntimeDirectoryPreserve=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_NET_ADMIN
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@resources

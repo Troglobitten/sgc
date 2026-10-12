@@ -84,6 +84,9 @@ type Services interface {
 	Start(unit string) error
 	Restart(unit string) error
 	DaemonReload() error
+	// Enable makes a unit part of every start-up; Disable takes that back.
+	Enable(unit string) error
+	Disable(unit string) error
 }
 
 type Config struct {
@@ -192,6 +195,7 @@ type update struct {
 	releaseDir  string            // InstallRoot/releases/<target>
 	previous    string            // what "current" pointed at before
 	oldUnits    map[string][]byte // unit files as they were; nil content = did not exist
+	enabled     []string          // units this update made part of every start-up
 	hadDatabase map[string]bool   // which database files existed and were backed up
 }
 
@@ -328,6 +332,9 @@ func (u *update) switchTo(ctx context.Context) error {
 	if err := u.installUnits(); err != nil {
 		return fmt.Errorf("install the service definitions: %w", err)
 	}
+	if err := u.enableNewUnits(); err != nil {
+		return fmt.Errorf("switch on the new service definitions: %w", err)
+	}
 	if err := u.startServices(); err != nil {
 		return err
 	}
@@ -430,7 +437,57 @@ func (u *update) installUnits() error {
 	return nil
 }
 
+// enableNewUnits makes the units this update introduced part of every
+// start-up, where they ask for it. A new release can bring something that
+// has to run whether or not SGC does (the firewall rules, for one); copying
+// its unit file into place is not enough for that.
+//
+// Only units that were not there before: one the owner has switched off on
+// purpose is not switched back on by an update.
+func (u *update) enableNewUnits() error {
+	for name, previous := range u.oldUnits {
+		if previous != nil {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(u.releaseDir, name))
+		if err != nil {
+			return err
+		}
+		if !wantsEnabling(name, data) {
+			continue
+		}
+		if err := u.cfg.Services.Enable(name); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		u.enabled = append(u.enabled, name)
+	}
+	return nil
+}
+
+// wantsEnabling reports whether a unit file says how it wants to be started
+// at start-up (an [Install] section). Template units (name@.service) are
+// started per instance and cannot be enabled as they are.
+func wantsEnabling(name string, unit []byte) bool {
+	if strings.Contains(name, "@.") {
+		return false
+	}
+	for line := range bytes.Lines(unit) {
+		if string(bytes.TrimSpace(line)) == "[Install]" {
+			return true
+		}
+	}
+	return false
+}
+
 func (u *update) restoreUnits() error {
+	// While the unit files are still there: systemd needs them to know what
+	// switching off means.
+	for _, name := range u.enabled {
+		if err := u.cfg.Services.Disable(name); err != nil {
+			u.cfg.Log.Warn("switch off a unit the failed update introduced", "unit", name, "error", err)
+		}
+	}
+	u.enabled = nil
 	for name, previous := range u.oldUnits {
 		destination := filepath.Join(u.cfg.UnitDir, name)
 		var err error

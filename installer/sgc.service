@@ -5,6 +5,11 @@ After=network.target sgc-helper.socket
 # The web process asks the helper for anything that needs root. If the helper
 # is not available, SGC still runs; only those actions report an error.
 Wants=sgc-helper.socket
+# The firewall rules are loaded by a unit of their own, early at start-up
+# and whether or not SGC runs. Wanting it here as well makes sure it is part
+# of every start-up even where that unit was never switched on by itself,
+# which is the case after updating from a version that did not have it.
+Wants=sgc-firewall.service
 
 [Service]
 Type=simple

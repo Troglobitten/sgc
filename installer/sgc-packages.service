@@ -1,0 +1,19 @@
+[Unit]
+Description=Server Gateway Control: install the Debian packages SGC needs
+Documentation=https://github.com/Troglobitten/sgc
+
+[Service]
+# Installs, from Debian's own archive, the few packages SGC needs that a
+# clean Debian does not bring (at present: nftables). Started by the helper
+# the first time a feature needs one of them.
+Type=oneshot
+ExecStart=/opt/sgc/current/sgc-helper packages
+# Includes refreshing Debian's package lists on a slow line and a slow card.
+TimeoutStartSec=780
+
+# No sandbox worth the name: installing a package means writing all over the
+# system and running the package's own scripts, and restrictions here would
+# only make that fail in surprising ways. What limits this job is what it can
+# be asked to do, which is nothing: the list of packages is fixed in the
+# program, and the request to run it carries no parameters.
+PrivateTmp=yes

@@ -12,7 +12,6 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -210,42 +209,20 @@ func updateCommand(ctx context.Context, args []string, stdin io.Reader, stdout, 
 // runWorker runs `sgc update --as-service-user <task>` as the service user
 // and decodes the JSON it prints into out (if not nil).
 func runWorker(ctx context.Context, task, stateDir string, out any, stderr io.Writer) error {
-	account, err := user.Lookup(layout.ServiceUser)
-	if err != nil {
-		return fmt.Errorf("SGC does not seem to be installed: %w", err)
-	}
-	uid, _ := strconv.ParseUint(account.Uid, 10, 32)
-	gid, _ := strconv.ParseUint(account.Gid, 10, 32)
-
-	self, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	cmd := exec.CommandContext(ctx, self, "update", "--as-service-user", task, "--state-dir", stateDir)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: []uint32{uint32(gid)}},
-	}
-	// A minimal environment; the update source may be overridden for tests.
-	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin"}
+	// The update source may be overridden for tests.
+	var env []string
 	if source := os.Getenv(updateSourceVariable); source != "" {
-		cmd.Env = append(cmd.Env, updateSourceVariable+"="+source)
+		env = append(env, updateSourceVariable+"="+source)
 	}
-	cmd.Stderr = stderr
-	output, err := cmd.Output()
-	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			// The worker has already explained the problem on stderr.
-			return errors.New("the update could not be prepared")
-		}
-		return err
+	err := runAsServiceUser(ctx, []string{"update", "--as-service-user", task, "--state-dir", stateDir}, env, out, stderr)
+	switch {
+	case errors.Is(err, errWorkerFailed):
+		// The worker has already explained the problem on stderr.
+		return errors.New("the update could not be prepared")
+	case errors.Is(err, errWorkerAnswer):
+		return errors.New("unexpected answer while checking for updates")
 	}
-	if out != nil {
-		if err := json.Unmarshal(output, out); err != nil {
-			return errors.New("unexpected answer while checking for updates")
-		}
-	}
-	return nil
+	return err
 }
 
 // updateWorker is the part of `sgc update` that runs as the service user.

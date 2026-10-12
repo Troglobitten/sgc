@@ -36,7 +36,12 @@ if [ "${SGC_SKIP_WEB_BUILD:-}" != 1 ]; then
 fi
 
 programs="sgc sgc-helper"
-units="sgc.service sgc-helper.service sgc-helper.socket sgc-update@.service"
+# Every systemd unit in installer/. A unit that is added there is part of the
+# release without having to be listed here as well.
+units=""
+for unit in installer/*.service installer/*.socket; do
+    units="$units $(basename "$unit")"
+done
 
 for arch in amd64 arm64; do
     stage="$(mktemp -d)"

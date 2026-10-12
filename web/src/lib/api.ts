@@ -72,14 +72,35 @@ export interface UpdateStatus {
   lastUpdate: UpdateOutcome | null
 }
 
+/** The firewall as SGC reports it (internal/fwcontrol, internal/web/firewall.go). */
+export interface FirewallStatus {
+  /** 'pending': a change is in effect and waits for confirmation */
+  state: 'off' | 'on' | 'pending'
+  /** false on a clean Debian, until the firewall is first switched on */
+  softwareInstalled: boolean
+  /** what the owner last confirmed; true with state 'off' after a restore */
+  wanted: boolean
+  pending: { enabled: boolean; secondsLeft: number } | null
+  /** what is let in from the home network while the firewall is on */
+  sshPorts: number[]
+  webPort: number
+  /** how long a change waits for its confirmation */
+  confirmSeconds: number
+  /** this browser, as SGC sees it */
+  client: { address: string; inside: boolean }
+}
+
 /** An error with a message that is fit to show to the user as it is. */
 export class ApiError extends Error {
   /** HTTP status, or 0 when SGC could not be reached at all. */
   status: number
+  /** SGC asks for the same request again over a new connection. */
+  reconnect: boolean
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, reconnect = false) {
     super(message)
     this.status = status
+    this.reconnect = reconnect
   }
 }
 
@@ -129,7 +150,7 @@ async function send(method: string, path: string, body?: unknown): Promise<Respo
       data !== null && typeof data === 'object' && 'error' in data && typeof data.error === 'string'
         ? data.error
         : `SGC answered with an error (${response.status}).`
-    throw new ApiError(response.status, message)
+    throw new ApiError(response.status, message, response.headers.has('X-SGC-Reconnect'))
   }
   return response
 }
@@ -144,6 +165,25 @@ async function downloadExport(password: string, passphrase: string) {
   const response = await send('POST', '/api/export', { password, passphrase })
   const name = /filename="?([^";]+)"?/.exec(response.headers.get('Content-Disposition') ?? '')
   return { file: await response.blob(), name: name?.[1] ?? 'sgc-export.age' }
+}
+
+/**
+ * Confirms a firewall change. SGC accepts the confirmation only over a
+ * connection that was opened after the change: a firewall lets existing
+ * connections carry on, so only a new one shows that this browser still
+ * gets in. SGC closes an older connection and says "again"; the next try
+ * then has to connect afresh, through the new rules.
+ */
+async function confirmFirewall(): Promise<FirewallStatus> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await request<FirewallStatus>('POST', '/api/firewall/confirm', {})
+    } catch (error) {
+      // A browser keeps several connections; each try uses up one old one.
+      if (!(error instanceof ApiError) || !error.reconnect || attempt >= 10) throw error
+      await new Promise((resolve) => setTimeout(resolve, 200))
+    }
+  }
 }
 
 export const api = {
@@ -173,6 +213,11 @@ export const api = {
   },
   restoreConfirm: (token: string) =>
     request<void>('POST', '/api/setup/restore/confirm', { token }),
+  firewall: () => request<FirewallStatus>('GET', '/api/firewall'),
+  changeFirewall: (enabled: boolean) =>
+    request<FirewallStatus>('POST', '/api/firewall/change', { enabled }),
+  confirmFirewall,
+  undoFirewall: () => request<FirewallStatus>('POST', '/api/firewall/undo', {}),
 }
 
 /** The message to show for any thrown value. */
