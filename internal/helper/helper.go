@@ -10,9 +10,13 @@
 //
 // Operations so far:
 //
-//	GET  /v1/ping            is the helper there, and which version?
-//	POST /v1/restart-device  restart the machine cleanly
-//	POST /v1/start-update    install an already downloaded SGC version
+//	GET  /v1/ping              is the helper there, and which version?
+//	POST /v1/restart-device    restart the machine cleanly
+//	POST /v1/start-update      install an already downloaded SGC version
+//	POST /v1/install-packages  install the Debian packages SGC needs (a fixed list)
+//	POST /v1/firewall/change   put firewall rules into effect, pending confirmation
+//	POST /v1/firewall/confirm  keep the pending firewall rules
+//	POST /v1/firewall/undo     go back to the confirmed firewall rules now
 package helper
 
 import (
@@ -26,7 +30,20 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Troglobitten/sgc/internal/firewall"
 	"github.com/Troglobitten/sgc/internal/release"
+)
+
+// How long each kind of request may take. Most are answered at once; a few
+// wait for real work to finish.
+const (
+	defaultTimeout = 10 * time.Second
+	// A firewall change is answered once the new rules are in effect.
+	firewallTimeout = 45 * time.Second
+	// Installing a package includes downloading it, on any line and any disk.
+	// (Shorter than the web server allows such a request, longer than the
+	// unit that does the work may run, so each layer reports its own limit.)
+	packagesTimeout = 14 * time.Minute
 )
 
 type pingResponse struct {
@@ -48,8 +65,8 @@ type Client struct {
 }
 
 func NewClient(socketPath string) *Client {
+	// No time limit here: each request sets its own (see call).
 	return &Client{http: &http.Client{
-		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				var d net.Dialer
@@ -62,7 +79,7 @@ func NewClient(socketPath string) *Client {
 // Ping returns the helper's version.
 func (c *Client) Ping(ctx context.Context) (string, error) {
 	var resp pingResponse
-	if err := c.call(ctx, http.MethodGet, "/v1/ping", nil, &resp); err != nil {
+	if err := c.call(ctx, defaultTimeout, http.MethodGet, "/v1/ping", nil, &resp); err != nil {
 		return "", err
 	}
 	return resp.Version, nil
@@ -71,17 +88,45 @@ func (c *Client) Ping(ctx context.Context) (string, error) {
 // RestartDevice asks for a clean restart of the machine. It returns once the
 // restart has been scheduled, shortly before the machine goes down.
 func (c *Client) RestartDevice(ctx context.Context) error {
-	return c.call(ctx, http.MethodPost, "/v1/restart-device", nil, nil)
+	return c.call(ctx, defaultTimeout, http.MethodPost, "/v1/restart-device", nil, nil)
 }
 
 // StartUpdate asks for the given, already downloaded, version to be
 // installed. It returns once the update has been started; the update then
 // runs on its own and restarts SGC.
 func (c *Client) StartUpdate(ctx context.Context, version string) error {
-	return c.call(ctx, http.MethodPost, "/v1/start-update", startUpdateRequest{Version: version}, nil)
+	return c.call(ctx, defaultTimeout, http.MethodPost, "/v1/start-update", startUpdateRequest{Version: version}, nil)
 }
 
-func (c *Client) call(ctx context.Context, method, path string, in, out any) error {
+// InstallPackages installs the Debian packages SGC needs and that a clean
+// machine does not have. Which ones is the helper's business; the caller
+// cannot name any. It returns when they are installed.
+func (c *Client) InstallPackages(ctx context.Context) error {
+	return c.call(ctx, packagesTimeout, http.MethodPost, "/v1/install-packages", nil, nil)
+}
+
+// FirewallChange puts the requested firewall rules into effect. It returns
+// once they are; from then on they wait for FirewallConfirm and are undone
+// without it (see internal/firewall).
+func (c *Client) FirewallChange(ctx context.Context, request firewall.Request) error {
+	return c.call(ctx, firewallTimeout, http.MethodPost, "/v1/firewall/change", request, nil)
+}
+
+// FirewallConfirm keeps the pending firewall rules.
+func (c *Client) FirewallConfirm(ctx context.Context) error {
+	return c.call(ctx, firewallTimeout, http.MethodPost, "/v1/firewall/confirm", nil, nil)
+}
+
+// FirewallUndo goes back to the confirmed firewall rules without waiting
+// for the confirmation time to run out.
+func (c *Client) FirewallUndo(ctx context.Context) error {
+	return c.call(ctx, firewallTimeout, http.MethodPost, "/v1/firewall/undo", nil, nil)
+}
+
+func (c *Client) call(ctx context.Context, timeout time.Duration, method, path string, in, out any) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	var body *bytes.Reader
 	if in != nil {
 		encoded, err := json.Marshal(in)
@@ -130,6 +175,12 @@ type Server struct {
 	// StartUpdate starts the installation of a version. It is only ever
 	// called with a string that is a plain version number.
 	StartUpdate func(version string) error
+	// InstallPackages installs SGC's fixed list of Debian packages.
+	InstallPackages func() error
+	// The firewall operations; see internal/firewall for what they mean.
+	FirewallChange  func(request firewall.Request) error
+	FirewallConfirm func() error
+	FirewallUndo    func() error
 }
 
 type peerUIDKey struct{}
@@ -203,6 +254,47 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, http.StatusOK, struct{}{})
 	})
+	mux.HandleFunc("POST /v1/install-packages", func(w http.ResponseWriter, _ *http.Request) {
+		allow(w, packagesTimeout)
+		if err := s.InstallPackages(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "could not install the packages: " + err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, struct{}{})
+	})
+	mux.HandleFunc("POST /v1/firewall/change", func(w http.ResponseWriter, r *http.Request) {
+		// The request has one yes-or-no field and nothing else gets through,
+		// so there is nothing in it that could be turned into a firewall rule.
+		var req firewall.Request
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "the request could not be read"})
+			return
+		}
+		allow(w, firewallTimeout)
+		if err := s.FirewallChange(req); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "could not change the firewall: " + err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, struct{}{})
+	})
+	mux.HandleFunc("POST /v1/firewall/confirm", func(w http.ResponseWriter, _ *http.Request) {
+		allow(w, firewallTimeout)
+		if err := s.FirewallConfirm(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "could not confirm the firewall change: " + err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, struct{}{})
+	})
+	mux.HandleFunc("POST /v1/firewall/undo", func(w http.ResponseWriter, _ *http.Request) {
+		allow(w, firewallTimeout)
+		if err := s.FirewallUndo(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "could not undo the firewall change: " + err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, struct{}{})
+	})
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		uid, ok := r.Context().Value(peerUIDKey{}).(uint32)
@@ -212,6 +304,13 @@ func (s *Server) Handler() http.Handler {
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+// allow gives a request that waits for real work more time to be answered
+// than the server's general limit.
+func allow(w http.ResponseWriter, d time.Duration) {
+	// Not every writer supports it (tests); the general limit then applies.
+	http.NewResponseController(w).SetWriteDeadline(time.Now().Add(d))
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

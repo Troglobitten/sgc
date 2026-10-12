@@ -2,7 +2,7 @@
 
 A secure front door for your home network, running on a Raspberry Pi or any small Debian machine.
 
-> **Status: early development.** The installer, the admin account and a first dashboard with system health work. VPN, DNS and the reverse proxy are not built yet.
+> **Status: early development.** The installer, the admin account, a dashboard with system health, self-updating, export and restore, and the device's firewall work. VPN, DNS and the reverse proxy are not built yet.
 
 ## What it will do
 
@@ -66,6 +66,32 @@ age -d sgc-export-<host>-<date>.age | tar -x
 
 That gives `manifest.json` and `database.sqlite`. Keep the file and its passphrase somewhere other than the gateway; without the passphrase nobody can open it.
 
+### Firewall
+
+The **System** page can switch on a firewall for the device SGC runs on. With it on, SGC's page and SSH answer only to devices with a private address (192.168.x.x, 10.x.x.x, 172.16–31.x.x); everything else that arrives uninvited is ignored. What the device itself fetches from the internet is not affected. The first time, SGC installs nftables from Debian for it.
+
+Switching it on or off cannot lock you out:
+
+1. The change takes effect at once.
+2. The page asks you to confirm that you can still reach SGC. Only a confirmation that arrives over a new connection counts, because a firewall lets connections that already exist carry on.
+3. Without that confirmation within 60 seconds, SGC puts back the rules you confirmed last. The same happens if the device restarts, or if the part of SGC that waits for your confirmation fails.
+
+The rules are loaded at start-up by a unit of their own, before the network comes up and whether or not SGC is running. They live in one nftables table (`inet sgc`); other tables on the machine are left alone.
+
+Should you ever need to switch it off from the device itself:
+
+```sh
+sudo sgc firewall off
+```
+
+### When something is wrong
+
+```sh
+sudo sgc doctor
+```
+
+checks every part of SGC on the machine (the service, its page, the root helper, storage, the clock, the firewall) and says what to do about each problem it finds. It asks the machine directly, so it also works when SGC's page does not answer.
+
 ### How releases are verified
 
 Every release contains `SHA256SUMS`, a list of checksums of the release files, and `SHA256SUMS.sig`, an Ed25519 signature over that list. The public key is [`installer/release-key.pem`](installer/release-key.pem) and is built into the installer. To check a download by hand:
@@ -97,10 +123,16 @@ To work on the interface, run `sgc serve --dev-insecure-http --state-dir <folder
 | `sgc serve` | unprivileged user `sgc`, in a systemd sandbox | The web interface and API |
 | `sgc-helper` | root, in a systemd sandbox, started on demand | The few operations that need root, as a fixed list; no "run a command" |
 | `sgc-helper update` | root, as a one-off systemd unit | Installs a downloaded release and rolls it back if it does not come up |
+| `sgc-helper firewall` | root with only the right to load firewall rules, as one-off systemd units | Puts firewall rules into effect, keeps them on confirmation, undoes them otherwise |
+| `sgc-helper packages` | root, as a one-off systemd unit | Installs the Debian packages SGC needs from a list fixed in the program (at present: nftables) |
+| `nft -f /etc/sgc/firewall.nft` | systemd, early at start-up | Loads the confirmed firewall rules; uses none of SGC's own programs |
 | `sgc setup-link` | from the installer or `sudo` | Prints the one-time link for creating the admin account |
 | `sgc update` | `sudo` | Looks for a newer version and installs it |
+| `sgc doctor`, `sgc firewall` | `sudo` | Checks every part; shows the firewall's state or switches it off |
 
-The web process never has root. It reaches the helper through a Unix socket that only it may open, and the helper additionally checks who is calling.
+The web process never has root. It reaches the helper through a Unix socket that only it may open, and the helper additionally checks who is calling. The helper itself can do next to nothing: for real work it starts a unit that has exactly the privileges that job needs.
+
+The firewall is split the same way. The web process can ask for "on" or "off" and nothing more; the rules are written by the root side, checked by nftables before they are loaded, and loaded completely or not at all.
 
 Updating is split the same way: the unprivileged web process downloads a release, and the root updater, which never talks to the internet, verifies it again by itself before installing.
 

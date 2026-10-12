@@ -9,11 +9,18 @@ ExecStart=/opt/sgc/current/sgc-helper
 Restart=on-failure
 RestartSec=2
 
+# What the web process asked for is handed to the unit that carries it out
+# through this folder, after the helper has checked it. Only root can look
+# inside, so the unit reads exactly what was checked.
+RuntimeDirectory=sgc-requests
+RuntimeDirectoryMode=0700
+
 # --- Sandboxing ---------------------------------------------------------
 # The helper must be root to do its job, but it needs very little else.
-# It has no capabilities, cannot write anywhere, and cannot open network
-# connections; it only answers on the socket systemd hands it, and asks
-# systemd itself to carry out a restart.
+# It has no capabilities, cannot write anywhere except the folder above, and
+# cannot open network connections; it only answers on the socket systemd
+# hands it, and asks systemd itself to carry out a restart or to start the
+# unit that does the real work (an update, a firewall change).
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=

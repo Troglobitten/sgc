@@ -31,6 +31,7 @@ var resetStatements = map[string]string{
 // one installation rather than settings.
 var transientSettings = []string{
 	"update.last_reported_id", // which update outcome was already written to the audit log
+	"firewall.open_change",    // a firewall change whose end is not in the audit log yet
 }
 
 func cleanupStatements() []string {

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Troglobitten/sgc/internal/audit"
 	"github.com/Troglobitten/sgc/internal/auth"
@@ -29,6 +30,9 @@ import (
 const maxRequestBody = 64 * 1024
 
 // Helper is what the web process may ask the root helper to do.
+//
+// The firewall's operations are not here: they go through internal/fwcontrol,
+// which also keeps the history and the setting in step.
 type Helper interface {
 	RestartDevice(ctx context.Context) error
 	StartUpdate(ctx context.Context, version string) error
@@ -52,6 +56,7 @@ type Server struct {
 	// nil if there never was one.
 	LastUpdate func() (*updater.Status, error)
 	Backups    Backups
+	Firewall   Firewall
 	// StartOver asks the process to wind down the web server and start
 	// again on the database a confirmed restore has put in place.
 	StartOver func()
@@ -66,6 +71,10 @@ type Server struct {
 	// The export that was uploaded and previewed, waiting to be confirmed.
 	restoreMu      sync.Mutex
 	pendingRestore *backup.Manifest
+
+	// When this process last put a firewall change into effect (firewall.go).
+	firewallMu        sync.Mutex
+	firewallChangedAt time.Time
 }
 
 func (s *Server) Handler() http.Handler {
@@ -82,6 +91,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/update/settings", s.requireSession(s.handleUpdateSettings))
 	mux.HandleFunc("POST /api/update/install", s.requireSession(s.handleUpdateInstall))
 	mux.HandleFunc("POST /api/export", s.requireSession(s.handleExport))
+	mux.HandleFunc("GET /api/firewall", s.requireSession(s.handleFirewallStatus))
+	mux.HandleFunc("POST /api/firewall/change", s.requireSession(s.handleFirewallChange))
+	mux.HandleFunc("POST /api/firewall/confirm", s.requireSession(s.handleFirewallConfirm))
+	mux.HandleFunc("POST /api/firewall/undo", s.requireSession(s.handleFirewallUndo))
 	mux.HandleFunc("POST /api/setup/restore/preview", s.handleRestorePreview)
 	mux.HandleFunc("POST /api/setup/restore/confirm", s.handleRestoreConfirm)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {

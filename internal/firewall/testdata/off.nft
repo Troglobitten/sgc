@@ -1,0 +1,5 @@
+#!/usr/sbin/nft -f
+# Written by SGC. Do not edit: SGC replaces this file.
+# sgc-config: {"enabled":false,"sshPorts":[22],"webPort":8443}
+
+destroy table inet sgc

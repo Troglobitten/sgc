@@ -3,66 +3,44 @@ import {
   BadgeCheck,
   Globe,
   HardDrive,
-  LogOut,
-  RotateCw,
   Route,
+  Shield,
   ShieldCheck,
   TriangleAlert,
-  User,
 } from 'lucide-react'
 
-import { ExportCard } from '@/components/export-card'
+import { AppShell, type ShellProps } from '@/components/app-shell'
 import { Logo } from '@/components/logo'
-import { ThemeMenu } from '@/components/theme-menu'
 import { UpdateCard } from '@/components/update-card'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
-import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import { api, ApiError, errorMessage, type AuditEntry, type Health } from '@/lib/api'
+  api,
+  ApiError,
+  errorMessage,
+  type AuditEntry,
+  type FirewallStatus,
+  type Health,
+} from '@/lib/api'
 import { formatDuration, formatGigabytes, formatTimeAgo, percentOf } from '@/lib/format'
 
 const healthInterval = 3_000
 const activityInterval = 15_000
 
-export function DashboardPage({
-  username,
-  version,
-  minPassphraseLength,
-  onSignedOut,
-}: {
-  username: string
-  version: string
-  minPassphraseLength: number
-  onSignedOut: () => void
-}) {
+export function DashboardPage({ shell }: { shell: ShellProps }) {
   const [health, setHealth] = useState<Health | null>(null)
   const [activity, setActivity] = useState<AuditEntry[] | null>(null)
+  const [firewall, setFirewall] = useState<FirewallStatus | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
-  const [restarting, setRestarting] = useState(false)
   // While an update runs: the number of the attempt before it (or null).
   const [updating, setUpdating] = useState<{ previousAttempt: number | null } | null>(null)
-  // SGC is briefly unreachable during a restart or an update; the regular
-  // refreshing pauses so it does not report that as a problem.
-  const paused = restarting || updating !== null
+  // SGC is briefly unreachable during an update; the regular refreshing
+  // pauses so it does not report that as a problem.
+  const paused = updating !== null
   const finishUpdating = useCallback(() => setUpdating(null), [])
 
   // A 401 means the session ended (expired, or signed out in another tab):
   // go back to the sign-in screen instead of showing a broken dashboard.
+  const { onSignedOut, onNavigate } = shell
   const handleError = useCallback(
     (error: unknown) => {
       if (error instanceof ApiError && error.status === 401) onSignedOut()
@@ -94,11 +72,16 @@ export function DashboardPage({
   useEffect(() => {
     if (paused) return
     let stopped = false
-    const load = () =>
+    const load = () => {
       api.audit().then(
         (entries) => !stopped && setActivity(entries),
         (e) => !stopped && handleError(e),
       )
+      api.firewall().then(
+        (status) => !stopped && setFirewall(status),
+        (e) => !stopped && handleError(e),
+      )
+    }
     load()
     const timer = setInterval(load, activityInterval)
     return () => {
@@ -107,15 +90,6 @@ export function DashboardPage({
     }
   }, [handleError, paused])
 
-  async function signOut() {
-    try {
-      await api.logout()
-    } finally {
-      onSignedOut()
-    }
-  }
-
-  if (restarting) return <RestartingScreen />
   if (updating) {
     return (
       <UpdatingScreen
@@ -127,112 +101,81 @@ export function DashboardPage({
   }
 
   return (
-    <div className="min-h-svh bg-muted/40">
-      <header className="flex items-center gap-2.5 border-b bg-background px-4 py-2">
-        <Logo className="size-7" />
-        <span className="font-medium">SGC</span>
-        {health && <span className="text-sm text-muted-foreground">{health.hostname}</span>}
-        <span className="rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-          {version}
-        </span>
-        <div className="flex-1" />
-        <ThemeMenu />
-        <DropdownMenu>
-          <DropdownMenuTrigger render={<Button variant="ghost" />}>
-            <User />
-            {username}
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={signOut}>
-              <LogOut />
-              Sign out
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </header>
+    <AppShell page="dashboard" {...shell}>
+      {problem && (
+        <p
+          role="alert"
+          className="flex items-center gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive"
+        >
+          <TriangleAlert className="size-4 shrink-0" aria-hidden="true" />
+          {problem}
+        </p>
+      )}
 
-      <main className="mx-auto flex max-w-5xl flex-col gap-6 p-4">
-        {problem && (
-          <p
-            role="alert"
-            className="flex items-center gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive"
-          >
-            <TriangleAlert className="size-4 shrink-0" aria-hidden="true" />
-            {problem}
+      <Section title="System">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+          <Metric label="Processor" value={health && `${Math.round(health.cpuPercent)}%`} />
+          <Metric
+            label="Memory"
+            value={health && `${percentOf(health.memoryUsedBytes, health.memoryTotalBytes)}%`}
+            detail={
+              health &&
+              `${formatGigabytes(health.memoryUsedBytes)} of ${formatGigabytes(health.memoryTotalBytes)}`
+            }
+          />
+          <Metric
+            label="Disk"
+            value={health && `${percentOf(health.diskUsedBytes, health.diskTotalBytes)}%`}
+            detail={
+              health &&
+              `${formatGigabytes(health.diskUsedBytes)} of ${formatGigabytes(health.diskTotalBytes)}`
+            }
+          />
+          <Metric
+            label="Temperature"
+            value={
+              health &&
+              (health.temperatureC === null ? '–' : `${Math.round(health.temperatureC)} °C`)
+            }
+            detail={health && health.temperatureC === null ? 'No sensor' : null}
+          />
+          <Metric label="Running for" value={health && formatDuration(health.uptimeSeconds)} />
+        </div>
+        {health && (
+          <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
+            <HardDrive className="size-4" aria-hidden="true" />
+            {[health.model, health.os, bootMediumLabel(health.bootMedium)]
+              .filter(Boolean)
+              .join(' · ')}
           </p>
         )}
+      </Section>
 
-        <Section title="System">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-            <Metric label="Processor" value={health && `${Math.round(health.cpuPercent)}%`} />
-            <Metric
-              label="Memory"
-              value={health && `${percentOf(health.memoryUsedBytes, health.memoryTotalBytes)}%`}
-              detail={
-                health &&
-                `${formatGigabytes(health.memoryUsedBytes)} of ${formatGigabytes(health.memoryTotalBytes)}`
-              }
-            />
-            <Metric
-              label="Disk"
-              value={health && `${percentOf(health.diskUsedBytes, health.diskTotalBytes)}%`}
-              detail={
-                health &&
-                `${formatGigabytes(health.diskUsedBytes)} of ${formatGigabytes(health.diskTotalBytes)}`
-              }
-            />
-            <Metric
-              label="Temperature"
-              value={
-                health &&
-                (health.temperatureC === null ? '–' : `${Math.round(health.temperatureC)} °C`)
-              }
-              detail={health && health.temperatureC === null ? 'No sensor' : null}
-            />
-            <Metric label="Running for" value={health && formatDuration(health.uptimeSeconds)} />
-          </div>
-          {health && (
-            <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
-              <HardDrive className="size-4" aria-hidden="true" />
-              {[health.model, health.os, bootMediumLabel(health.bootMedium)]
-                .filter(Boolean)
-                .join(' · ')}
-            </p>
-          )}
-        </Section>
-
-        <Section title="Services">
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <ServiceTile icon={<ShieldCheck />} name="VPN" />
-            <ServiceTile icon={<Globe />} name="DNS" />
-            <ServiceTile icon={<Route />} name="Proxy" />
-            <ServiceTile icon={<BadgeCheck />} name="Certificate" />
-          </div>
-        </Section>
-
-        <div className="grid gap-3 md:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
-          <Card>
-            <CardContent className="flex flex-col gap-2">
-              <h2 className="text-sm text-muted-foreground">Recent activity</h2>
-              <ActivityList entries={activity} />
-            </CardContent>
-          </Card>
-          <div className="flex flex-col gap-3">
-            <UpdateCard
-              onError={handleError}
-              onUpdating={(previousAttempt) => setUpdating({ previousAttempt })}
-            />
-            <ExportCard minPassphraseLength={minPassphraseLength} />
-            <Card>
-              <CardContent className="flex flex-col gap-3">
-                <h2 className="text-sm text-muted-foreground">Device</h2>
-                <RestartButton onRestarting={() => setRestarting(true)} />
-              </CardContent>
-            </Card>
-          </div>
+      <Section title="Services">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+          <FirewallTile status={firewall} onOpen={() => onNavigate('system')} />
+          <ServiceTile icon={<ShieldCheck />} name="VPN" />
+          <ServiceTile icon={<Globe />} name="DNS" />
+          <ServiceTile icon={<Route />} name="Proxy" />
+          <ServiceTile icon={<BadgeCheck />} name="Certificate" />
         </div>
-      </main>
-    </div>
+      </Section>
+
+      <div className="grid gap-3 md:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+        <Card>
+          <CardContent className="flex flex-col gap-2">
+            <h2 className="text-sm text-muted-foreground">Recent activity</h2>
+            <ActivityList entries={activity} />
+          </CardContent>
+        </Card>
+        <div className="flex flex-col gap-3">
+          <UpdateCard
+            onError={handleError}
+            onUpdating={(previousAttempt) => setUpdating({ previousAttempt })}
+          />
+        </div>
+      </div>
+    </AppShell>
   )
 }
 
@@ -277,6 +220,41 @@ function ServiceTile({ icon, name }: { icon: ReactNode; name: string }) {
   )
 }
 
+/** The firewall at a glance. It is switched on and off on the System page. */
+function FirewallTile({
+  status,
+  onOpen,
+}: {
+  status: FirewallStatus | null
+  onOpen: () => void
+}) {
+  let text = '…'
+  let tone = 'text-muted-foreground'
+  if (status?.state === 'on') {
+    text = 'On'
+    tone = 'text-emerald-700 dark:text-emerald-400'
+  } else if (status?.state === 'pending') {
+    text = 'Waiting for confirmation'
+    tone = 'text-amber-700 dark:text-amber-400'
+  } else if (status) {
+    text = 'Off'
+    tone = 'text-amber-700 dark:text-amber-400'
+  }
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="rounded-xl bg-card p-3 text-left ring-1 ring-foreground/10 outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
+    >
+      <span className="flex items-center gap-2 text-sm font-medium">
+        <Shield className="size-4" aria-hidden="true" />
+        Firewall
+      </span>
+      <span className={`mt-1 block text-xs ${tone}`}>{text}</span>
+    </button>
+  )
+}
+
 function ActivityList({ entries }: { entries: AuditEntry[] | null }) {
   if (entries === null) return <p className="text-sm text-muted-foreground">…</p>
   if (entries.length === 0) return <p className="text-sm text-muted-foreground">Nothing yet.</p>
@@ -294,6 +272,8 @@ function ActivityList({ entries }: { entries: AuditEntry[] | null }) {
 
 // Stored action names (internal/audit) turned into sentences.
 function describeActivity(entry: AuditEntry): string {
+  // Firewall entries say in their detail which way the change went.
+  const to = /\bswitch(ing|ed) on\b/.test(entry.detail) ? 'on' : 'off'
   switch (entry.action) {
     case 'setup.link_created':
       return 'Setup link created'
@@ -325,6 +305,22 @@ function describeActivity(entry: AuditEntry): string {
       return `${entry.actor} made an export`
     case 'restore.completed':
       return `Restored ${entry.detail}`
+    case 'system.packages_installed':
+      return `SGC installed ${entry.detail}`
+    case 'firewall.change_started':
+      return `${entry.actor} switched the firewall ${to}, to be confirmed`
+    case 'firewall.change_confirmed':
+      return entry.actor === 'console'
+        ? `The firewall was switched ${to} over SSH`
+        : `${entry.actor} confirmed: the firewall stays ${to}`
+    case 'firewall.change_undone':
+      return entry.actor === 'system'
+        ? `Switching the firewall ${to} was undone: the wait for confirmation was interrupted`
+        : `${entry.actor} undid switching the firewall ${to}`
+    case 'firewall.change_expired':
+      return `Switching the firewall ${to} was not confirmed in time and was undone`
+    case 'firewall.change_failed':
+      return `Switching the firewall ${to} failed`
     default:
       return entry.action
   }
@@ -339,55 +335,6 @@ function bootMediumLabel(medium: Health['bootMedium']): string {
     default:
       return ''
   }
-}
-
-function RestartButton({ onRestarting }: { onRestarting: () => void }) {
-  const [open, setOpen] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  async function restart() {
-    setBusy(true)
-    setError(null)
-    try {
-      await api.restartDevice()
-      setOpen(false)
-      onRestarting()
-    } catch (err) {
-      setError(errorMessage(err))
-      setBusy(false)
-    }
-  }
-
-  return (
-    <>
-      <Button variant="outline" onClick={() => setOpen(true)}>
-        <RotateCw />
-        Restart
-      </Button>
-      <AlertDialog open={open} onOpenChange={(next) => !busy && setOpen(next)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Restart the device?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Everything running on this device stops for about a minute, including SGC itself.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          {error && (
-            <p role="alert" className="text-sm text-destructive">
-              {error}
-            </p>
-          )}
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={restart} disabled={busy}>
-              {busy ? 'Restarting…' : 'Restart'}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </>
-  )
 }
 
 /**
@@ -440,34 +387,6 @@ function UpdatingScreen({
         {slow
           ? 'This is taking longer than expected. You can reload the page; if SGC stays unreachable, check it over SSH with: sudo sgc update --check'
           : 'This takes about a minute. The page comes back by itself.'}
-      </p>
-    </div>
-  )
-}
-
-/** Shown while the device is down; reloads the page once SGC answers again. */
-function RestartingScreen() {
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout>
-    // Give the device time to actually go down first. Otherwise the first
-    // check would still reach the old, about-to-stop SGC and reload too early.
-    const check = () =>
-      api.state().then(
-        () => window.location.reload(),
-        () => {
-          timer = setTimeout(check, 3_000)
-        },
-      )
-    timer = setTimeout(check, 10_000)
-    return () => clearTimeout(timer)
-  }, [])
-
-  return (
-    <div className="flex min-h-svh flex-col items-center justify-center gap-4 bg-muted/40 p-4 text-center">
-      <Logo className="size-14 animate-spin [animation-duration:6s]" />
-      <h1 className="text-base font-medium">Restarting the device</h1>
-      <p className="max-w-xs text-sm text-muted-foreground">
-        This takes about a minute. The page comes back by itself.
       </p>
     </div>
   )

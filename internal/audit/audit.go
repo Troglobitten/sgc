@@ -29,6 +29,20 @@ const (
 
 	ActionExportCreated    = "export.created"
 	ActionRestoreCompleted = "restore.completed"
+
+	// SGC installed Debian packages it needs; the detail names them.
+	ActionPackagesInstalled = "system.packages_installed"
+
+	// A firewall change is in effect and waits for confirmation.
+	ActionFirewallChangeStarted = "firewall.change_started"
+	// The owner confirmed it: it is now what the device starts with.
+	ActionFirewallChangeConfirmed = "firewall.change_confirmed"
+	// Undone on request, or because the wait was interrupted.
+	ActionFirewallChangeUndone = "firewall.change_undone"
+	// Undone because nobody confirmed in time.
+	ActionFirewallChangeExpired = "firewall.change_expired"
+	// It could not be put into effect at all.
+	ActionFirewallChangeFailed = "firewall.change_failed"
 )
 
 // ActorConsole is recorded for actions taken with the command-line tool.

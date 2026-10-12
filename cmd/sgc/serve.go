@@ -23,6 +23,8 @@ import (
 	"github.com/Troglobitten/sgc/internal/audit"
 	"github.com/Troglobitten/sgc/internal/auth"
 	"github.com/Troglobitten/sgc/internal/backup"
+	"github.com/Troglobitten/sgc/internal/firewall"
+	"github.com/Troglobitten/sgc/internal/fwcontrol"
 	"github.com/Troglobitten/sgc/internal/health"
 	"github.com/Troglobitten/sgc/internal/helper"
 	"github.com/Troglobitten/sgc/internal/layout"
@@ -38,7 +40,10 @@ type serveOptions struct {
 	stateDir      string
 	helperSocket  string
 	updateWorkDir string
-	devHTTP       bool
+	// Where the root side keeps the firewall's state (internal/firewall).
+	firewallFile   string
+	firewallRunDir string
+	devHTTP        bool
 }
 
 // serve runs the web UI and API until ctx is cancelled, which is how systemd
@@ -51,6 +56,8 @@ func serve(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags.StringVar(&opts.stateDir, "state-dir", defaultStateDir(), "folder for the database and certificate")
 	flags.StringVar(&opts.helperSocket, "helper-socket", layout.HelperSocket, "socket of the root helper")
 	flags.StringVar(&opts.updateWorkDir, "update-work-dir", layout.UpdateWorkDir, "folder where the updater records its outcome")
+	flags.StringVar(&opts.firewallFile, "firewall-file", firewall.DefaultPaths().ConfirmedFile, "file in which the root side keeps the confirmed firewall rules")
+	flags.StringVar(&opts.firewallRunDir, "firewall-run-dir", firewall.DefaultPaths().RunDir, "folder in which the root side keeps a firewall change that waits for confirmation")
 	flags.BoolVar(&opts.devHTTP, "dev-insecure-http", false, "development only: plain http, reachable from this machine only")
 	if err := flags.Parse(args); err != nil {
 		return exitUsage
@@ -130,6 +137,19 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 	// outcome, and start-up must not wait with it.
 	background.Go(func() { reportUpdateOutcome(runCtx, db, auditLog, opts.updateWorkDir, log) })
 
+	helperClient := helper.NewClient(opts.helperSocket)
+	firewallControl := fwcontrol.New(fwcontrol.Config{
+		DB:        db,
+		Helper:    helperClient,
+		Audit:     auditLog,
+		Paths:     firewall.Paths{ConfirmedFile: opts.firewallFile, RunDir: opts.firewallRunDir},
+		Installed: func() bool { _, err := os.Stat(firewall.NftProgram); return err == nil },
+		Uptime:    firewall.Uptime,
+		Log:       log,
+	})
+	// Writes down how firewall changes ended that nobody ended by hand.
+	background.Go(func() { firewallControl.Run(runCtx) })
+
 	ui, err := fs.Sub(webui.Dist, "dist")
 	if err != nil {
 		return fail("load web interface", err)
@@ -140,10 +160,11 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 		Auth:       authService,
 		Audit:      auditLog,
 		Health:     monitor,
-		Helper:     helper.NewClient(opts.helperSocket),
+		Helper:     helperClient,
 		Updates:    updates,
 		LastUpdate: func() (*updater.Status, error) { return updater.ReadStatus(opts.updateWorkDir) },
 		Backups:    backups{db: db, stateDir: opts.stateDir},
+		Firewall:   firewallControl,
 		StartOver: func() {
 			select {
 			case startOver <- struct{}{}:
@@ -157,6 +178,8 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 	}
 	httpServer := &http.Server{
 		Handler: server.Handler(),
+		// Needed to tell whether a firewall confirmation proves anything.
+		ConnContext: web.ConnContext,
 		// Limits that stop a slow or stuck client from holding a connection
 		// (and its memory) forever.
 		ReadHeaderTimeout: 10 * time.Second,

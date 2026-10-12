@@ -87,6 +87,8 @@ func (systemd) Stop(unit string) error    { return runSystemctl("stop", unit) }
 func (systemd) Start(unit string) error   { return runSystemctl("start", unit) }
 func (systemd) Restart(unit string) error { return runSystemctl("restart", unit) }
 func (systemd) DaemonReload() error       { return runSystemctl("daemon-reload") }
+func (systemd) Enable(unit string) error  { return runSystemctl("enable", "--quiet", unit) }
+func (systemd) Disable(unit string) error { return runSystemctl("disable", "--quiet", unit) }
 
 // waitForVersion returns once the SGC running on this machine reports the
 // given version, or an error if it does not within healthTimeout.

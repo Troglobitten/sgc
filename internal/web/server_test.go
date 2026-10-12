@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/audit"
 	"github.com/Troglobitten/sgc/internal/auth"
 	"github.com/Troglobitten/sgc/internal/backup"
+	"github.com/Troglobitten/sgc/internal/fwcontrol"
 	"github.com/Troglobitten/sgc/internal/health"
 	"github.com/Troglobitten/sgc/internal/store"
 	"github.com/Troglobitten/sgc/internal/update"
@@ -97,16 +99,58 @@ func (f *fakeBackups) Confirm(manifest *backup.Manifest) error {
 	return nil
 }
 
+// fakeFirewall stands in for internal/fwcontrol.
+type fakeFirewall struct {
+	status     fwcontrol.Status
+	calls      []string
+	changeErr  error
+	confirmErr error
+	undoErr    error
+}
+
+func (f *fakeFirewall) Status(context.Context) (fwcontrol.Status, error) { return f.status, nil }
+
+func (f *fakeFirewall) Change(_ context.Context, actor, remoteAddr string, enabled bool) error {
+	f.calls = append(f.calls, fmt.Sprintf("change enabled=%v by %s", enabled, actor))
+	if f.changeErr != nil {
+		return f.changeErr
+	}
+	f.status.State = fwcontrol.StatePending
+	f.status.Pending = &fwcontrol.PendingStatus{Enabled: enabled, SecondsLeft: 60}
+	return nil
+}
+
+func (f *fakeFirewall) Confirm(_ context.Context, actor, remoteAddr string) error {
+	f.calls = append(f.calls, "confirm by "+actor)
+	if f.confirmErr != nil {
+		return f.confirmErr
+	}
+	f.status.State, f.status.Pending = fwcontrol.StateOn, nil
+	return nil
+}
+
+func (f *fakeFirewall) Undo(_ context.Context, actor, remoteAddr string) error {
+	f.calls = append(f.calls, "undo by "+actor)
+	if f.undoErr != nil {
+		return f.undoErr
+	}
+	f.status.State, f.status.Pending = fwcontrol.StateOff, nil
+	return nil
+}
+
 type testEnv struct {
-	t          *testing.T
-	url        string
-	client     *http.Client // keeps cookies, like a browser
-	auth       *auth.Service
-	helper     *fakeHelper
-	updates    *fakeUpdates
-	backups    *fakeBackups
-	lastUpdate *updater.Status
-	setupToken string
+	t        *testing.T
+	url      string
+	firewall *fakeFirewall
+	// When set, requests appear to come from this address.
+	pretendFrom string
+	client      *http.Client // keeps cookies, like a browser
+	auth        *auth.Service
+	helper      *fakeHelper
+	updates     *fakeUpdates
+	backups     *fakeBackups
+	lastUpdate  *updater.Status
+	setupToken  string
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -130,7 +174,8 @@ func newTestEnv(t *testing.T) *testEnv {
 	helper := &fakeHelper{}
 	updates := &fakeUpdates{status: update.Status{Current: "9.9.9", AutoCheck: true}}
 	backups := &fakeBackups{}
-	e := &testEnv{t: t, auth: authService, helper: helper, updates: updates, backups: backups, setupToken: token}
+	fw := &fakeFirewall{status: fwcontrol.Status{State: fwcontrol.StateOff, ConfirmSeconds: 60}}
+	e := &testEnv{t: t, auth: authService, helper: helper, updates: updates, backups: backups, firewall: fw, setupToken: token}
 	server := &Server{
 		Auth:       authService,
 		Audit:      audit.New(db),
@@ -139,6 +184,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		Updates:    updates,
 		LastUpdate: func() (*updater.Status, error) { return e.lastUpdate, nil },
 		Backups:    backups,
+		Firewall:   fw,
 		StartOver:  func() { backups.startOvers++ },
 		Version:    "9.9.9",
 		UI: fstest.MapFS{
@@ -148,8 +194,16 @@ func newTestEnv(t *testing.T) *testEnv {
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
+	handler := server.Handler()
 	// TLS, because the session cookie is HTTPS-only.
-	ts := httptest.NewTLSServer(server.Handler())
+	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if e.pretendFrom != "" {
+			r.RemoteAddr = e.pretendFrom
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	ts.Config.ConnContext = ConnContext
+	ts.StartTLS()
 	t.Cleanup(ts.Close)
 	client := ts.Client()
 	client.Jar, _ = cookiejar.New(nil)

@@ -1,0 +1,46 @@
+[Unit]
+Description=Server Gateway Control firewall: back to the confirmed rules
+Documentation=https://github.com/Troglobitten/sgc
+# systemd normally refuses to start a unit that was started more than five
+# times within ten seconds. For this unit that would mean a firewall change,
+# or worse its undoing, being refused after a few quick changes in a row.
+StartLimitIntervalSec=0
+
+[Service]
+# Puts the confirmed rules back if a firewall change is still unconfirmed,
+# and does nothing otherwise. systemd starts it whenever the unit that waits
+# for a confirmation has ended (OnSuccess= and OnFailure= there), and the
+# helper starts it for "undo".
+Type=oneshot
+ExecStart=/opt/sgc/current/sgc-helper firewall revert
+TimeoutStartSec=30
+
+# --- Sandboxing ---------------------------------------------------------
+# Loading firewall rules is the one privilege this job has. It can write to
+# SGC's own configuration folder and to its folder in /run, nowhere else,
+# and it cannot open network connections: nftables is configured over a
+# netlink socket, and systemd is told "ready" over a unix one.
+ConfigurationDirectory=sgc
+RuntimeDirectory=sgc-firewall
+RuntimeDirectoryPreserve=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_NET_ADMIN
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@resources

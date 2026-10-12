@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -37,6 +38,8 @@ func (f *fakeServices) Stop(unit string) error    { return f.do("stop " + unit) 
 func (f *fakeServices) Start(unit string) error   { return f.do("start " + unit) }
 func (f *fakeServices) Restart(unit string) error { return f.do("restart " + unit) }
 func (f *fakeServices) DaemonReload() error       { return f.do("daemon-reload") }
+func (f *fakeServices) Enable(unit string) error  { return f.do("enable " + unit) }
+func (f *fakeServices) Disable(unit string) error { return f.do("disable " + unit) }
 
 // env is a pretend installation in a temporary folder, at version 1.0.0.
 type env struct {
@@ -158,8 +161,12 @@ func goodRelease() []tarEntry {
 		{name: "sgc-helper", content: "new helper"},
 		{name: "sgc.service", content: "new unit"},
 		{name: "sgc-update@.service", content: "a unit the old version did not have"},
+		{name: bootUnit, content: "[Unit]\nDescription=new, and wants to run at every start-up\n\n[Install]\nWantedBy=sysinit.target\n"},
 	}
 }
+
+// A unit the old version did not have and that asks to be started at start-up.
+const bootUnit = "sgc-firewall.service"
 
 // publish puts a signed release for version into the spool folder, the way
 // the web process would after downloading it.
@@ -187,8 +194,10 @@ func (e *env) expectUntouched() {
 	if got := e.read(filepath.Join(e.cfg.StateDir, layout.DatabaseFile)); got != "old database" {
 		e.t.Errorf("database = %q, want the old one", got)
 	}
-	if _, err := os.Stat(filepath.Join(e.cfg.UnitDir, "sgc-update@.service")); !errors.Is(err, os.ErrNotExist) {
-		e.t.Error("a unit introduced by the failed update was left behind")
+	for _, name := range []string{"sgc-update@.service", bootUnit} {
+		if _, err := os.Stat(filepath.Join(e.cfg.UnitDir, name)); !errors.Is(err, os.ErrNotExist) {
+			e.t.Errorf("%s, introduced by the failed update, was left behind", name)
+		}
 	}
 }
 
@@ -230,8 +239,9 @@ func TestSuccessfulUpdate(t *testing.T) {
 
 	// SGC must be stopped before its database is copied and its programs
 	// are swapped, and started only after systemd has re-read the units.
+	// The one new unit that asks for it is made part of every start-up.
 	want := []string{
-		"stop sgc.service", "daemon-reload", "stop sgc-helper.service",
+		"stop sgc.service", "enable " + bootUnit, "daemon-reload", "stop sgc-helper.service",
 		"restart sgc-helper.socket", "start sgc.service",
 	}
 	if strings.Join(e.services.calls, ", ") != strings.Join(want, ", ") {
@@ -283,6 +293,43 @@ func TestNewVersionThatDoesNotStartIsRolledBack(t *testing.T) {
 	}
 	if last := e.services.calls[len(e.services.calls)-1]; last != "start sgc.service" {
 		t.Errorf("last systemd call = %q; SGC must be running again after a rollback", last)
+	}
+	// What the failed update switched on is switched off again.
+	if !slices.Contains(e.services.calls, "enable "+bootUnit) || !slices.Contains(e.services.calls, "disable "+bootUnit) {
+		t.Errorf("systemd calls = %v; the new unit must be enabled and, on rollback, disabled", e.services.calls)
+	}
+}
+
+func TestOnlyNewUnitsAreEnabled(t *testing.T) {
+	cases := []struct {
+		name, content string
+		existed, want bool
+	}{
+		{"new.service", "[Install]\nWantedBy=multi-user.target\n", false, true},
+		{"indented.service", "[Service]\nExecStart=/bin/true\n\n  [Install]  \nWantedBy=multi-user.target\n", false, true},
+		{"no-install-section.service", "[Service]\nExecStart=/bin/true\n", false, false},
+		// Mentioning the word is not having the section.
+		{"only-a-comment.service", "# see [Install] in the manual\n[Service]\n", false, false},
+		// A unit that was already there may have been switched off on purpose.
+		{"existing.service", "[Install]\nWantedBy=multi-user.target\n", true, false},
+		// Templates are started per instance.
+		{"template@.service", "[Install]\nWantedBy=multi-user.target\n", false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t)
+			if c.existed {
+				e.write(filepath.Join(e.cfg.UnitDir, c.name), "old", 0o644)
+			}
+			entries := append(goodRelease()[:3:3], tarEntry{name: c.name, content: c.content})
+			e.publish(newVersion, entries, e.private)
+			if status := Run(context.Background(), e.cfg, newVersion); status.State != StateSucceeded {
+				t.Fatalf("status = %+v", status)
+			}
+			if got := slices.Contains(e.services.calls, "enable "+c.name); got != c.want {
+				t.Errorf("enabled = %v, want %v (calls: %v)", got, c.want, e.services.calls)
+			}
+		})
 	}
 }
 

@@ -11,6 +11,8 @@
 #                  (needs a clean machine)
 #   accepted       a genuine release installs; setup, sign-in and the
 #                  dashboard data work; the root helper is locked down
+#   firewall       the firewall: off until switched on, undone by itself
+#                  unless confirmed, refusing the outside once confirmed
 #   update-setup   points the installed SGC at a local test update source
 #   update-refused a tampered update is refused and changes nothing
 #   update-good    a genuine update installs from the dashboard's API
@@ -20,6 +22,7 @@
 #   export         makes an export through the API (kept in the home folder)
 #   restart        asks SGC to restart the machine (the machine goes down)
 #   after-restart  SGC came back by itself and remembers everything
+#   firewall-cli   "sgc doctor" and "sgc firewall off" over SSH
 #   restore        on a freshly wiped machine: installs, then restores the
 #                  export made earlier and checks that SGC is what it was
 
@@ -159,6 +162,42 @@ expect_in_audit() { # expect_in_audit <description> <text>
     fi
 }
 
+# --- Firewall ----------------------------------------------------------------
+
+# Stand-ins for other machines: a network namespace is a second, separate
+# network stack on this machine, joined to it by a virtual cable. One of them
+# gets a public address (as if from the internet), one a private address (as
+# if from the home network). 203.0.113.0/24 is reserved for examples and
+# never routed on the real internet.
+outside_net=sgc-outside outside_gateway=203.0.113.1 outside_peer=203.0.113.2
+inside_net=sgc-inside inside_gateway=192.168.77.1 inside_peer=192.168.77.2
+
+neighbour() { # neighbour <name> <this machine's address> <the neighbour's address>
+    sudo ip netns list | grep -q "^$1\b" && return 0
+    sudo ip netns add "$1" &&
+        sudo ip link add "$1-a" type veth peer name "$1-b" &&
+        sudo ip link set "$1-b" netns "$1" &&
+        sudo ip addr add "$2/24" dev "$1-a" &&
+        sudo ip link set "$1-a" up &&
+        sudo ip netns exec "$1" ip addr add "$3/24" dev "$1-b" &&
+        sudo ip netns exec "$1" ip link set "$1-b" up
+}
+
+# reaches <name> <address> <port>: can that neighbour open a connection?
+# shellcheck disable=SC2317  # called indirectly through check()
+reaches() {
+    sudo ip netns exec "$1" timeout 3 bash -c "exec 3<>/dev/tcp/$2/$3"
+}
+# shellcheck disable=SC2317  # called indirectly through check()
+does_not_reach() { ! reaches "$@"; }
+
+# shellcheck disable=SC2317  # called indirectly through check() and wait_for()
+firewall_is() { [ "$(http GET /api/firewall)" = 200 ] && grep -q "\"state\":\"$1\"" /tmp/sgc-test-body; }
+# shellcheck disable=SC2317  # called indirectly through check()
+rules_loaded() { sudo /usr/sbin/nft list table inet sgc; }
+# shellcheck disable=SC2317  # called indirectly through check()
+no_rules_loaded() { [ ! -x /usr/sbin/nft ] || ! sudo /usr/sbin/nft list table inet sgc; }
+
 case "$mode" in
 refused)
     echo "Altered files must be refused before anything is installed"
@@ -176,6 +215,8 @@ accepted)
     check "sgc reports version $version" sh -c "sgc version | grep -q '^sgc $version '"
     check "service is running" systemctl is-active --quiet sgc
     check "service starts at boot" systemctl is-enabled --quiet sgc
+    check "the unit that loads the firewall's rules at start-up is switched on" systemctl is-enabled --quiet sgc-firewall.service
+    check "it has nothing to load yet" sh -c "[ ! -e /etc/sgc/firewall.nft ] && ! systemctl is-failed --quiet sgc-firewall.service"
     check "service runs as the unprivileged user sgc" sh -c "[ \"\$(ps -o user= -C sgc)\" = sgc ]"
     check "program files belong to root" sh -c "[ \"\$(stat -c %U:%G /opt/sgc/current/sgc)\" = root:root ]"
     check "programs are not writable by others" sh -c "[ \"\$(stat -c %a /opt/sgc/current/sgc)\" = 755 ] && [ \"\$(stat -c %a /opt/sgc/current/sgc-helper)\" = 755 ]"
@@ -255,6 +296,113 @@ accepted)
     expect_status "the earlier sign-in still works" 200 GET /api/health
     ;;
 
+firewall)
+    echo "The firewall is off until it is switched on"
+    expect_status "the firewall's state is available" 200 GET /api/firewall
+    check "it is off" body_has '"state":"off"'
+    check "a clean Debian does not have the firewall software" body_has '"softwareInstalled":false'
+    check "this connection counts as coming from inside" body_has '"inside":true'
+    check "nothing is loaded" no_rules_loaded
+    if neighbour "$outside_net" "$outside_gateway" "$outside_peer" && neighbour "$inside_net" "$inside_gateway" "$inside_peer"; then
+        pass "two stand-in neighbours are set up: one with a public address, one with a home address"
+    else
+        fail "the stand-in neighbours could not be set up"
+    fi
+    check "without a firewall the public neighbour reaches SGC's page" reaches "$outside_net" "$outside_gateway" 8443
+    check "and SSH" reaches "$outside_net" "$outside_gateway" 22
+
+    echo "Switched on and not confirmed: it undoes itself"
+    expect_status "switching on is accepted" 202 POST /api/firewall/change '{"enabled":true}'
+    check "the change is in effect and waits for confirmation" body_has '"state":"pending"'
+    check "the firewall software was installed from Debian" test -x /usr/sbin/nft
+    expect_in_audit "which is in the history" '"action":"system.packages_installed"'
+    check "the rules are loaded" rules_loaded
+    check "the public neighbour no longer reaches SGC's page" does_not_reach "$outside_net" "$outside_gateway" 8443
+    check "nor SSH" does_not_reach "$outside_net" "$outside_gateway" 22
+    check "the home neighbour still reaches SGC's page" reaches "$inside_net" "$inside_gateway" 8443
+    check "and SSH" reaches "$inside_net" "$inside_gateway" 22
+    expect_status "a second change while one waits is refused" 409 POST /api/firewall/change '{"enabled":false}'
+    check "nothing is saved as confirmed" sudo sh -c '[ ! -e /etc/sgc/firewall.nft ]'
+    echo "        (waiting a good minute without confirming)"
+    if wait_for 80 firewall_is off; then pass "after a minute the firewall is off again"; else
+        fail "the unconfirmed change was not undone"
+        indent </tmp/sgc-test-body
+    fi
+    check "the rules are gone" no_rules_loaded
+    check "the public neighbour gets through again" reaches "$outside_net" "$outside_gateway" 8443
+    check "still nothing is saved as confirmed" sudo sh -c '[ ! -e /etc/sgc/firewall.nft ]'
+    expect_in_audit "the history says it was undone for lack of confirmation" '"action":"firewall.change_expired"'
+    expect_status "confirming now is too late" 409 POST /api/firewall/confirm '{}'
+    expect_status "the firewall's state is available" 200 GET /api/firewall
+    check "an unconfirmed change is not recorded as what the owner wants" body_has '"wanted":false'
+
+    echo "The process that waits for the confirmation is killed: undone at once"
+    expect_status "switching on again" 202 POST /api/firewall/change '{"enabled":true}'
+    check "the rules are loaded" rules_loaded
+    sudo kill -KILL "$(systemctl show -p MainPID --value sgc-firewall-change.service)"
+    if wait_for 10 firewall_is off; then pass "the firewall is off again within seconds"; else fail "the change survived its guard being killed"; fi
+    check "the rules are gone" no_rules_loaded
+    expect_in_audit "the history says the wait was interrupted" 'the wait for confirmation was interrupted'
+
+    echo "Everything belonging to that unit is killed, its cleanup included: still undone"
+    expect_status "switching on again" 202 POST /api/firewall/change '{"enabled":true}'
+    check "the rules are loaded" rules_loaded
+    sudo systemctl kill --signal=KILL sgc-firewall-change.service
+    if wait_for 10 firewall_is off; then pass "the firewall is off again within seconds"; else fail "the change survived the whole unit being killed"; fi
+    check "the rules are gone" no_rules_loaded
+
+    echo "Undone on request"
+    expect_status "switching on again" 202 POST /api/firewall/change '{"enabled":true}'
+    expect_status "undo" 200 POST /api/firewall/undo '{}'
+    check "the firewall is off" body_has '"state":"off"'
+    check "the rules are gone" no_rules_loaded
+    expect_in_audit "the history says who undid it" "\"actor\":\"$username\",\"action\":\"firewall.change_undone\""
+
+    echo "Many changes in quick succession"
+    # More starts within ten seconds than systemd allows a unit by default;
+    # neither a change nor its undoing may ever be refused for that.
+    quick=0
+    for _ in 1 2 3 4 5 6 7; do
+        [ "$(http POST /api/firewall/change '{"enabled":true}')" = 202 ] &&
+            [ "$(http POST /api/firewall/undo '{}')" = 200 ] && quick=$((quick + 1))
+    done
+    if [ "$quick" -eq 7 ]; then pass "seven times on and undone again, none refused"; else
+        fail "only $quick of seven quick changes went through"
+        indent </tmp/sgc-test-body
+    fi
+    check "the firewall is off after the last undo" no_rules_loaded
+    check "none of the firewall's units was refused a start" \
+        sh -c "! systemctl show -p Result sgc-firewall-change.service sgc-firewall-revert.service | grep -q start-limit"
+
+    echo "Switched on and confirmed: it stays"
+    expect_status "switching on again" 202 POST /api/firewall/change '{"enabled":true}'
+    expect_status "confirming" 200 POST /api/firewall/confirm '{}'
+    check "the firewall is on" body_has '"state":"on"'
+    check "and recorded as what the owner wants" body_has '"wanted":true'
+    check "SSH and SGC's page are what is let in" body_has '"sshPorts":\[22\],"webPort":8443'
+    check "the confirmed rules are saved, owned by root" sudo sh -c "[ \"\$(stat -c %U:%a /etc/sgc/firewall.nft)\" = root:644 ]"
+    check "the web process cannot change them" sh -c '! sudo -u sgc sh -c "echo >> /etc/sgc/firewall.nft"'
+    sleep 2
+    check "nothing is waiting any more" sh -c '! systemctl is-active --quiet sgc-firewall-change.service'
+    check "the rules are loaded" rules_loaded
+    check "the public neighbour is refused: SGC's page" does_not_reach "$outside_net" "$outside_gateway" 8443
+    check "the public neighbour is refused: SSH" does_not_reach "$outside_net" "$outside_gateway" 22
+    check "the home neighbour is let in: SGC's page" reaches "$inside_net" "$inside_gateway" 8443
+    check "the home neighbour is let in: SSH" reaches "$inside_net" "$inside_gateway" 22
+    check "the machine itself still reaches the internet" sh -c "curl -s -m 10 -o /dev/null https://deb.debian.org/"
+    # A fresh install switches the start-up unit on by itself (checked with
+    # the installer above). A machine that was updated from a version without
+    # a firewall has it started through sgc.service instead. Either is enough.
+    check "the rules load at every start-up" \
+        sh -c "systemctl is-enabled --quiet sgc-firewall.service || systemctl show --property=Wants --value sgc.service | grep -q sgc-firewall.service"
+    expect_in_audit "the confirmation is in the history" '"action":"firewall.change_confirmed"'
+
+    echo "The root helper still takes no instructions about rules"
+    check "a request with anything but on or off is refused" \
+        sh -c "sudo -u sgc curl -s -m 5 -o /dev/null -w '%{http_code}' -X POST -d '{\"enabled\":false,\"rules\":\"accept\"}' --unix-socket /run/sgc-helper/helper.sock http://helper/v1/firewall/change | grep -q 400"
+    check "the firewall is still on" rules_loaded
+    ;;
+
 update-setup)
     echo "Pointing SGC at a test update source on this machine"
     mkdir -p "$mirror"
@@ -267,7 +415,9 @@ update-setup)
     sudo systemctl restart sgc
     if wait_for 30 version_is "$version"; then pass "SGC is running with the test source"; else fail "SGC did not come back"; fi
     expect_status "update status needs a sign-in" 200 GET /api/update
-    check "nothing has been checked yet" body_has '"checkedAt":null'
+    # Whether SGC has already looked for updates by itself depends on how
+    # long it has been running, so that is not checked here.
+    check "it reports the installed version" body_has "\"current\":\"$version\""
     check "the daily check is on by default" body_has '"autoCheck":true'
     ;;
 
@@ -306,6 +456,9 @@ update-good)
         sh -c "sudo -u sgc curl -s -m 5 --unix-socket /run/sgc-helper/helper.sock http://helper/v1/ping | grep -q '\"version\":\"$next1\"'"
     check "the database backup is kept by root only" sudo sh -c "[ \"\$(stat -c %U:%a /var/lib/sgc-update/database-backup)\" = root:700 ]"
     check "the download was cleaned up" sudo sh -c "[ -z \"\$(ls -A /var/lib/sgc/updates 2>/dev/null)\" ]"
+    check "the firewall stayed on through the update" rules_loaded
+    expect_status "the firewall's state is available" 200 GET /api/firewall
+    check "and the new version knows it" body_has '"state":"on"'
     ;;
 
 update-broken)
@@ -322,9 +475,12 @@ update-broken)
     check "the sgc command is the version from before" sh -c "sgc version | grep -q '^sgc $before '"
     check "service is running" systemctl is-active --quiet sgc
     check "current points at the version from before" sh -c "[ \"\$(readlink /opt/sgc/current)\" = releases/$before ]"
+    check "the firewall stayed on through the failed update" rules_loaded
     expect_status "the earlier sign-in still works" 200 GET /api/health
     expect_in_audit "the rollback was recorded in the activity log" '"action":"update.rolled_back"'
-    check "the earlier history survived" body_has '"action":"setup.completed"'
+    # The activity log shows the newest entries only, so this asks for what
+    # happened shortly before the broken update.
+    check "the earlier history survived" body_has '"action":"firewall.change_confirmed"'
     check "including the successful update before it" body_has '"action":"update.succeeded"'
     expect_status "the broken version is still offered, not silently hidden" 200 GET /api/update
     check "still offered" body_has '"updateAvailable":true'
@@ -448,7 +604,15 @@ restore)
         "{\"username\":\"$username\",\"password\":\"$password\"}"
     expect_status "update settings are readable" 200 GET /api/update
     check "the changed setting came back" body_has '"autoCheck":false'
-    expect_in_audit "the history came back" '"action":"setup.completed"'
+    expect_status "the firewall's state is available" 200 GET /api/firewall
+    check "the export says the firewall was on" body_has '"wanted":true'
+    check "but on this new machine nothing was switched on unasked" body_has '"state":"off"'
+    check "no rules are loaded" no_rules_loaded
+    # The activity log shows the newest entries only; everything asked for
+    # here happened on the old machine shortly before the export. (That the
+    # whole history survives, down to the first entry, is checked on the
+    # database itself by the tests in internal/backup.)
+    expect_in_audit "the history came back" '"action":"firewall.change_confirmed"'
     check "including the updates made on the old machine" body_has '"action":"update.succeeded"'
     expect_in_audit "the restore itself was recorded" '"action":"restore.completed"'
     expect_status "the fresh install's setup link is closed" 409 POST /api/setup \
@@ -476,6 +640,98 @@ after-restart)
     expect_status "the activity log is available" 200 GET /api/audit
     check "the restart was recorded" body_has '"action":"device.restart"'
     check "no failed restart was recorded" sh -c "! grep -q 'device.restart_failed' /tmp/sgc-test-body"
+    expect_status "the firewall's state is available" 200 GET /api/firewall
+    check "the firewall is still on" body_has '"state":"on"'
+    check "its rules were loaded at start-up" rules_loaded
+    check "by the unit made for that" systemctl is-active --quiet sgc-firewall.service
+    # network-pre.target is the point in start-up before which no network
+    # interface is configured.
+    check "before the network came up" sh -c "[ \"\$(systemctl show -p ActiveEnterTimestampMonotonic --value sgc-firewall.service)\" -lt \"\$(systemctl show -p ActiveEnterTimestampMonotonic --value network-pre.target)\" ]"
+    ;;
+
+firewall-cli)
+    echo "'sgc doctor' looks at every part"
+    if output="$(sgc doctor 2>&1)"; then
+        fail "without sudo it was not refused"
+    elif echo "$output" | grep -q 'needs root'; then
+        pass "without sudo it explains that it needs root"
+    else
+        fail "without sudo: unexpected message"
+        indent <<<"$output"
+    fi
+    output="$(sudo sgc doctor 2>&1)"
+    code=$?
+    if [ "$code" -eq 0 ]; then pass "on a healthy machine it reports no problems"; else
+        fail "it reports problems on a healthy machine (exit code $code)"
+        indent <<<"$output"
+    fi
+    for line in "The SGC service is running" "SGC's page answers on port 8443" "The root helper answers" \
+        "The firewall is on, and its rules are loaded" "The firewall's rules load at every start-up"; do
+        if echo "$output" | grep -q "ok    $line"; then pass "it says: $line"; else
+            fail "it does not say: $line"
+            indent <<<"$output"
+        fi
+    done
+
+    echo "It notices what is wrong"
+    sudo /usr/sbin/nft destroy table inet sgc
+    output="$(sudo sgc doctor 2>&1)"
+    code=$?
+    if [ "$code" -ne 0 ] && echo "$output" | grep -q "FAIL  The firewall is switched on, but its rules are not loaded"; then
+        pass "rules removed behind SGC's back are reported as a problem"
+    else
+        fail "missing rules were not reported (exit code $code)"
+        indent <<<"$output"
+    fi
+    if echo "$output" | grep -q 'sudo systemctl restart sgc-firewall'; then pass "it says how to put them back"; else
+        fail "it does not say how to put them back"
+        indent <<<"$output"
+    fi
+    sudo systemctl restart sgc-firewall
+    check "following that advice loads the rules again" rules_loaded
+    sudo systemctl stop sgc
+    output="$(sudo sgc doctor 2>&1)"
+    code=$?
+    if [ "$code" -ne 0 ] && echo "$output" | grep -q "FAIL  The SGC service is not running" && echo "$output" | grep -q "FAIL  SGC's page does not answer"; then
+        pass "a stopped SGC is reported, and the doctor still works without it"
+    else
+        fail "a stopped SGC was not reported (exit code $code)"
+        indent <<<"$output"
+    fi
+    check "the firewall does not depend on SGC running" rules_loaded
+    sudo systemctl start sgc
+    if wait_for 30 firewall_is on; then pass "SGC is back"; else fail "SGC did not come back"; fi
+
+    echo "'sgc firewall' at the machine itself"
+    check "the state can be read without sudo" sh -c "sgc firewall status | grep -q 'The firewall is on'"
+    if output="$(sgc firewall off 2>&1)"; then
+        fail "switching off without sudo was not refused"
+    elif echo "$output" | grep -q 'needs root'; then
+        pass "switching off without sudo is refused"
+    else
+        fail "without sudo: unexpected message"
+        indent <<<"$output"
+    fi
+    check "the firewall is still on" rules_loaded
+    output="$(sudo sgc firewall off 2>&1)"
+    code=$?
+    if [ "$code" -eq 0 ] && echo "$output" | grep -q 'The firewall is off'; then pass "with sudo it switches the firewall off"; else
+        fail "switching off failed (exit code $code)"
+        indent <<<"$output"
+    fi
+    check "no rules are loaded" no_rules_loaded
+    check "off is what the machine would start with" sudo sh -c "grep -q '\"enabled\":false' /etc/sgc/firewall.nft"
+    check "the state says so" sh -c "sgc firewall status | grep -q 'The firewall is off'"
+    expect_status "SGC's page knows" 200 GET /api/firewall
+    check "it shows the firewall as off" body_has '"state":"off"'
+    check "and no longer as wanted" body_has '"wanted":false'
+    check "SGC's own files still belong to its user" sudo sh -c "[ -z \"\$(find /var/lib/sgc ! -user sgc)\" ]"
+    expect_in_audit "the history says it was done at the machine" '"actor":"console","action":"firewall.change_confirmed","detail":"firewall switched off"'
+
+    echo "And it can be switched on again from the page"
+    expect_status "switching on" 202 POST /api/firewall/change '{"enabled":true}'
+    expect_status "confirming" 200 POST /api/firewall/confirm '{}'
+    check "the rules are loaded" rules_loaded
     ;;
 
 *)

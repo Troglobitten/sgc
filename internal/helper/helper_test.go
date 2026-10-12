@@ -3,12 +3,15 @@ package helper
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Troglobitten/sgc/internal/firewall"
 )
 
 // startHelper runs a helper on a socket in a temporary folder and returns a
@@ -90,9 +93,14 @@ func TestOnlyListedOperationsExist(t *testing.T) {
 	for _, probe := range []struct{ method, path string }{
 		{http.MethodPost, "/v1/exec"},
 		{http.MethodGet, "/v1/restart-device"},
+		{http.MethodGet, "/v1/install-packages"},
+		{http.MethodGet, "/v1/firewall/change"},
+		{http.MethodGet, "/v1/firewall/confirm"},
+		{http.MethodGet, "/v1/firewall/undo"},
+		{http.MethodPost, "/v1/firewall/off"},
 		{http.MethodGet, "/"},
 	} {
-		if err := client.call(context.Background(), probe.method, probe.path, nil, nil); err == nil {
+		if err := client.call(context.Background(), defaultTimeout, probe.method, probe.path, nil, nil); err == nil {
 			t.Errorf("%s %s was accepted", probe.method, probe.path)
 		}
 	}
@@ -134,6 +142,94 @@ func TestStartUpdateFailureIsReported(t *testing.T) {
 	err := client.StartUpdate(context.Background(), "0.5.1")
 	if err == nil || !strings.Contains(err.Error(), "unit not found") {
 		t.Errorf("err = %v, want the underlying reason", err)
+	}
+}
+
+func TestFirewallOperations(t *testing.T) {
+	var calls []string
+	client := startHelper(t, &Server{
+		AllowedUID:      uint32(os.Getuid()),
+		InstallPackages: func() error { calls = append(calls, "packages"); return nil },
+		FirewallChange: func(request firewall.Request) error {
+			calls = append(calls, fmt.Sprintf("change enabled=%v", request.Enabled))
+			return nil
+		},
+		FirewallConfirm: func() error { calls = append(calls, "confirm"); return nil },
+		FirewallUndo:    func() error { calls = append(calls, "undo"); return errors.New("nothing was waiting") },
+	})
+	ctx := context.Background()
+
+	if err := client.InstallPackages(ctx); err != nil {
+		t.Errorf("InstallPackages: %v", err)
+	}
+	if err := client.FirewallChange(ctx, firewall.Request{Enabled: true}); err != nil {
+		t.Errorf("FirewallChange: %v", err)
+	}
+	if err := client.FirewallChange(ctx, firewall.Request{Enabled: false}); err != nil {
+		t.Errorf("FirewallChange: %v", err)
+	}
+	if err := client.FirewallConfirm(ctx); err != nil {
+		t.Errorf("FirewallConfirm: %v", err)
+	}
+	if err := client.FirewallUndo(ctx); err == nil || !strings.Contains(err.Error(), "nothing was waiting") {
+		t.Errorf("FirewallUndo: err = %v, want the underlying reason", err)
+	}
+	want := "packages, change enabled=true, change enabled=false, confirm, undo"
+	if got := strings.Join(calls, ", "); got != want {
+		t.Errorf("calls = %s\nwant    %s", got, want)
+	}
+}
+
+// A firewall request is one yes-or-no value. Anything else in it would be an
+// attempt to say more than the web process is allowed to, and is refused.
+func TestFirewallChangeAcceptsNothingButOnOrOff(t *testing.T) {
+	changes := 0
+	client := startHelper(t, &Server{
+		AllowedUID:     uint32(os.Getuid()),
+		FirewallChange: func(firewall.Request) error { changes++; return nil },
+	})
+	for _, body := range []any{
+		map[string]any{"enabled": true, "sshPorts": []int{1}},
+		map[string]any{"enabled": true, "rules": "accept"},
+		map[string]any{"enabled": "yes"},
+		[]bool{true},
+		"on",
+	} {
+		if err := client.call(context.Background(), defaultTimeout, http.MethodPost, "/v1/firewall/change", body, nil); err == nil {
+			t.Errorf("%v was accepted", body)
+		}
+	}
+	if changes != 0 {
+		t.Errorf("the firewall was changed %d times by refused requests", changes)
+	}
+}
+
+func TestFirewallIsRefusedForOtherUsers(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root is always allowed; this test needs an ordinary user")
+	}
+	touched := false
+	touch := func() error { touched = true; return nil }
+	client := startHelper(t, &Server{
+		AllowedUID:      uint32(os.Getuid()) + 1, // somebody else
+		InstallPackages: touch,
+		FirewallChange:  func(firewall.Request) error { return touch() },
+		FirewallConfirm: touch,
+		FirewallUndo:    touch,
+	})
+	ctx := context.Background()
+	for name, err := range map[string]error{
+		"InstallPackages": client.InstallPackages(ctx),
+		"FirewallChange":  client.FirewallChange(ctx, firewall.Request{Enabled: false}),
+		"FirewallConfirm": client.FirewallConfirm(ctx),
+		"FirewallUndo":    client.FirewallUndo(ctx),
+	} {
+		if err == nil {
+			t.Errorf("%s was accepted from a user who is not allowed", name)
+		}
+	}
+	if touched {
+		t.Error("an operation ran for a refused user")
 	}
 }
 

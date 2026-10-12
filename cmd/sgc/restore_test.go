@@ -9,10 +9,15 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Troglobitten/sgc/internal/fwcontrol"
+	"github.com/Troglobitten/sgc/internal/layout"
+	"github.com/Troglobitten/sgc/internal/store"
 )
 
 // instance is one running `sgc serve` with its own state folder, driven the
@@ -27,9 +32,11 @@ type instance struct {
 func startInstance(t *testing.T) *instance {
 	t.Helper()
 	stateDir := t.TempDir()
-	// The update folder is pointed inside the test's own folder so nothing
-	// on the machine running the test is read.
-	_, out, _ := startServe(t, "--state-dir", stateDir, "--update-work-dir", stateDir+"/update-work")
+	// What the root side would keep (the updater's outcome, the firewall's
+	// state) is pointed inside the test's own folder, so nothing on the
+	// machine running the test is read.
+	_, out, _ := startServe(t, "--state-dir", stateDir, "--update-work-dir", stateDir+"/update-work",
+		"--firewall-file", stateDir+"/firewall/firewall.nft", "--firewall-run-dir", stateDir+"/firewall/run")
 	jar, _ := cookiejar.New(nil)
 	return &instance{
 		t: t, stateDir: stateDir, out: out,
@@ -109,6 +116,18 @@ func TestExportFromOneInstallRestoresIntoAFreshOne(t *testing.T) {
 	if resp, body := old.postJSON("/api/update/settings", map[string]bool{"autoCheck": false}); resp.StatusCode != http.StatusOK {
 		t.Fatalf("change setting: %d %s", resp.StatusCode, body)
 	}
+	// As if the owner had switched the firewall on there. Doing that for
+	// real takes root and a firewall; what an export carries of it is the
+	// owner's wish, which SGC keeps as a setting.
+	oldDB, err := store.Open(context.Background(), filepath.Join(old.stateDir, layout.DatabaseFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSetting(context.Background(), oldDB, fwcontrol.SettingEnabled, "true"); err != nil {
+		t.Fatal(err)
+	}
+	oldDB.Close()
+
 	resp, exportFile := old.postJSON("/api/export", map[string]string{"password": password, "passphrase": passphrase})
 	if resp.StatusCode != http.StatusOK || !bytes.HasPrefix(exportFile, []byte("age-encryption.org/v1\n")) {
 		t.Fatalf("export: status %d, %d bytes", resp.StatusCode, len(exportFile))
@@ -174,6 +193,15 @@ func TestExportFromOneInstallRestoresIntoAFreshOne(t *testing.T) {
 	var update struct{ AutoCheck bool }
 	if fresh.getJSON("/api/update", &update) != http.StatusOK || update.AutoCheck {
 		t.Errorf("the changed setting did not survive: autoCheck = %v", update.AutoCheck)
+	}
+	// The firewall is known to have been on, and is not switched on unasked:
+	// this is another machine, and that step needs the owner's confirmation.
+	var fw struct {
+		State  string
+		Wanted bool
+	}
+	if fresh.getJSON("/api/firewall", &fw) != http.StatusOK || !fw.Wanted || fw.State != "off" {
+		t.Errorf("the firewall after the restore: %+v, want it wanted and off", fw)
 	}
 	var history []struct{ Actor, Action, Detail string }
 	fresh.getJSON("/api/audit", &history)
