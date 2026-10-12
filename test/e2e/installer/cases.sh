@@ -15,6 +15,9 @@
 #                  unless confirmed, refusing the outside once confirmed
 #   ssh            SSH keys added in the page; "keys only" is undone by
 #                  itself unless a login with a key is seen, and stays if one is
+#   os-updates     updates for the device: nothing until the owner chooses;
+#                  by hand, the page lists what waits and installs it; then
+#                  set to install by themselves
 #   update-setup   points the installed SGC at a local test update source
 #   update-refused a tampered update is refused and changes nothing
 #   update-good    a genuine update installs from the dashboard's API
@@ -35,6 +38,8 @@
 #   old-install    installs the previous release and creates the admin
 #   upgrade        the previous release updates itself to <new version>,
 #                  with its own updater
+#   os-updates-auto  updates for the device set to install by themselves, and
+#                  Debian's own daily run then installs what is waiting
 
 exec 2>&1
 set -uo pipefail
@@ -244,6 +249,43 @@ ssh_settled() { ssh_state_has '"pending":null'; }
 add_key_request() { # add_key_request <password> <label> <the key as pasted>
     printf '{"password":"%s","label":"%s","key":"%s","account":""}' "$1" "$2" "$3"
 }
+
+# --- Updates for the device ---------------------------------------------------
+
+# shellcheck disable=SC2317  # called indirectly through check() and wait_for()
+os_state_has() { [ "$(http GET /api/os-updates)" = 200 ] && grep -q "$1" /tmp/sgc-test-body; }
+# No look and no installation is running.
+# shellcheck disable=SC2317  # called indirectly through wait_for()
+os_idle() { os_state_has '"running":""'; }
+# What apt's settings amount to, all its files taken together. (Read whole
+# first: "apt-config dump | grep -q" fails under pipefail whenever grep finds
+# its line early and stops reading.)
+# shellcheck disable=SC2317  # called indirectly through check()
+apt_says() {
+    local settings
+    settings="$(apt-config dump)"
+    grep -qF "$1" <<<"$settings"
+}
+# What Debian's update tool itself would install right now, as "a b c".
+tool_would_install() {
+    sudo env LC_ALL=C unattended-upgrade --dry-run -v 2>/dev/null |
+        sed -n 's/^Packages that will be upgraded: //p' | xargs
+}
+# A list of names in the answer last fetched ("waiting", "packages"), as "a b c".
+page_list() {
+    grep -o "\"$1\":\[[^]]*\]" /tmp/sgc-test-body | head -1 |
+        sed -e 's/^[^[]*\[//' -e 's/\]$//' -e 's/"//g' -e 's/,/ /g'
+}
+# A request to the root helper as SGC's own user; prints the HTTP status.
+helper_status() { # helper_status <path> <json>
+    sudo -u sgc curl -s -m 30 -o /dev/null -w '%{http_code}' -X POST -d "$2" \
+        --unix-socket /run/sgc-helper/helper.sock "http://helper$1"
+}
+# SGC's one file among apt's settings, and nothing else of SGC's beside it.
+# shellcheck disable=SC2317  # called indirectly through check()
+one_file_of_sgc() { [ "$(find /etc/apt/apt.conf.d -maxdepth 1 -name '*sgc*' | wc -l)" = 1 ]; }
+# A settings file that apt reads after SGC's and that says otherwise.
+overruling_file=/etc/apt/apt.conf.d/99zz-sgc-test
 
 case "$mode" in
 refused)
@@ -606,6 +648,160 @@ ssh)
     check "the second key still gets in" gets_in "$ssh_key2"
     ;;
 
+os-updates)
+    # Changes with every start of the machine.
+    boot_id="$(cat /proc/sys/kernel/random/boot_id)"
+    echo "Updates for the device: nothing is touched until the owner chooses"
+    expect_status "the state is available" 200 GET /api/os-updates
+    check "the owner has not chosen yet" body_has '"mode":""'
+    check "Debian's update tool is on this machine" body_has '"toolInstalled":true'
+    check "SGC has written nothing among apt's settings" sh -c '[ ! -e /etc/apt/apt.conf.d/52sgc-updates ]'
+    expect_status "looking for updates is refused until then" 409 POST /api/os-updates/check '{}'
+    expect_status "and so is installing" 409 POST /api/os-updates/install '{}'
+    expect_status "a choice must be spelled out" 400 POST /api/os-updates/mode '{}'
+    check "no package tool was run" sh -c '[ ! -e /run/sgc-os-updates/report.json ]'
+
+    echo "By hand: SGC's settings file, and a look"
+    expect_status "choosing \"by hand\"" 200 POST /api/os-updates/mode '{"automatic":false}'
+    check "the page says so" body_has '"mode":"by-hand"'
+    check "SGC's settings file is in place" grep -q 'sgc-mode: by-hand' /etc/apt/apt.conf.d/52sgc-updates
+    check "apt reads it: nothing installs by itself" apt_says 'APT::Periodic::Unattended-Upgrade "0";'
+    check "the lists are still fetched every day" apt_says 'APT::Periodic::Update-Package-Lists "1";'
+    check "the update tool will never restart the device" apt_says 'Unattended-Upgrade::Automatic-Reboot "false";'
+    check "Raspberry Pi's archive is added to what may install" apt_says 'origin=Raspberry Pi Foundation,'
+    check "Debian's own archives are still among it" apt_says 'label=Debian-Security'
+    check "the timer that fetches the lists runs" systemctl is-active --quiet apt-daily.timer
+    check "no temporary file is left among apt's settings" one_file_of_sgc
+    if wait_for 240 os_idle; then pass "the look that follows the choice has ended"; else fail "the look did not end"; fi
+    if grep -q '"checkError":""' /tmp/sgc-test-body && ! grep -q '"checkedAt":null' /tmp/sgc-test-body; then pass "and it worked"; else
+        fail "the look failed"
+        indent </tmp/sgc-test-body
+    fi
+    waiting="$(page_list waiting)"
+    expected="$(tool_would_install)"
+    if [ -n "$expected" ]; then pass "updates are waiting on this machine ($(wc -w <<<"$expected"))"; else
+        fail "nothing is waiting on this machine, so installing cannot be tested (is the machine's image brand new?)"
+    fi
+    if [ "$waiting" = "$expected" ]; then pass "the page lists exactly what Debian's update tool would install"; else
+        fail "the page lists: $waiting"
+        echo "        the update tool would install: $expected"
+    fi
+
+    echo "By hand: Debian's own daily run installs nothing"
+    sudo systemctl start apt-daily-upgrade.service
+    if [ "$(tool_would_install)" = "$expected" ]; then pass "the same updates are still waiting after it"; else fail "the daily run installed something"; fi
+
+    echo "By hand: installing from the page"
+    expect_status "the installation starts" 202 POST /api/os-updates/install '{}'
+    check "it is reported as running" body_has '"running":"install"'
+    expect_status "a second one is refused meanwhile" 409 POST /api/os-updates/install '{}'
+    expect_status "and so is a look" 409 POST /api/os-updates/check '{}'
+    expect_status "and so is restarting the device" 409 POST /api/device/restart '{"confirm":true}'
+    if wait_for 1200 os_idle; then pass "the installation has ended"; else fail "the installation did not end"; fi
+    if grep -q '"result":"ok"' /tmp/sgc-test-body; then pass "it ended well"; else
+        fail "it did not end well"
+        indent </tmp/sgc-test-body
+        sudo journalctl -u sgc-os-updates.service --no-pager -n 25 -o cat | indent
+    fi
+    if [ "$(page_list packages)" = "$expected" ]; then pass "the page names what was installed"; else fail "the page names as installed: $(page_list packages)"; fi
+    check "nothing is waiting any more" body_has '"waiting":\[\]'
+    check "what SGC started is not taken for Debian's own daily run" body_has '"lastRun":null'
+    if [ -z "$(tool_would_install)" ]; then pass "Debian's update tool agrees: nothing left to install"; else fail "the update tool would still install: $(tool_would_install)"; fi
+    expect_in_audit "the installation is in the history" '"action":"os_updates.installed"'
+    check "with who started it" body_has "started by $username"
+    check "the unit that did the work is not marked as failed" sh -c "! systemctl is-failed --quiet sgc-os-updates.service"
+
+    echo "A look while Debian's servers cannot be reached"
+    expect_status "the state is available" 200 GET /api/os-updates
+    looked_before="$(grep -o '"checkedAt":"[^"]*"' /tmp/sgc-test-body)"
+    # apt is sent to a proxy that does not exist.
+    printf 'Acquire::http::Proxy "http://127.0.0.1:9";\nAcquire::https::Proxy "http://127.0.0.1:9";\nAcquire::Retries "0";\n' |
+        sudo tee "$overruling_file" >/dev/null
+    expect_status "looking" 202 POST /api/os-updates/check '{}'
+    if wait_for 240 os_idle; then pass "the look has ended"; else fail "the look did not end"; fi
+    check "the page says that it failed, and why" body_has '"checkError":"Debian.s servers could not be reached'
+    if [ -n "$looked_before" ] && grep -qF "$looked_before" /tmp/sgc-test-body; then pass "and does not pass off what it knew before as freshly looked at"; else
+        fail "the failed look is shown as if it had worked"
+        indent </tmp/sgc-test-body
+    fi
+    sudo rm -f "$overruling_file"
+    expect_status "looking again, with the servers back" 202 POST /api/os-updates/check '{}'
+    if wait_for 240 os_idle; then pass "the look has ended"; else fail "the look did not end"; fi
+    check "a look that works clears the complaint" body_has '"checkError":""'
+
+    echo "A restart that an update needs is shown, and not carried out"
+    # Debian's packages say so with a file in /run (a kernel's does). If the
+    # updates just installed did not, the test does it for them.
+    made_up=no
+    if [ ! -e /run/reboot-required ]; then
+        made_up=yes
+        sudo touch /run/reboot-required
+        echo "linux-image-0.0.0-test-amd64" | sudo tee /run/reboot-required.pkgs >/dev/null
+    fi
+    check "the page says a restart is needed" os_state_has '"restartNeeded":true'
+    check "and for what" sh -c "grep -q '\"restartPackages\":\[\"' /tmp/sgc-test-body"
+    if [ "$(cat /proc/sys/kernel/random/boot_id)" = "$boot_id" ]; then pass "the device was not restarted by anything"; else fail "the device has restarted"; fi
+    if [ "$made_up" = yes ]; then sudo rm -f /run/reboot-required /run/reboot-required.pkgs; fi
+
+    echo "The root helper takes a job or a feature by name, and nothing else"
+    # A small package that no machine has by accident.
+    if dpkg -s cowsay >/dev/null 2>&1; then fail "cowsay is already on this machine; the next checks prove nothing"; fi
+    for request in '/v1/os-updates/start {"job":"install","packages":["cowsay"]}' '/v1/os-updates/start {"job":"remove"}' \
+        '/v1/os-updates/mode {"automatic":true,"origins":["origin=*"]}' '/v1/install-packages {"for":"cowsay"}' \
+        '/v1/install-packages {"for":"updates","packages":["cowsay"]}'; do
+        if [ "$(helper_status "${request%% *}" "${request#* }")" = 400 ]; then pass "refused: $request"; else fail "not refused: $request"; fi
+    done
+    if dpkg -s cowsay >/dev/null 2>&1; then fail "a package named in a request was installed"; else pass "nothing named in a request was installed"; fi
+
+    echo "A setting elsewhere on the device that would overrule SGC's"
+    printf 'APT::Periodic::Unattended-Upgrade "0";\n' | sudo tee "$overruling_file" >/dev/null
+    expect_status "choosing \"by themselves\" is refused" 502 POST /api/os-updates/mode '{"automatic":true}'
+    check "and the answer says why" body_has 'overrules SGC'
+    check "SGC's file still says by hand" grep -q 'sgc-mode: by-hand' /etc/apt/apt.conf.d/52sgc-updates
+    check "the refusal leaves no unit marked as failed" sh -c "! systemctl is-failed --quiet sgc-os-updates-set.service"
+    sudo rm -f "$overruling_file"
+
+    echo "By themselves"
+    expect_status "choosing \"by themselves\"" 200 POST /api/os-updates/mode '{"automatic":true}'
+    check "the page says so" body_has '"mode":"automatic"'
+    check "SGC's settings file says so" grep -q 'sgc-mode: automatic' /etc/apt/apt.conf.d/52sgc-updates
+    check "apt reads it: updates install every day" apt_says 'APT::Periodic::Unattended-Upgrade "1";'
+    # Test-Installer.ps1 stopped Debian's timers when it reset the machine.
+    check "SGC started Debian's daily timers" sh -c "systemctl is-active --quiet apt-daily.timer && systemctl is-active --quiet apt-daily-upgrade.timer"
+    check "and they will start with the device" sh -c "systemctl is-enabled --quiet apt-daily.timer && systemctl is-enabled --quiet apt-daily-upgrade.timer"
+    check "the device now installs updates by itself" os_state_has '"daily":true'
+    check "nothing is wrong with that" body_has '"problem":""'
+    if wait_for 240 os_idle; then pass "the look that follows the choice has ended"; else fail "the look did not end"; fi
+    expect_in_audit "the choice is in the history" '"action":"os_updates.mode_automatic"'
+    check "no unit of SGC's is marked as failed" sh -c "[ -z \"\$(systemctl list-units --failed --plain --no-legend 'sgc*')\" ]"
+    ;;
+
+os-updates-auto)
+    echo "Updates for the device, set to install by themselves"
+    expect_status "the state is available" 200 GET /api/os-updates
+    check "the owner has not chosen yet" body_has '"mode":""'
+    expect_status "choosing \"by themselves\"" 200 POST /api/os-updates/mode '{"automatic":true}'
+    check "the page says so" body_has '"mode":"automatic"'
+    check "apt reads SGC's file: updates install every day" apt_says 'APT::Periodic::Unattended-Upgrade "1";'
+    check "the device now installs updates by itself" os_state_has '"daily":true'
+    if wait_for 240 os_idle; then pass "the look that follows the choice has ended"; else fail "the look did not end"; fi
+    expected="$(tool_would_install)"
+    if [ -n "$expected" ]; then pass "updates are waiting on this machine ($(wc -w <<<"$expected"))"; else
+        fail "nothing is waiting on this machine, so installing cannot be tested (is the machine's image brand new?)"
+    fi
+    if [ "$(page_list waiting)" = "$expected" ]; then pass "the page lists exactly what Debian's update tool would install"; else fail "the page lists: $(page_list waiting)"; fi
+
+    echo "Debian's own daily run installs them"
+    # What Debian's timer does once a day, done now.
+    sudo systemctl start apt-daily-upgrade.service
+    if [ -z "$(tool_would_install)" ]; then pass "nothing is left to install after it"; else fail "still waiting after the daily run: $(tool_would_install)"; fi
+    expect_status "looking again" 202 POST /api/os-updates/check '{}'
+    if wait_for 240 os_idle; then pass "the look has ended"; else fail "the look did not end"; fi
+    check "the page agrees: nothing is waiting" body_has '"waiting":\[\]'
+    check "and knows that Debian's daily run has run" sh -c "! grep -q '\"lastRun\":null' /tmp/sgc-test-body"
+    check "no unit of SGC's is marked as failed" sh -c "[ -z \"\$(systemctl list-units --failed --plain --no-legend 'sgc*')\" ]"
+    ;;
+
 old-install)
     echo "The previous release, as it was published"
     if run_installer good >/tmp/install.log; then pass "its installer succeeded"; else
@@ -865,6 +1061,12 @@ restore)
     check "but on this new machine nothing was switched on unasked" body_has '"state":"off"'
     check "no rules are loaded" no_rules_loaded
 
+    echo "How the old machine got its updates is known, and this one is not set up unasked"
+    expect_status "the state of the device's updates is available" 200 GET /api/os-updates
+    check "on the old machine they installed by themselves" body_has '"wanted":"automatic"'
+    check "here nothing has been chosen" body_has '"mode":""'
+    check "and SGC has written nothing among apt's settings" sh -c '[ ! -e /etc/apt/apt.conf.d/52sgc-updates ]'
+
     echo "The SSH key from the old machine is known, and not installed unasked"
     # The private key travelled over the wipe by way of a Windows folder and
     # lost its permissions there; ssh refuses a key others can read.
@@ -926,6 +1128,11 @@ after-restart)
     check "the key added in the page still gets in" gets_in "$ssh_key2"
     check "the confirmed SSH settings were put in place at start-up" sh -c "[ \"\$(systemctl show -p Result --value sgc-ssh.service)\" = success ]"
     check "before the SSH server started" sh -c "[ \"\$(systemctl show -p ExecMainExitTimestampMonotonic --value sgc-ssh.service)\" -le \"\$(systemctl show -p ExecMainStartTimestampMonotonic --value ssh.service)\" ]"
+    expect_status "the state of the device's updates is available" 200 GET /api/os-updates
+    check "updates are still set to install by themselves" body_has '"mode":"automatic"'
+    check "and the device does so" body_has '"daily":true'
+    check "nothing is wrong with that" body_has '"problem":""'
+    check "no restart is needed right after one" body_has '"restartNeeded":false'
     ;;
 
 cli)
@@ -946,7 +1153,8 @@ cli)
     fi
     for line in "The SGC service is running" "SGC's page answers on port 8443" "The root helper answers" \
         "The firewall is on, and its rules are loaded" "The firewall's rules load at every start-up" \
-        "SSH accepts keys only, and nobody logs in as root" "The 1 key(s) added in SGC's page are in place for the account tester"; do
+        "SSH accepts keys only, and nobody logs in as root" "The 1 key(s) added in SGC's page are in place for the account tester" \
+        "Updates for the device install by themselves"; do
         if echo "$output" | grep -q "ok    $line"; then pass "it says: $line"; else
             fail "it does not say: $line"
             indent <<<"$output"
@@ -989,6 +1197,39 @@ cli)
     # for it (it cannot: see Restore in internal/sshd).
     if wait_for 10 passwords_not_offered; then pass "passwords are not offered again"; else fail "passwords are still offered"; fi
     check "and the key gets in again" gets_in "$ssh_key2"
+    printf 'APT::Periodic::Unattended-Upgrade "0";\n' | sudo tee "$overruling_file" >/dev/null
+    output="$(sudo sgc doctor 2>&1)"
+    code=$?
+    if [ "$code" -ne 0 ] && echo "$output" | grep -q 'FAIL  Another settings file on this device overrules what SGC set up for updates (APT::Periodic::Unattended-Upgrade)'; then
+        pass "a setting that overrules SGC's choice for updates is reported as a problem"
+    else
+        fail "the overruling setting was not reported (exit code $code)"
+        indent <<<"$output"
+    fi
+    if echo "$output" | grep -q 'sorts after 52sgc-updates'; then pass "it says where to look"; else fail "it does not say where to look"; fi
+    sudo rm -f "$overruling_file"
+    sudo systemctl stop apt-daily-upgrade.timer
+    output="$(sudo sgc doctor 2>&1)"
+    code=$?
+    if [ "$code" -ne 0 ] && echo "$output" | grep -q "FAIL  Updates are set to install by themselves, but Debian's daily timers are not running"; then
+        pass "a stopped daily timer is reported as a problem"
+    else
+        fail "the stopped timer was not reported (exit code $code)"
+        indent <<<"$output"
+    fi
+    if echo "$output" | grep -q 'sudo systemctl enable --now apt-daily.timer apt-daily-upgrade.timer'; then pass "it says how to start it"; else fail "it does not say how to start it"; fi
+    sudo systemctl enable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null
+    sudo touch /run/reboot-required
+    output="$(sudo sgc doctor 2>&1)"
+    code=$?
+    if [ "$code" -eq 0 ] && echo "$output" | grep -q 'ok    Updates for the device install by themselves' &&
+        echo "$output" | grep -q 'WARN  A restart is needed for an installed update to take effect'; then
+        pass "following that advice puts it right, and a restart that is needed is mentioned without being a problem"
+    else
+        fail "after starting the timer again (exit code $code)"
+        indent <<<"$output"
+    fi
+    sudo rm -f /run/reboot-required
     sudo systemctl stop sgc
     output="$(sudo sgc doctor 2>&1)"
     code=$?

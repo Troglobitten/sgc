@@ -1,0 +1,37 @@
+[Unit]
+Description=Server Gateway Control: look for Debian's updates, or install them
+Documentation=https://github.com/Troglobitten/sgc
+# Never refused for having been started often (see sgc-firewall-change.service).
+StartLimitIntervalSec=0
+
+[Service]
+# One run per look or installation. The process writes into its report that
+# it is running and says "ready"; whoever started it waits for that. It then
+# fetches Debian's lists and runs Debian's own update tool
+# (unattended-upgrade): to see what is waiting, or to install it. SGC's page
+# reads the report. Started by the helper; see internal/osupdate.
+Type=notify
+NotifyAccess=main
+ExecStart=/opt/sgc/current/sgc-helper os-updates run
+# Run by systemd after the process above has ended, however it ended: if it
+# died in the middle, the report is put right so that nobody waits for it.
+ExecStopPost=/opt/sgc/current/sgc-helper os-updates finished
+TimeoutStartSec=60
+# On "stop" (the device is shutting down) systemd signals only the main
+# process. That asks the update tool to stop, which it does after the package
+# it is at, and waits for it. Debian's own daily run is stopped the same way
+# and is given the same fifteen minutes.
+KillMode=mixed
+TimeoutStopSec=900
+# A kernel on a slow card takes long; a job still here after three hours is stuck.
+RuntimeMaxSec=10800
+
+# No sandbox at all, like Debian's own daily run (apt-daily-upgrade.service):
+# installing packages means writing all over the system and running the
+# packages' own scripts, a kernel's among them, and a restriction here would
+# only make one of those fail on some device some day. What limits this job
+# is what it can be asked to do: one of two things, with no parameters. Which
+# updates there are is worked out by Debian's tool from the device's own
+# settings.
+RuntimeDirectory=sgc-os-updates
+RuntimeDirectoryPreserve=yes

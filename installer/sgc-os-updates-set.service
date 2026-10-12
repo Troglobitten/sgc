@@ -1,0 +1,45 @@
+[Unit]
+Description=Server Gateway Control: set up Debian's updates (by themselves, or by hand)
+Documentation=https://github.com/Troglobitten/sgc
+# Never refused for having been started often (see sgc-firewall-change.service).
+StartLimitIntervalSec=0
+
+[Service]
+# Writes SGC's one file among apt's settings, which says whether Debian's
+# update tool runs by itself every day, and makes sure Debian's daily timers
+# are running. The file is checked by apt before it is put in place and its
+# effect is checked afterwards; see internal/osupdate. Started by the helper
+# when the owner chooses in SGC's page.
+Type=oneshot
+ExecStart=/opt/sgc/current/sgc-helper os-updates set
+TimeoutStartSec=120
+
+# --- Sandboxing ---------------------------------------------------------
+# Root, because apt's settings belong to root, but with no capabilities at
+# all. It can write to the folder of apt's settings and to its own folder in
+# /run, nowhere else, and it cannot open network connections. Debian's timers
+# are switched on by asking systemd, not by writing anything here.
+RuntimeDirectory=sgc-os-updates
+RuntimeDirectoryPreserve=yes
+ReadWritePaths=/etc/apt/apt.conf.d
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@resources

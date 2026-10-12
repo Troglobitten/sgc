@@ -71,7 +71,10 @@ else
 fi
 
 echo "3. The \"latest\" install link"
-latest="$(curl -fsSL "$repository/releases/latest/download/install.sh" | grep -m1 '^readonly SGC_VERSION' | cut -d"'" -f2)"
+# Fetched whole first: a "grep -m1" reading straight from curl stops reading
+# at the first match, and curl then reports a failure that is none.
+installer="$(curl -fsSL "$repository/releases/latest/download/install.sh")"
+latest="$(grep -m1 '^readonly SGC_VERSION' <<<"$installer" | cut -d"'" -f2)"
 echo "   installs version ${latest:-unknown}"
 
 if [ "$problems" -eq 0 ]; then echo "Release $version checks out."; else echo "$problems problem(s) with release $version."; fi

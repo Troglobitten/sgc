@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -43,17 +42,8 @@ func startSSHChange(cfg sshd.Config) error {
 	if runSystemctl("is-active", "--quiet", sshChangeUnit) == nil {
 		return errors.New("another change to SSH is still waiting for a login with a key")
 	}
-	data, err := json.Marshal(cfg)
-	if err != nil {
+	if err := handOver(sshd.DefaultPaths().RequestFile, cfg); err != nil {
 		return err
-	}
-	path := sshd.DefaultPaths().RequestFile
-	temporary := path + ".new"
-	if err := os.WriteFile(temporary, data, 0o600); err != nil {
-		return fmt.Errorf("hand over the request: %w", err)
-	}
-	if err := os.Rename(temporary, path); err != nil {
-		return fmt.Errorf("hand over the request: %w", err)
 	}
 	return startChangeUnit(sshChangeUnit)
 }

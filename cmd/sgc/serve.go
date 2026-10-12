@@ -28,6 +28,8 @@ import (
 	"github.com/Troglobitten/sgc/internal/health"
 	"github.com/Troglobitten/sgc/internal/helper"
 	"github.com/Troglobitten/sgc/internal/layout"
+	"github.com/Troglobitten/sgc/internal/oscontrol"
+	"github.com/Troglobitten/sgc/internal/osupdate"
 	"github.com/Troglobitten/sgc/internal/sshcontrol"
 	"github.com/Troglobitten/sgc/internal/sshd"
 	"github.com/Troglobitten/sgc/internal/store"
@@ -48,7 +50,10 @@ type serveOptions struct {
 	// The same for SSH keys and settings (internal/sshd).
 	sshStateFile string
 	sshRunDir    string
-	devHTTP      bool
+	// And for updates for the device (internal/osupdate).
+	osUpdatesFile   string
+	osUpdatesRunDir string
+	devHTTP         bool
 }
 
 // serve runs the web UI and API until ctx is cancelled, which is how systemd
@@ -65,6 +70,8 @@ func serve(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags.StringVar(&opts.firewallRunDir, "firewall-run-dir", firewall.DefaultPaths().RunDir, "folder in which the root side keeps a firewall change that waits for confirmation")
 	flags.StringVar(&opts.sshStateFile, "ssh-state-file", sshd.DefaultPaths().StateFile, "file in which the root side keeps the confirmed SSH keys and settings")
 	flags.StringVar(&opts.sshRunDir, "ssh-run-dir", sshd.DefaultPaths().RunDir, "folder in which the root side keeps an SSH change that waits for a key login")
+	flags.StringVar(&opts.osUpdatesFile, "os-updates-file", osupdate.DefaultPaths().ConfigFile, "SGC's file among apt's settings, written by the root side")
+	flags.StringVar(&opts.osUpdatesRunDir, "os-updates-run-dir", osupdate.DefaultPaths().RunDir, "folder in which the root side keeps its report on updates for the device")
 	flags.BoolVar(&opts.devHTTP, "dev-insecure-http", false, "development only: plain http, reachable from this machine only")
 	if err := flags.Parse(args); err != nil {
 		return exitUsage
@@ -169,6 +176,21 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 	// Catches up with SSH changes that the root side confirmed or undid.
 	background.Go(func() { sshControl.Run(runCtx) })
 
+	osUpdatePaths := osupdate.DefaultPaths()
+	osUpdatePaths.ConfigFile, osUpdatePaths.RunDir = opts.osUpdatesFile, opts.osUpdatesRunDir
+	osControl := oscontrol.New(oscontrol.Config{
+		DB:     db,
+		Helper: helperClient,
+		Audit:  auditLog,
+		Paths:  osUpdatePaths,
+		Uptime: sshd.Uptime,
+		Now:    time.Now,
+		Log:    log,
+	})
+	// Looks for Debian's updates once a day, and writes down how
+	// installations started in the page ended.
+	background.Go(func() { osControl.Run(runCtx) })
+
 	ui, err := fs.Sub(webui.Dist, "dist")
 	if err != nil {
 		return fail("load web interface", err)
@@ -185,6 +207,7 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 		Backups:    backups{db: db, stateDir: opts.stateDir},
 		Firewall:   firewallControl,
 		SSH:        sshControl,
+		OSUpdates:  osControl,
 		StartOver: func() {
 			select {
 			case startOver <- struct{}{}:

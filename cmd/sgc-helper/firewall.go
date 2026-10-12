@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -40,19 +39,8 @@ func startFirewallChange(request firewall.Request) error {
 	if runSystemctl("is-active", "--quiet", firewallChangeUnit) == nil {
 		return errors.New("another firewall change is still waiting for confirmation")
 	}
-	data, err := json.Marshal(request)
-	if err != nil {
+	if err := handOver(firewall.DefaultPaths().RequestFile, request); err != nil {
 		return err
-	}
-	// A folder only root can enter (RuntimeDirectory= in sgc-helper.service),
-	// so what the unit reads is what was checked here.
-	path := firewall.DefaultPaths().RequestFile
-	temporary := path + ".new"
-	if err := os.WriteFile(temporary, data, 0o600); err != nil {
-		return fmt.Errorf("hand over the request: %w", err)
-	}
-	if err := os.Rename(temporary, path); err != nil {
-		return fmt.Errorf("hand over the request: %w", err)
 	}
 	return startChangeUnit(firewallChangeUnit)
 }

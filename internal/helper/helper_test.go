@@ -10,8 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Troglobitten/sgc/internal/firewall"
+	"github.com/Troglobitten/sgc/internal/osupdate"
 	"github.com/Troglobitten/sgc/internal/sshd"
 	"github.com/Troglobitten/sgc/internal/sshkeys"
 )
@@ -155,7 +157,7 @@ func TestFirewallOperations(t *testing.T) {
 	var calls []string
 	client := startHelper(t, &Server{
 		AllowedUID:      uint32(os.Getuid()),
-		InstallPackages: func() error { calls = append(calls, "packages"); return nil },
+		InstallPackages: func(feature string) error { calls = append(calls, "packages for "+feature); return nil },
 		FirewallChange: func(request firewall.Request) error {
 			calls = append(calls, fmt.Sprintf("change enabled=%v", request.Enabled))
 			return nil
@@ -165,7 +167,7 @@ func TestFirewallOperations(t *testing.T) {
 	})
 	ctx := context.Background()
 
-	if err := client.InstallPackages(ctx); err != nil {
+	if err := client.InstallPackages(ctx, PackagesFirewall); err != nil {
 		t.Errorf("InstallPackages: %v", err)
 	}
 	if err := client.FirewallChange(ctx, firewall.Request{Enabled: true}); err != nil {
@@ -180,7 +182,7 @@ func TestFirewallOperations(t *testing.T) {
 	if err := client.FirewallUndo(ctx); err == nil || !strings.Contains(err.Error(), "nothing was waiting") {
 		t.Errorf("FirewallUndo: err = %v, want the underlying reason", err)
 	}
-	want := "packages, change enabled=true, change enabled=false, confirm, undo"
+	want := "packages for firewall, change enabled=true, change enabled=false, confirm, undo"
 	if got := strings.Join(calls, ", "); got != want {
 		t.Errorf("calls = %s\nwant    %s", got, want)
 	}
@@ -218,17 +220,144 @@ func TestFirewallIsRefusedForOtherUsers(t *testing.T) {
 	touch := func() error { touched = true; return nil }
 	client := startHelper(t, &Server{
 		AllowedUID:      uint32(os.Getuid()) + 1, // somebody else
-		InstallPackages: touch,
+		InstallPackages: func(string) error { return touch() },
 		FirewallChange:  func(firewall.Request) error { return touch() },
 		FirewallConfirm: touch,
 		FirewallUndo:    touch,
 	})
 	ctx := context.Background()
 	for name, err := range map[string]error{
-		"InstallPackages": client.InstallPackages(ctx),
+		"InstallPackages": client.InstallPackages(ctx, PackagesFirewall),
 		"FirewallChange":  client.FirewallChange(ctx, firewall.Request{Enabled: false}),
 		"FirewallConfirm": client.FirewallConfirm(ctx),
 		"FirewallUndo":    client.FirewallUndo(ctx),
+	} {
+		if err == nil {
+			t.Errorf("%s was accepted from a user who is not allowed", name)
+		}
+	}
+	if touched {
+		t.Error("an operation ran for a refused user")
+	}
+}
+
+// What the web process can cause to be installed is two fixed lists, named
+// by the feature they are for. There is no way to name a package.
+func TestInstallPackagesTakesAFeatureAndNothingElse(t *testing.T) {
+	var asked []string
+	client := startHelper(t, &Server{
+		AllowedUID:      uint32(os.Getuid()),
+		InstallPackages: func(feature string) error { asked = append(asked, feature); return nil },
+	})
+	ctx := context.Background()
+	for _, feature := range []string{PackagesFirewall, PackagesUpdates} {
+		if err := client.InstallPackages(ctx, feature); err != nil {
+			t.Errorf("%s: %v", feature, err)
+		}
+	}
+	for _, body := range []any{
+		nil,
+		map[string]any{},
+		map[string]any{"for": "netcat"},
+		map[string]any{"for": ""},
+		map[string]any{"for": "firewall", "packages": []string{"netcat"}},
+		map[string]any{"for": []string{"firewall"}},
+		map[string]any{"packages": []string{"netcat"}},
+		"firewall",
+	} {
+		if err := client.call(ctx, defaultTimeout, http.MethodPost, "/v1/install-packages", body, nil); err == nil {
+			t.Errorf("%v was accepted", body)
+		}
+	}
+	if got := strings.Join(asked, ","); got != "firewall,updates" {
+		t.Errorf("installations asked for: %s", got)
+	}
+}
+
+func TestOSUpdateOperations(t *testing.T) {
+	var calls []string
+	lastRun := time.Date(2026, 10, 12, 6, 30, 0, 0, time.UTC)
+	client := startHelper(t, &Server{
+		AllowedUID: uint32(os.Getuid()),
+		OSUpdateSettings: func() (osupdate.Settings, error) {
+			return osupdate.Settings{ToolInstalled: true, Periodic: true, Timers: true, LastRun: &lastRun}, nil
+		},
+		OSUpdateSetMode: func(request osupdate.ModeRequest) error {
+			calls = append(calls, fmt.Sprintf("mode automatic=%v", request.Automatic))
+			return nil
+		},
+		OSUpdateStart: func(job string) (int64, error) {
+			calls = append(calls, "start "+job)
+			if job == osupdate.JobInstall {
+				return 0, errors.New("a look for updates or an installation is already running")
+			}
+			return 1234, nil
+		},
+	})
+	ctx := context.Background()
+
+	settings, err := client.OSUpdateSettings(ctx)
+	if err != nil || !settings.Daily() || settings.LastRun == nil || !settings.LastRun.Equal(lastRun) {
+		t.Errorf("OSUpdateSettings = %+v, %v", settings, err)
+	}
+	if err := client.OSUpdateSetMode(ctx, osupdate.ModeRequest{Automatic: true}); err != nil {
+		t.Errorf("OSUpdateSetMode: %v", err)
+	}
+	if id, err := client.OSUpdateStart(ctx, osupdate.JobCheck); err != nil || id != 1234 {
+		t.Errorf("OSUpdateStart: %d, %v", id, err)
+	}
+	if _, err := client.OSUpdateStart(ctx, osupdate.JobInstall); err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Errorf("OSUpdateStart while busy: %v, want the underlying reason", err)
+	}
+
+	// Neither request has room for a package, an archive or a command.
+	for path, bodies := range map[string][]any{
+		"/v1/os-updates/mode": {
+			map[string]any{"automatic": true, "origins": []string{"origin=*"}},
+			map[string]any{"automatic": "yes"},
+			map[string]any{"mode": "automatic"},
+			"automatic",
+		},
+		"/v1/os-updates/start": {
+			nil,
+			map[string]any{"job": "remove"},
+			map[string]any{"job": ""},
+			map[string]any{"job": "install", "packages": []string{"bash"}},
+			map[string]any{"job": "install", "id": 7},
+			map[string]any{"job": []string{"install"}},
+			"install",
+		},
+	} {
+		for _, body := range bodies {
+			if err := client.call(ctx, defaultTimeout, http.MethodPost, path, body, nil); err == nil {
+				t.Errorf("%s: %v was accepted", path, body)
+			}
+		}
+	}
+	want := "mode automatic=true, start check, start install"
+	if got := strings.Join(calls, ", "); got != want {
+		t.Errorf("calls = %s\nwant    %s", got, want)
+	}
+}
+
+func TestOSUpdatesAreRefusedForOtherUsers(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root is always allowed; this test needs an ordinary user")
+	}
+	touched := false
+	client := startHelper(t, &Server{
+		AllowedUID:       uint32(os.Getuid()) + 1, // somebody else
+		OSUpdateSettings: func() (osupdate.Settings, error) { touched = true; return osupdate.Settings{}, nil },
+		OSUpdateSetMode:  func(osupdate.ModeRequest) error { touched = true; return nil },
+		OSUpdateStart:    func(string) (int64, error) { touched = true; return 1, nil },
+	})
+	ctx := context.Background()
+	_, settingsErr := client.OSUpdateSettings(ctx)
+	_, startErr := client.OSUpdateStart(ctx, osupdate.JobInstall)
+	for name, err := range map[string]error{
+		"OSUpdateSettings": settingsErr,
+		"OSUpdateSetMode":  client.OSUpdateSetMode(ctx, osupdate.ModeRequest{Automatic: false}),
+		"OSUpdateStart":    startErr,
 	} {
 		if err == nil {
 			t.Errorf("%s was accepted from a user who is not allowed", name)

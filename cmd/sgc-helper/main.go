@@ -20,8 +20,11 @@
 //   - "sgc-helper ssh <job>" changes which keys the SSH server accepts and
 //     whether it accepts anything else (sgc-ssh-*.service, see ssh.go).
 //
-//   - "sgc-helper packages" installs the Debian packages SGC needs
-//     (sgc-packages.service, see packages.go).
+//   - "sgc-helper packages" installs the Debian packages one of SGC's
+//     features needs (sgc-packages.service, see packages.go).
+//
+//   - "sgc-helper os-updates <job>" sets up Debian's own updates, looks for
+//     them and installs them (sgc-os-updates*.service, see osupdates.go).
 package main
 
 import (
@@ -63,6 +66,8 @@ func main() {
 		err = runSSH(os.Args[2:])
 	case "packages":
 		err = runPackages()
+	case "os-updates":
+		err = runOSUpdates(os.Args[2:])
 	default:
 		err = runService()
 	}
@@ -87,17 +92,20 @@ func runService() error {
 
 	server := &http.Server{
 		Handler: (&helper.Server{
-			AllowedUID:      uint32(uid),
-			Version:         sgc.Version(),
-			Restart:         restartDevice,
-			StartUpdate:     startUpdate,
-			InstallPackages: installPackages,
-			FirewallChange:  startFirewallChange,
-			FirewallConfirm: confirmFirewallChange,
-			FirewallUndo:    undoFirewallChange,
-			SSHStatus:       sshStatus,
-			SSHChange:       startSSHChange,
-			SSHUndo:         undoSSHChange,
+			AllowedUID:       uint32(uid),
+			Version:          sgc.Version(),
+			Restart:          restartDevice,
+			StartUpdate:      startUpdate,
+			InstallPackages:  installPackages,
+			FirewallChange:   startFirewallChange,
+			FirewallConfirm:  confirmFirewallChange,
+			FirewallUndo:     undoFirewallChange,
+			SSHStatus:        sshStatus,
+			SSHChange:        startSSHChange,
+			SSHUndo:          undoSSHChange,
+			OSUpdateSettings: osUpdateSettings,
+			OSUpdateSetMode:  setOSUpdateMode,
+			OSUpdateStart:    startOSUpdateJob,
 		}).Handler(),
 		ConnContext:       helper.ConnContext,
 		ReadHeaderTimeout: 5 * time.Second,

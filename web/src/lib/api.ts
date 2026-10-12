@@ -90,6 +90,50 @@ export interface FirewallStatus {
   client: { address: string; inside: boolean }
 }
 
+/** One installation of device updates started in SGC's page (internal/osupdate). */
+export interface OsUpdateInstall {
+  id: number
+  startedAt: string
+  finishedAt: string
+  /** what was waiting before and is not any more */
+  packages: string[]
+  result: 'ok' | 'failed'
+  message?: string
+}
+
+/**
+ * Updates for the device itself (Debian's packages, not SGC), as SGC reports
+ * them (internal/oscontrol).
+ */
+export interface OsUpdatesStatus {
+  /** false when the device could not be asked; the rest is then what is on file */
+  available: boolean
+  /** false on a device without Debian's update tool; it is installed on first choice */
+  toolInstalled: boolean
+  /** how SGC has set this device up; '' until the owner has chosen here */
+  mode: '' | 'automatic' | 'by-hand'
+  /** the owner's last choice, here or on the device an export came from */
+  wanted: '' | 'automatic' | 'by-hand'
+  /** updates install by themselves right now, whoever arranged that */
+  daily: boolean
+  /** why the device does not do what mode says, or '' */
+  problem: string
+  /** when Debian's update tool last ran */
+  lastRun: string | null
+  /** what SGC has the tool doing right now */
+  running: '' | 'check' | 'install'
+  /** Debian's own daily run is at work */
+  dailyRunning: boolean
+  /** null: not looked since the device started */
+  checkedAt: string | null
+  waiting: string[]
+  checkError: string
+  lastInstall: OsUpdateInstall | null
+  /** an installed update takes effect only after a restart */
+  restartNeeded: boolean
+  restartPackages: string[]
+}
+
 /** One SSH key added in SGC's page (internal/sshcontrol). */
 export interface SshKey {
   id: number
@@ -271,6 +315,11 @@ export const api = {
   setSshKeysOnly: (enabled: boolean) =>
     request<SshStatus>('POST', '/api/ssh/keys-only', { enabled }),
   undoSsh: () => request<SshStatus>('POST', '/api/ssh/undo', {}),
+  osUpdates: () => request<OsUpdatesStatus>('GET', '/api/os-updates'),
+  setOsUpdatesMode: (automatic: boolean) =>
+    request<OsUpdatesStatus>('POST', '/api/os-updates/mode', { automatic }),
+  checkOsUpdates: () => request<OsUpdatesStatus>('POST', '/api/os-updates/check', {}),
+  installOsUpdates: () => request<OsUpdatesStatus>('POST', '/api/os-updates/install', {}),
 }
 
 /** The message to show for any thrown value. */

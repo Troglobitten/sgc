@@ -64,7 +64,10 @@ func (r *rootSide) end(result string) {
 	r.write("last.json", firewall.Outcome{ID: p.ID, Result: result, At: time.Now()})
 }
 
-func (r *rootSide) InstallPackages(context.Context) error {
+func (r *rootSide) InstallPackages(_ context.Context, feature string) error {
+	if feature != "firewall" {
+		r.t.Errorf("packages asked for %q", feature)
+	}
 	r.calls = append(r.calls, "install")
 	if r.installErr == nil {
 		r.installed = true
