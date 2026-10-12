@@ -113,7 +113,9 @@ foreach ($file in $carried) {
     if ($LASTEXITCODE -ne 0) { throw "Could not fetch $file from the test machine." }
 }
 
-Invoke-Cases restart
+# The maintenance window: SGC restarts the machine by itself. (The Restart
+# button is tested by Test-UpgradeFromPrevious.ps1.)
+Invoke-Cases maintenance
 
 # The machine is now going down. Wait until it has actually stopped answering
 # before waiting for it to come back.
@@ -123,6 +125,7 @@ Wait-TestVMSshDown -Address $address
 $address = Wait-TestVMSsh
 
 Invoke-Cases after-restart
+Invoke-Cases after-window-restart
 
 # The command line: the doctor, and switching the firewall off from the
 # machine itself.

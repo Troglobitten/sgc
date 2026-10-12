@@ -85,7 +85,8 @@ func checkOSUpdates(ctx context.Context) []doctor.Result {
 		if len(packages) > 0 {
 			summary += " (" + strings.Join(packages, ", ") + ")"
 		}
-		results = append(results, doctor.Warn(summary, "Restart from SGC's page (System), or: sudo systemctl reboot"))
+		results = append(results, doctor.Warn(summary,
+			"Restart from SGC's page (System), or: sudo systemctl reboot\nWith a maintenance window set on that page, SGC does it by itself at that time of day."))
 	}
 	return results
 }
@@ -103,7 +104,7 @@ func checkDailyRun(settings osupdate.Settings) doctor.Result {
 		return doctor.Warn("Updates are set to install by themselves, but Debian's daily run last ran: "+last,
 			"Why: sudo journalctl -u apt-daily-upgrade --no-pager -n 30")
 	case settings.LastRun == nil:
-		return doctor.Good(summary + " (Debian's daily run has not run yet since)")
+		return doctor.Good(summary + " (Debian's daily run comes between six and seven in the morning)")
 	}
 	return doctor.Good(summary + "; Debian's daily run last ran " + settings.LastRun.Local().Format("2 January 15:04"))
 }

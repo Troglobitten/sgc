@@ -54,11 +54,12 @@ type Server struct {
 	Updates Updates
 	// LastUpdate returns the outcome of the most recent update attempt, or
 	// nil if there never was one.
-	LastUpdate func() (*updater.Status, error)
-	Backups    Backups
-	Firewall   Firewall
-	SSH        SSH
-	OSUpdates  OSUpdates
+	LastUpdate  func() (*updater.Status, error)
+	Backups     Backups
+	Firewall    Firewall
+	SSH         SSH
+	OSUpdates   OSUpdates
+	Maintenance Maintenance
 	// StartOver asks the process to wind down the web server and start
 	// again on the database a confirmed restore has put in place.
 	StartOver func()
@@ -107,6 +108,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/os-updates/mode", s.requireSession(s.handleOSUpdatesMode))
 	mux.HandleFunc("POST /api/os-updates/check", s.requireSession(s.handleOSUpdatesCheck))
 	mux.HandleFunc("POST /api/os-updates/install", s.requireSession(s.handleOSUpdatesInstall))
+	mux.HandleFunc("GET /api/maintenance", s.requireSession(s.handleMaintenanceStatus))
+	mux.HandleFunc("POST /api/maintenance", s.requireSession(s.handleMaintenanceSet))
+	mux.HandleFunc("POST /api/maintenance/auto-update", s.requireSession(s.handleMaintenanceAutoUpdate))
 	mux.HandleFunc("POST /api/setup/restore/preview", s.handleRestorePreview)
 	mux.HandleFunc("POST /api/setup/restore/confirm", s.handleRestoreConfirm)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
@@ -407,6 +411,17 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		detail = "daily check for updates switched on"
 	}
 	s.record(r, sessionFrom(r).Username, audit.ActionSettingChanged, detail)
+	// Without the daily look there is never a new version to install, so
+	// "install by themselves" goes off with it rather than staying on and
+	// doing nothing.
+	if !req.AutoCheck {
+		if status, err := s.Maintenance.Status(r.Context()); err == nil && status.AutoUpdate {
+			if err := s.Maintenance.SetAutoUpdate(r.Context(), sessionFrom(r).Username, remoteIP(r), false); err != nil {
+				s.internalError(w, r, err)
+				return
+			}
+		}
+	}
 	s.handleUpdateStatus(w, r)
 }
 

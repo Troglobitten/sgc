@@ -2,6 +2,14 @@
 
 What changed in each version of SGC, newest first. The section for a version is what SGC shows before you update to it, so it is written for the person running SGC, not for developers.
 
+## 0.10.0
+
+- Maintenance window: on the System page you can set a time of day at which SGC may restart the device by itself, if an installed update needs a restart. It is off until you switch it on. Outside the window, and while it is off, nothing restarts by itself.
+- SGC restarts the device at most once per window, never in the first minutes after start-up, never while updates are being installed, and only once the device's clock has been set from the network. The page shows what the device's own clock says.
+- SGC's own updates can now install by themselves: a new switch on the dashboard, off by default. A new version then installs in the maintenance window once your device has known it for 3 days. The "View update" button still installs it sooner.
+- If SGC itself is not running, nothing happens in the window.
+- After restoring an export, the window and this switch are set as they were on the old device.
+
 ## 0.9.0
 
 - Updates for the device: the System page now looks after the updates of the device itself (Debian's security fixes and corrections), which are separate from SGC's own updates. You choose once how they are installed: by themselves, once a day, or by hand, when you press "Install now" on that page.

@@ -31,10 +31,13 @@ var resetStatements = map[string]string{
 // transientSettings are keys in the setting table that are bookkeeping of
 // one installation rather than settings.
 var transientSettings = []string{
-	"update.last_reported_id", // which update outcome was already written to the audit log
-	"firewall.open_change",    // a firewall change whose end is not in the audit log yet
-	"ssh.open_change",         // an SSH change that waits for a login with a key
-	"os_updates.open_install", // an installation of Debian's updates whose end is not in the audit log yet
+	"update.last_reported_id",     // which update outcome was already written to the audit log
+	"firewall.open_change",        // a firewall change whose end is not in the audit log yet
+	"ssh.open_change",             // an SSH change that waits for a login with a key
+	"os_updates.open_install",     // an installation of Debian's updates whose end is not in the audit log yet
+	"maintenance.last_restart",    // when SGC last restarted this device by itself
+	"maintenance.last_update_try", // when SGC last tried to update itself by itself
+	"update.first_seen",           // when this device first saw the newest version of SGC
 }
 
 func cleanupStatements() []string {
