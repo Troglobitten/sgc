@@ -14,15 +14,19 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/Troglobitten/sgc"
+	"github.com/Troglobitten/sgc/internal/adguard"
 	"github.com/Troglobitten/sgc/internal/audit"
 	"github.com/Troglobitten/sgc/internal/auth"
 	"github.com/Troglobitten/sgc/internal/backup"
+	"github.com/Troglobitten/sgc/internal/components"
+	"github.com/Troglobitten/sgc/internal/dnscontrol"
 	"github.com/Troglobitten/sgc/internal/firewall"
 	"github.com/Troglobitten/sgc/internal/fwcontrol"
 	"github.com/Troglobitten/sgc/internal/health"
@@ -209,6 +213,19 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 	// Restarts the device, and updates SGC, in the owner's maintenance window.
 	background.Go(func() { maintenanceWindow.Run(runCtx) })
 
+	adguardPaths := adguard.DefaultPaths()
+	adguardPaths.SpoolDir = filepath.Join(opts.stateDir, "components")
+	dnsControl := dnscontrol.New(dnscontrol.Config{
+		DB:        db,
+		Helper:    helperClient,
+		Audit:     auditLog,
+		Paths:     adguardPaths,
+		Component: components.AdGuardHome,
+		Arch:      runtime.GOARCH,
+		HTTP:      &http.Client{Timeout: 10 * time.Minute},
+		Log:       log,
+	})
+
 	ui, err := fs.Sub(webui.Dist, "dist")
 	if err != nil {
 		return fail("load web interface", err)
@@ -216,17 +233,19 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 
 	startOver := make(chan struct{}, 1)
 	server := &web.Server{
-		Auth:        authService,
-		Audit:       auditLog,
-		Health:      monitor,
-		Helper:      helperClient,
-		Updates:     updates,
-		LastUpdate:  func() (*updater.Status, error) { return updater.ReadStatus(opts.updateWorkDir) },
-		Backups:     backups{db: db, stateDir: opts.stateDir},
-		Firewall:    firewallControl,
-		SSH:         sshControl,
-		OSUpdates:   osControl,
-		Maintenance: maintenanceWindow,
+		Auth:           authService,
+		Audit:          auditLog,
+		Health:         monitor,
+		Helper:         helperClient,
+		Updates:        updates,
+		LastUpdate:     func() (*updater.Status, error) { return updater.ReadStatus(opts.updateWorkDir) },
+		Backups:        backups{db: db, stateDir: opts.stateDir, beforeExport: dnsControl.SaveForExport},
+		DNS:            dnsControl,
+		AdguardAddress: adguard.WebAddress,
+		Firewall:       firewallControl,
+		SSH:            sshControl,
+		OSUpdates:      osControl,
+		Maintenance:    maintenanceWindow,
 		StartOver: func() {
 			select {
 			case startOver <- struct{}{}:
@@ -310,11 +329,18 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 type backups struct {
 	db       *sql.DB
 	stateDir string
+	// beforeExport brings into the database what lives in files and has to
+	// travel: AdGuard Home's settings.
+	beforeExport func(context.Context) error
 }
 
 func (b backups) Export(ctx context.Context, w io.Writer, passphrase string) (*backup.Manifest, error) {
 	hostname, _ := os.Hostname()
 	source := backup.Source{SGCVersion: sgc.Version(), Hostname: hostname}
+	// An export that silently lacked the DNS settings would be worse than none.
+	if err := b.beforeExport(ctx); err != nil {
+		return nil, fmt.Errorf("AdGuard Home's settings could not be read, so nothing was exported: %w", err)
+	}
 	return backup.Export(ctx, b.db, w, passphrase, source, filepath.Join(b.stateDir, "tmp"))
 }
 

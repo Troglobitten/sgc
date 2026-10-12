@@ -20,6 +20,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/audit"
 	"github.com/Troglobitten/sgc/internal/auth"
 	"github.com/Troglobitten/sgc/internal/backup"
+	"github.com/Troglobitten/sgc/internal/dnscontrol"
 	"github.com/Troglobitten/sgc/internal/fwcontrol"
 	"github.com/Troglobitten/sgc/internal/health"
 	"github.com/Troglobitten/sgc/internal/maintenance"
@@ -113,7 +114,7 @@ type fakeFirewall struct {
 
 func (f *fakeFirewall) Status(context.Context) (fwcontrol.Status, error) { return f.status, nil }
 
-func (f *fakeFirewall) Change(_ context.Context, actor, remoteAddr string, enabled bool) error {
+func (f *fakeFirewall) Change(_ context.Context, actor, remoteAddr string, enabled, again bool) error {
 	f.calls = append(f.calls, fmt.Sprintf("change enabled=%v by %s", enabled, actor))
 	if f.changeErr != nil {
 		return f.changeErr
@@ -202,6 +203,25 @@ func (f *fakeOSUpdates) Install(_ context.Context, actor, remote string) error {
 
 func (f *fakeOSUpdates) Installing() bool { return f.installing }
 
+// fakeDNS stands in for internal/dnscontrol.
+type fakeDNS struct {
+	status dnscontrol.Status
+	calls  []string
+	err    error
+}
+
+func (f *fakeDNS) Status(context.Context) (dnscontrol.Status, error) { return f.status, nil }
+
+func (f *fakeDNS) Install(_ context.Context, actor, remote string) error {
+	f.calls = append(f.calls, "install by "+actor)
+	return f.err
+}
+
+func (f *fakeDNS) Remove(_ context.Context, actor, remote string) error {
+	f.calls = append(f.calls, "remove by "+actor)
+	return f.err
+}
+
 // fakeMaintenance stands in for internal/maintenance.
 type fakeMaintenance struct {
 	status maintenance.Status
@@ -225,10 +245,13 @@ func (f *fakeMaintenance) SetAutoUpdate(_ context.Context, actor, remote string,
 type testEnv struct {
 	t           *testing.T
 	maintenance *fakeMaintenance
-	url         string
-	firewall    *fakeFirewall
-	ssh         *fakeSSH
-	osUpdates   *fakeOSUpdates
+	dns         *fakeDNS
+	// Stands in for AdGuard Home's own page.
+	adguard   *httptest.Server
+	url       string
+	firewall  *fakeFirewall
+	ssh       *fakeSSH
+	osUpdates *fakeOSUpdates
 	// When set, requests appear to come from this address.
 	pretendFrom string
 	client      *http.Client // keeps cookies, like a browser
@@ -265,21 +288,33 @@ func newTestEnv(t *testing.T) *testEnv {
 	sshFake := &fakeSSH{status: sshcontrol.Status{Available: true, Accounts: []string{"alex"}, Keys: []sshcontrol.KeyStatus{}, ProofSeconds: 120}}
 	osFake := &fakeOSUpdates{status: oscontrol.Status{Available: true, ToolInstalled: true, Waiting: []string{}, RestartPackages: []string{}}}
 	maintenanceFake := &fakeMaintenance{status: maintenance.Status{Start: "04:00", End: "05:00", UpdateWaitDays: 3}}
-	e := &testEnv{t: t, auth: authService, helper: helper, updates: updates, backups: backups, firewall: fw, ssh: sshFake, osUpdates: osFake, maintenance: maintenanceFake, setupToken: token}
+	dnsFake := &fakeDNS{status: dnscontrol.Status{Available: true, Pinned: "0.107.79"}}
+	adguardPage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/login.html" {
+			http.Redirect(w, r, "/", http.StatusFound)
+			return
+		}
+		w.Header().Set("Set-Cookie", "agh_session=abc; Path=/")
+		fmt.Fprintf(w, "adguard saw %s %s cookie=%q", r.Method, r.URL.Path, r.Header.Get("Cookie"))
+	}))
+	t.Cleanup(adguardPage.Close)
+	e := &testEnv{t: t, auth: authService, helper: helper, updates: updates, backups: backups, firewall: fw, ssh: sshFake, osUpdates: osFake, maintenance: maintenanceFake, dns: dnsFake, adguard: adguardPage, setupToken: token}
 	server := &Server{
-		Auth:        authService,
-		Audit:       audit.New(db),
-		Health:      health.NewMonitor(),
-		Helper:      helper,
-		Updates:     updates,
-		LastUpdate:  func() (*updater.Status, error) { return e.lastUpdate, nil },
-		Backups:     backups,
-		Firewall:    fw,
-		SSH:         sshFake,
-		OSUpdates:   osFake,
-		Maintenance: maintenanceFake,
-		StartOver:   func() { backups.startOvers++ },
-		Version:     "9.9.9",
+		Auth:           authService,
+		Audit:          audit.New(db),
+		Health:         health.NewMonitor(),
+		Helper:         helper,
+		Updates:        updates,
+		LastUpdate:     func() (*updater.Status, error) { return e.lastUpdate, nil },
+		Backups:        backups,
+		Firewall:       fw,
+		SSH:            sshFake,
+		OSUpdates:      osFake,
+		Maintenance:    maintenanceFake,
+		DNS:            dnsFake,
+		AdguardAddress: strings.TrimPrefix(adguardPage.URL, "http://"),
+		StartOver:      func() { backups.startOvers++ },
+		Version:        "9.9.9",
 		UI: fstest.MapFS{
 			"index.html":    {Data: []byte("<!doctype html><title>SGC</title>")},
 			"assets/app.js": {Data: []byte("console.log('sgc')")},

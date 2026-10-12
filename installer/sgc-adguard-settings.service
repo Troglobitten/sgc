@@ -1,0 +1,41 @@
+[Unit]
+Description=Server Gateway Control: copy AdGuard Home's settings for an export
+Documentation=https://github.com/Troglobitten/sgc
+# Never refused for having been started often (see sgc-firewall-change.service).
+StartLimitIntervalSec=0
+
+[Service]
+# AdGuard Home's settings file belongs to AdGuard Home's own account and is
+# closed to everyone else. The helper, which is root without any privilege,
+# cannot read it either. This job can: it copies the file into the helper's
+# own folder under /run, from where the helper passes it to SGC's web process
+# for the export being made. Started by the helper; see internal/adguard.
+Type=oneshot
+ExecStart=/opt/sgc/current/sgc-helper adguard copy-settings
+TimeoutStartSec=30
+
+# --- Sandboxing ---------------------------------------------------------
+# Root with one privilege, reading files it does not own, and one place it
+# can write to. No network.
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+ReadWritePaths=/run/sgc-requests
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@resources

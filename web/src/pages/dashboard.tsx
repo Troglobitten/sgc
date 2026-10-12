@@ -19,6 +19,7 @@ import {
   ApiError,
   errorMessage,
   type AuditEntry,
+  type DnsStatus,
   type FirewallStatus,
   type Health,
   type OsUpdatesStatus,
@@ -33,6 +34,7 @@ export function DashboardPage({ shell }: { shell: ShellProps }) {
   const [activity, setActivity] = useState<AuditEntry[] | null>(null)
   const [firewall, setFirewall] = useState<FirewallStatus | null>(null)
   const [osUpdates, setOsUpdates] = useState<OsUpdatesStatus | null>(null)
+  const [dns, setDns] = useState<DnsStatus | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
   // While an update runs: the number of the attempt before it (or null).
   const [updating, setUpdating] = useState<{ previousAttempt: number | null } | null>(null)
@@ -86,6 +88,10 @@ export function DashboardPage({ shell }: { shell: ShellProps }) {
       )
       api.osUpdates().then(
         (status) => !stopped && setOsUpdates(status),
+        (e) => !stopped && handleError(e),
+      )
+      api.dns().then(
+        (status) => !stopped && setDns(status),
         (e) => !stopped && handleError(e),
       )
     }
@@ -163,7 +169,7 @@ export function DashboardPage({ shell }: { shell: ShellProps }) {
           <FirewallTile status={firewall} onOpen={() => onNavigate('system')} />
           <OsUpdatesTile status={osUpdates} onOpen={() => onNavigate('system')} />
           <ServiceTile icon={<ShieldCheck />} name="VPN" />
-          <ServiceTile icon={<Globe />} name="DNS" />
+          <DnsTile status={dns} onOpen={() => onNavigate('system')} />
           <ServiceTile icon={<Route />} name="Proxy" />
           <ServiceTile icon={<BadgeCheck />} name="Certificate" />
         </div>
@@ -257,6 +263,28 @@ function FirewallTile({
       <span className="flex items-center gap-2 text-sm font-medium">
         <Shield className="size-4" aria-hidden="true" />
         Firewall
+      </span>
+      <span className={`mt-1 block text-xs ${tone}`}>{text}</span>
+    </button>
+  )
+}
+
+/** AdGuard Home in a word; the System page has the rest. */
+function DnsTile({ status, onOpen }: { status: DnsStatus | null; onOpen: () => void }) {
+  let text = '…'
+  let tone = 'text-muted-foreground'
+  if (status && !status.installed) text = 'Not installed'
+  else if (status?.running) [text, tone] = ['Running', 'text-emerald-700 dark:text-emerald-400']
+  else if (status) [text, tone] = ['Stopped', 'text-amber-700 dark:text-amber-400']
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="rounded-xl bg-card p-3 text-left ring-1 ring-foreground/10 outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
+    >
+      <span className="flex items-center gap-2 text-sm font-medium">
+        <Globe className="size-4" aria-hidden="true" />
+        DNS
       </span>
       <span className={`mt-1 block text-xs ${tone}`}>{text}</span>
     </button>
@@ -393,6 +421,10 @@ function describeActivity(entry: AuditEntry): string {
       return 'A change to SSH was undone: no login with a key was seen in time'
     case 'ssh.change_failed':
       return 'A change to SSH failed'
+    case 'dns.installed':
+      return `${entry.actor} installed ${entry.detail}`
+    case 'dns.removed':
+      return `${entry.actor} removed AdGuard Home`
     case 'os_updates.mode_automatic':
       return `${entry.actor} set updates for the device to install by themselves`
     case 'os_updates.mode_by_hand':

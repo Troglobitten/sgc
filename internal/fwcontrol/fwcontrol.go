@@ -113,6 +113,7 @@ type Status struct {
 	Pending *PendingStatus `json:"pending"`
 	// What is let in from inside while the firewall is on.
 	SSHPorts []int `json:"sshPorts"`
+	DNS      bool  `json:"dns"`
 	WebPort  int   `json:"webPort"`
 	// ConfirmSeconds is how long a change waits for its confirmation.
 	ConfirmSeconds int `json:"confirmSeconds"`
@@ -152,6 +153,7 @@ func (s *Service) Status(ctx context.Context) (Status, error) {
 	}
 	if effective != nil && effective.Enabled {
 		status.SSHPorts = append(status.SSHPorts, effective.SSHPorts...)
+		status.DNS = effective.DNS
 		status.WebPort = effective.WebPort
 	}
 	return status, nil
@@ -174,7 +176,12 @@ func onOff(enabled bool) string {
 // Change switches the firewall on or off, pending confirmation. It installs
 // the firewall software first if the machine does not have it, which can
 // take a few minutes.
-func (s *Service) Change(ctx context.Context, actor, remoteAddr string, enabled bool) error {
+//
+// again asks for the rules to be made afresh although the firewall is
+// already on. That is how a firewall switched on before AdGuard Home was
+// installed comes to let DNS in: the root side makes the rules from what is
+// on the device now, and the owner confirms them like any other change.
+func (s *Service) Change(ctx context.Context, actor, remoteAddr string, enabled, again bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -189,7 +196,7 @@ func (s *Service) Change(ctx context.Context, actor, remoteAddr string, enabled 
 	if before.Pending != nil {
 		return ErrChangePending
 	}
-	if on := before.Confirmed != nil && before.Confirmed.Enabled; on == enabled {
+	if on := before.Confirmed != nil && before.Confirmed.Enabled; on == enabled && !(again && on) {
 		return ErrNoChange
 	}
 

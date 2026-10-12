@@ -22,6 +22,7 @@ func TestRender(t *testing.T) {
 		// Ports are sorted and listed once, whatever order they arrive in.
 		{"on-moved-ssh", Config{Enabled: true, SSHPorts: []int{2222, 22, 2222}, WebPort: 8443}},
 		{"on-no-ssh", Config{Enabled: true, WebPort: 8443}},
+		{"on-dns", Config{Enabled: true, SSHPorts: []int{22}, WebPort: 8443, DNS: true}},
 		{"off", Config{Enabled: false, SSHPorts: []int{22}, WebPort: 8443}},
 	}
 	for _, c := range cases {

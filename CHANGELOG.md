@@ -2,6 +2,18 @@
 
 What changed in each version of SGC, newest first. The section for a version is what SGC shows before you update to it, so it is written for the person running SGC, not for developers.
 
+## 0.11.0
+
+- DNS: SGC can now install AdGuard Home, which answers the name lookups of your network and leaves out advertising and tracking. One button on the System page installs it; SGC keeps it running, also when SGC itself is not.
+- To use it, enter this device's address as the DNS server in your router, or on single devices.
+- AdGuard Home's own page opens from SGC, behind SGC's sign-in. It has no separate login. What it blocks, whom it asks and what it logs are your settings, made there; SGC sets them once, at installation, and never touches them again.
+- It starts out asking Quad9 over an encrypted connection, with a log of lookups kept for 7 days and AdGuard's own blocklist.
+- With the firewall on, DNS is let in from your home network only. If the firewall was switched on before AdGuard Home was installed, the System page offers "Let DNS in", which you confirm like any firewall change.
+- SGC downloads AdGuard Home from its makers and only installs the exact file this version of SGC expects. A newer AdGuard Home arrives with a newer SGC.
+- On a Debian that runs systemd-resolved (a Raspberry Pi does not), installing AdGuard Home makes that service give up the DNS port and points the device's own lookups at the real name servers. Removing AdGuard Home puts that back.
+- Your AdGuard Home settings are part of an export. After a restore, installing AdGuard Home on the new device starts it with them.
+- `sudo sgc doctor` checks AdGuard Home, and tells you if another program sits on a port SGC needs. Right after a restart it no longer reports the clock as a problem.
+
 ## 0.10.0
 
 - Maintenance window: on the System page you can set a time of day at which SGC may restart the device by itself, if an installed update needs a restart. It is off until you switch it on. Outside the window, and while it is off, nothing restarts by itself.

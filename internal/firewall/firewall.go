@@ -89,11 +89,15 @@ type Config struct {
 	SSHPorts []int `json:"sshPorts"`
 	// WebPort is where SGC's own page listens.
 	WebPort int `json:"webPort"`
+	// DNS lets DNS questions in from inside. Set by the root side when
+	// AdGuard Home is installed: without something to answer, the port
+	// stays shut.
+	DNS bool `json:"dns,omitempty"`
 }
 
 // Equal reports whether two configurations lead to the same rules.
 func (c Config) Equal(other Config) bool {
-	return c.Enabled == other.Enabled && c.WebPort == other.WebPort &&
+	return c.Enabled == other.Enabled && c.WebPort == other.WebPort && c.DNS == other.DNS &&
 		slices.Equal(c.normalised().SSHPorts, other.normalised().SSHPorts)
 }
 
@@ -182,6 +186,9 @@ func Render(cfg Config) (string, error) {
 	chain inside {
 `)
 	fmt.Fprintf(&b, "\t\ttcp dport { %s } accept\n", joinPorts(ports))
+	if cfg.DNS {
+		b.WriteString("\t\t# DNS, answered by AdGuard Home.\n\t\tmeta l4proto { tcp, udp } th dport 53 accept\n")
+	}
 	b.WriteString(`		icmp type echo-request accept
 		icmpv6 type echo-request accept
 	}

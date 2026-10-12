@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { RotateCw, TriangleAlert } from 'lucide-react'
 
 import { AppShell, type ShellProps } from '@/components/app-shell'
+import { DnsCard } from '@/components/dns-card'
 import { ExportCard } from '@/components/export-card'
 import { FirewallCard } from '@/components/firewall-card'
 import { MaintenanceCard } from '@/components/maintenance-card'
@@ -64,6 +65,12 @@ export function SystemPage({
         <div className="grid gap-3 md:grid-cols-2">
           <FirewallCard onError={handleError} />
           <SshCard onError={handleError} />
+        </div>
+      </Section>
+
+      <Section title="Network">
+        <div className="grid gap-3 md:grid-cols-2">
+          <DnsCard onError={handleError} />
         </div>
       </Section>
 

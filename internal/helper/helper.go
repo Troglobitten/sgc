@@ -23,6 +23,10 @@
 //	GET  /v1/os-updates/settings  whether the device installs Debian's updates by itself
 //	POST /v1/os-updates/mode      make it do so, or leave that to the owner's button
 //	POST /v1/os-updates/start     look for Debian's updates, or install them
+//	GET  /v1/adguard/status       is AdGuard Home installed and running?
+//	POST /v1/adguard/install      install the pinned release the web process downloaded
+//	POST /v1/adguard/remove       stop AdGuard Home and take the program away
+//	GET  /v1/adguard/settings     AdGuard Home's settings file, for an export
 package helper
 
 import (
@@ -36,6 +40,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Troglobitten/sgc/internal/adguard"
 	"github.com/Troglobitten/sgc/internal/firewall"
 	"github.com/Troglobitten/sgc/internal/osupdate"
 	"github.com/Troglobitten/sgc/internal/release"
@@ -59,7 +64,13 @@ const (
 	// Changing the update settings, and starting a look or an installation
 	// (answered once it has started, not when it has finished).
 	osUpdateTimeout = 60 * time.Second
+	// Installing AdGuard Home: unpacking, starting, and watching it stay up.
+	adguardTimeout = 4 * time.Minute
 )
+
+type adguardSettingsResponse struct {
+	Settings string `json:"settings"`
+}
 
 // The features whose Debian packages the helper can install. Which packages
 // those are is the helper's business (cmd/sgc-helper/packages.go).
@@ -204,6 +215,33 @@ func (c *Client) SSHUndo(ctx context.Context) error {
 	return c.call(ctx, sshTimeout, http.MethodPost, "/v1/ssh/undo", nil, nil)
 }
 
+// AdguardStatus asks whether AdGuard Home is installed and running.
+func (c *Client) AdguardStatus(ctx context.Context) (adguard.Status, error) {
+	var status adguard.Status
+	err := c.call(ctx, firewallTimeout, http.MethodGet, "/v1/adguard/status", nil, &status)
+	return status, err
+}
+
+// AdguardInstall installs the release of AdGuard Home that has been put in
+// the spool folder, and starts it. Which release that must be is the
+// helper's business: the request says nothing. It returns when AdGuard Home
+// runs, or with the reason why the device is as it was.
+func (c *Client) AdguardInstall(ctx context.Context) error {
+	return c.call(ctx, adguardTimeout, http.MethodPost, "/v1/adguard/install", nil, nil)
+}
+
+// AdguardRemove stops AdGuard Home and takes the program away. Its settings stay.
+func (c *Client) AdguardRemove(ctx context.Context) error {
+	return c.call(ctx, adguardTimeout, http.MethodPost, "/v1/adguard/remove", nil, nil)
+}
+
+// AdguardSettings returns AdGuard Home's settings file, for an export.
+func (c *Client) AdguardSettings(ctx context.Context) (string, error) {
+	var resp adguardSettingsResponse
+	err := c.call(ctx, firewallTimeout, http.MethodGet, "/v1/adguard/settings", nil, &resp)
+	return resp.Settings, err
+}
+
 func (c *Client) call(ctx context.Context, timeout time.Duration, method, path string, in, out any) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -272,6 +310,12 @@ type Server struct {
 	OSUpdateSettings func() (osupdate.Settings, error)
 	OSUpdateSetMode  func(request osupdate.ModeRequest) error
 	OSUpdateStart    func(job string) (int64, error)
+	// AdGuard Home; see internal/adguard. None of these takes anything from
+	// the request.
+	AdguardStatus   func() adguard.Status
+	AdguardInstall  func() error
+	AdguardRemove   func() error
+	AdguardSettings func() ([]byte, error)
 }
 
 type peerUIDKey struct{}
@@ -475,6 +519,34 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, startJobResponse{ID: id})
+	})
+
+	mux.HandleFunc("GET /v1/adguard/status", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, s.AdguardStatus())
+	})
+	mux.HandleFunc("POST /v1/adguard/install", func(w http.ResponseWriter, _ *http.Request) {
+		allow(w, adguardTimeout)
+		if err := s.AdguardInstall(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, struct{}{})
+	})
+	mux.HandleFunc("POST /v1/adguard/remove", func(w http.ResponseWriter, _ *http.Request) {
+		allow(w, adguardTimeout)
+		if err := s.AdguardRemove(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, struct{}{})
+	})
+	mux.HandleFunc("GET /v1/adguard/settings", func(w http.ResponseWriter, _ *http.Request) {
+		settings, err := s.AdguardSettings()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "could not read AdGuard Home's settings: " + err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, adguardSettingsResponse{Settings: string(settings)})
 	})
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -74,6 +74,7 @@ Invoke-Cases ssh $new
 # Updates for the device, the other way round from Test-Installer.ps1: set to
 # install by themselves, and Debian's own daily run then does the installing.
 Invoke-Cases os-updates-auto $new
+Invoke-Cases dns $new
 Invoke-Cases restart $new
 
 Write-Host ""

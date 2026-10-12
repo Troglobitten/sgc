@@ -23,6 +23,10 @@
 //   - "sgc-helper packages" installs the Debian packages one of SGC's
 //     features needs (sgc-packages.service, see packages.go).
 //
+//   - "sgc-helper adguard install|remove" installs the pinned release of
+//     AdGuard Home that the web process downloaded, or takes it away
+//     (sgc-adguard-*.service, see adguard.go).
+//
 //   - "sgc-helper os-updates <job>" sets up Debian's own updates, looks for
 //     them and installs them (sgc-os-updates*.service, see osupdates.go).
 package main
@@ -68,6 +72,8 @@ func main() {
 		err = runPackages()
 	case "os-updates":
 		err = runOSUpdates(os.Args[2:])
+	case "adguard":
+		err = runAdguard(os.Args[2:])
 	default:
 		err = runService()
 	}
@@ -106,6 +112,10 @@ func runService() error {
 			OSUpdateSettings: osUpdateSettings,
 			OSUpdateSetMode:  setOSUpdateMode,
 			OSUpdateStart:    startOSUpdateJob,
+			AdguardStatus:    adguardStatus,
+			AdguardInstall:   installAdguard,
+			AdguardRemove:    removeAdguard,
+			AdguardSettings:  adguardSettings,
 		}).Handler(),
 		ConnContext:       helper.ConnContext,
 		ReadHeaderTimeout: 5 * time.Second,

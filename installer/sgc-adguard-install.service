@@ -1,0 +1,27 @@
+[Unit]
+Description=Server Gateway Control: install AdGuard Home
+Documentation=https://github.com/Troglobitten/sgc
+# Never refused for having been started often (see sgc-firewall-change.service).
+StartLimitIntervalSec=0
+
+[Service]
+# Installs the release of AdGuard Home that SGC's web process downloaded:
+# checks it against the checksum compiled into this program, unpacks the one
+# program, creates the account and the first settings file if there are none,
+# starts AdGuard Home and watches it stay up. If any of that fails, the device
+# is left as it was. Started by the helper; see internal/adguard.
+Type=oneshot
+ExecStart=/opt/sgc/current/sgc-helper adguard install
+TimeoutStartSec=200
+
+# Root, because it creates an account, writes under /opt and starts a
+# service. What it installs is fixed: the request to run it carries nothing.
+# It downloads nothing. The one thing it does on the network is look up a
+# name, to make sure the device still can after systemd-resolved has been
+# made to give up port 53 (see freeDNSPort in internal/adguard).
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes

@@ -14,6 +14,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { api, ApiError, errorMessage, type FirewallStatus } from '@/lib/api'
+import { firewallChangedEvent } from '@/lib/events'
 
 const refreshInterval = 10_000
 // While a change waits for its confirmation, the state is watched closely.
@@ -57,6 +58,14 @@ export function FirewallCard({ onError }: { onError: (error: unknown) => void })
     setStatus(next)
   }, [])
 
+  // A change started elsewhere on the page (letting DNS in, from the DNS
+  // card) is asked about here like any other: look at once.
+  useEffect(() => {
+    const look = () => setRefreshes((n) => n + 1)
+    window.addEventListener(firewallChangedEvent, look)
+    return () => window.removeEventListener(firewallChangedEvent, look)
+  }, [])
+
   const pending = status?.state === 'pending'
   useEffect(() => {
     let stopped = false
@@ -90,6 +99,7 @@ export function FirewallCard({ onError }: { onError: (error: unknown) => void })
   const on = status.pending ? status.pending.enabled : status.state === 'on'
   const letIn = [
     `SGC's page (port ${status.webPort})`,
+    ...(status.dns ? ['DNS'] : []),
     ...(status.sshPorts.length > 0 ? [`SSH (port ${status.sshPorts.join(', ')})`] : []),
   ].join(' and ')
   // Switching on from an address the firewall would refuse is not offered.

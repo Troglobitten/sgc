@@ -15,7 +15,7 @@ import (
 // Firewall is what the interface can do with the firewall (internal/fwcontrol).
 type Firewall interface {
 	Status(ctx context.Context) (fwcontrol.Status, error)
-	Change(ctx context.Context, actor, remoteAddr string, enabled bool) error
+	Change(ctx context.Context, actor, remoteAddr string, enabled, again bool) error
 	Confirm(ctx context.Context, actor, remoteAddr string) error
 	Undo(ctx context.Context, actor, remoteAddr string) error
 }
@@ -87,6 +87,9 @@ func (s *Server) handleFirewallStatus(w http.ResponseWriter, r *http.Request) {
 
 type firewallChangeRequest struct {
 	Enabled bool `json:"enabled"`
+	// Again: make the rules afresh although the firewall is on already
+	// (after AdGuard Home was installed, so that DNS is let in).
+	Again bool `json:"again"`
 }
 
 // handleFirewallChange switches the firewall on or off. The change takes
@@ -108,7 +111,7 @@ func (s *Server) handleFirewallChange(w http.ResponseWriter, r *http.Request) {
 
 	// The first time, the firewall software is installed first.
 	extendDeadlines(w)
-	err := s.Firewall.Change(r.Context(), sessionFrom(r).Username, client.Address, req.Enabled)
+	err := s.Firewall.Change(r.Context(), sessionFrom(r).Username, client.Address, req.Enabled, req.Again)
 	var failure *fwcontrol.ChangeError
 	switch {
 	case err == nil:
