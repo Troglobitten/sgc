@@ -41,7 +41,7 @@ $version     = (Get-Content (Join-Path $repo 'VERSION') -Raw).Trim()
 # password of the account inside it, and the private half of the SSH key
 # that is in the export (the owner's own computer keeps that one in real
 # life). All throwaway values made by the test.
-$carried = 'sgc-test-export.age', 'sgc-test-passphrase', 'sgc-test-password', 'sgc-test-ssh-key2'
+$carried = 'sgc-test-export.age', 'sgc-test-passphrase', 'sgc-test-password', 'sgc-test-ssh-key2', 'sgc-test-serial'
 
 Write-Host "Building a test release of $version ..."
 wsl -d $WslDistro --exec bash (ConvertTo-WslPath "$PSScriptRoot\make-test-release.sh") (ConvertTo-WslPath $releaseDir)
@@ -108,6 +108,11 @@ Invoke-Cases log2ram
 # The owner's domain and Zone.eu account, against a stand-in for Zone.eu that
 # runs on the test machine. The test never talks to the real Zone.eu.
 Invoke-Cases domain
+
+# The certificate for that domain, against stand-ins for Let's Encrypt (its
+# own small test authority, run on the test machine). The test never talks
+# to Let's Encrypt.
+Invoke-Cases certificate
 
 # Updating: a tampered update, a genuine one, a signed-but-broken one that
 # must roll back, an older one, and the command-line way.

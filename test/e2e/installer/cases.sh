@@ -29,6 +29,10 @@
 #   domain         the owner's domain and Zone.eu account, against a
 #                  stand-in for Zone.eu: saved only when accepted, a warning
 #                  when the key stops working, never the key in an answer
+#   certificate    the certificate for the domain, against stand-ins for
+#                  Let's Encrypt: not without agreement, the test authority
+#                  first, a failure that gets no real certificate, then the
+#                  certificate itself and a renewal
 #   update-setup   points the installed SGC at a local test update source
 #   update-refused a tampered update is refused and changes nothing
 #   update-good    a genuine update installs from the dashboard's API
@@ -377,37 +381,70 @@ standin="$HOME/sgc-standin"
 zone_address=127.0.0.1:9100
 zone_user=alex
 zone_key=a-made-up-api-key
+# The same program stands in for Let's Encrypt: for its certificate authority
+# and its test authority (both played by Pebble, Let's Encrypt's own small
+# authority for tests), and for the name servers they look at.
+dns_address=127.0.0.1:9153
+trial_address=127.0.0.1:9143
+authority_address=127.0.0.1:9144
+# Where the stand-in keeps the certificate its two authorities show. SGC is
+# told to trust it, so SGC's user must be able to read it.
+standin_state=/etc/sgc-test
+
+# What makes SGC ask this machine instead of the outside world: the lines of
+# its service's environment.
+standin_environment=(
+    "SGC_ZONE_API=http://$zone_address/v2/"
+    "SGC_ACME_DIRECTORY=https://$authority_address/dir"
+    "SGC_ACME_TRIAL_DIRECTORY=https://$trial_address/dir"
+    "SGC_ACME_ROOTS=$standin_state/authority-cert.pem"
+    "SGC_ACME_DNS=$dns_address"
+)
+
+# install_standin: puts the program in place. Copied as a program: what the
+# build box wrote to a Windows folder does not arrive marked as one.
+install_standin() {
+    [ -x "$standin" ] || install -m 0755 /tmp/release/tools/sgc-standin "$standin"
+}
 
 # start_standin <the API key the account accepts>: (re)starts the stand-in.
 start_standin() {
-    # Copied as a program: what the build box wrote to a Windows folder does
-    # not arrive marked as one.
-    [ -x "$standin" ] || install -m 0755 /tmp/release/tools/sgc-standin "$standin" || return 1
+    install_standin || return 1
     sudo systemctl stop sgc-test-standin.service 2>/dev/null || true
     sudo systemctl reset-failed sgc-test-standin.service 2>/dev/null || true
-    sudo systemd-run --quiet --unit sgc-test-standin "$standin" --listen "$zone_address" \
+    sudo systemd-run --quiet --unit sgc-test-standin "$standin" --state "$standin_state" \
+        --listen "$zone_address" --dns "$dns_address" --trial "$trial_address" --authority "$authority_address" \
         --username "$zone_user" --api-key "$1" --domain domain.tld || return 1
-    wait_for 10 curl -s -o /dev/null "http://$zone_address/"
+    wait_for 10 curl -s -o /dev/null "http://$zone_address/" &&
+        wait_for 10 curl -sk -o /dev/null "https://$authority_address/dir"
 }
 
-# pointed_at_standin: the running SGC asks this machine, not Zone.eu.
+# pointed_at_standin: the running SGC asks this machine about everything:
+# not Zone.eu, and not Let's Encrypt.
 pointed_at_standin() {
-    local environment
+    local environment line
     environment="$(systemctl show sgc.service -p Environment)"
-    [[ "$environment" == *"SGC_ZONE_API=http://$zone_address/"* ]]
+    for line in "${standin_environment[@]}"; do
+        [[ "$environment" == *"$line"* ]] || return 1
+    done
 }
 
-# point_at_standin: makes SGC ask this machine instead of Zone.eu, from now
-# on and after every restart, and starts the stand-in there.
+# point_at_standin: makes SGC ask this machine instead of the outside world,
+# from now on and after every restart, and starts the stand-in there.
 #
-# In that order, and checked: SGC must not be able to ask the real Zone.eu
-# even if the stand-in does not start. (A first version of this test started
-# the stand-in first; when it did not start, SGC asked the real Zone.eu with
-# the made-up account.)
+# In that order, and checked: SGC must not be able to ask the real Zone.eu or
+# Let's Encrypt even if the stand-in does not start. (A first version of this
+# test started the stand-in first; when it did not start, SGC asked the real
+# Zone.eu with the made-up account.)
 point_at_standin() {
+    install_standin || return 1
+    # The certificate SGC is to trust has to be there when SGC starts.
+    sudo "$standin" --state "$standin_state" --make-certificate >/dev/null || return 1
     sudo mkdir -p /etc/systemd/system/sgc.service.d
-    printf '[Service]\nEnvironment=SGC_ZONE_API=http://%s/v2/\n' "$zone_address" |
-        sudo tee /etc/systemd/system/sgc.service.d/test-zone.conf >/dev/null || return 1
+    {
+        echo '[Service]'
+        printf 'Environment=%s\n' "${standin_environment[@]}"
+    } | sudo tee /etc/systemd/system/sgc.service.d/test-standin.conf >/dev/null || return 1
     sudo systemctl daemon-reload
     sudo systemctl restart sgc
     wait_for 30 curl -sk -o /dev/null "$api/api/state" || return 1
@@ -415,13 +452,46 @@ point_at_standin() {
     start_standin "$zone_key"
 }
 
-# without_standin: ends the run. Nothing about a domain is asked of an SGC
-# that might turn to the real Zone.eu.
+# without_standin: ends the run. Nothing about a domain or a certificate is
+# asked of an SGC that might turn to the real Zone.eu or Let's Encrypt.
 without_standin() {
-    fail "the stand-in for Zone.eu could not be set up; stopping here, so that nothing is asked of the real Zone.eu"
+    fail "the stand-in for the outside world could not be set up; stopping here, so that nothing is asked of the real Zone.eu or Let's Encrypt"
     echo
     echo "$failures CHECK(S) FAILED ($mode)"
     exit "$failures"
+}
+
+# certificate_idle: no attempt at a certificate is running. The state is in
+# /tmp/sgc-test-body afterwards.
+# shellcheck disable=SC2317  # called indirectly through wait_for()
+certificate_idle() { [ "$(http GET /api/certificate)" = 200 ] && grep -q '"running":null' /tmp/sgc-test-body; }
+certificate_serial() { grep -o '"serial":"[^"]*"' /tmp/sgc-test-body | cut -d'"' -f4; }
+# serial_differs_from <serial>: the certificate in the state just fetched is another one.
+# shellcheck disable=SC2317  # called indirectly through check()
+serial_differs_from() {
+    local now
+    now="$(certificate_serial)"
+    [ -n "$1" ] && [ -n "$now" ] && [ "$now" != "$1" ]
+}
+# The serial number of the certificate, kept across the wipe of the machine
+# (Test-Installer.ps1 carries the file), to see that a restore brings back
+# that very certificate.
+serial_file="$HOME/sgc-test-serial"
+
+# zone_records: how many TXT records the stand-in for Zone.eu holds.
+# shellcheck disable=SC2317  # called indirectly through check()
+no_records_left() {
+    local records
+    records="$(curl -s -u "$zone_user:$zone_key" "http://$zone_address/v2/dns/domain.tld/txt")"
+    [ "$(tr -d '[:space:]' <<<"$records")" = "[]" ]
+}
+
+# Nothing in SGC's log is a private key.
+# shellcheck disable=SC2317  # called indirectly through check()
+log_has_no_private_key() {
+    local log
+    log="$(sudo journalctl -u sgc --no-pager)"
+    [[ "$log" != *"PRIVATE KEY"* ]]
 }
 
 # domain_request <domain> <username> <API key>: the request that saves them.
@@ -1190,6 +1260,68 @@ domain)
     check "no unit of SGC's is marked as failed" sh -c "[ -z \"\$(systemctl list-units --failed --plain --no-legend 'sgc*')\" ]"
     ;;
 
+certificate)
+    echo "SGC asks stand-ins, never Let's Encrypt or Zone.eu"
+    if pointed_at_standin && start_standin "$zone_key"; then pass "SGC is pointed at the stand-ins, and they run"; else without_standin; fi
+    expect_status "the state is available" 200 GET /api/certificate
+    check "it is for the domain that is set up" body_has '"domain":"domain.tld"'
+    check "there is no certificate yet" body_has '"certificate":null'
+    check "and certificates are not switched off" body_has '"disabled":""'
+
+    echo "Not without the owner's agreement to the authority's terms"
+    expect_status "a request without it is refused" 409 POST /api/certificate/request '{}'
+    check "in words" body_has 'needs your agreement'
+
+    echo "What fails with the test authority gets no real certificate"
+    start_standin a-key-made-later
+    expect_status "a request, with the key withdrawn at Zone.eu" 202 POST /api/certificate/request '{"agreeToTerms":true}'
+    if wait_for 120 certificate_idle; then pass "the attempt ended"; else fail "the attempt is still running"; fi
+    check "it failed, and says why" sh -c "grep -q '\"ok\":false' /tmp/sgc-test-body && grep -q 'Zone.eu does not accept the username and API key' /tmp/sgc-test-body"
+    check "there is still no certificate" body_has '"certificate":null'
+    expect_in_audit "the failure is in the history" '"action":"certificate.failed"'
+    output="$(sudo sgc doctor 2>&1)"
+    code=$?
+    if [ "$code" -ne 0 ] && grep -q 'FAIL  No certificate yet, and the last attempt failed: Zone.eu does not accept' <<<"$output"; then
+        pass "the doctor reports it as a problem"
+    else
+        fail "the doctor does not report the failed attempt (exit code $code)"
+        indent <<<"$output"
+    fi
+
+    echo "The first certificate"
+    start_standin "$zone_key"
+    expect_status "the request is accepted (the agreement was given before)" 202 POST /api/certificate/request '{}'
+    check "it starts with the test authority" body_has '"phase":"trial"'
+    if wait_for 180 certificate_idle; then pass "the attempt ended"; else fail "the attempt is still running"; fi
+    check "it worked" sh -c "grep -q '\"lastAttempt\":{\"kind\":\"first\"' /tmp/sgc-test-body && grep -q '\"ok\":true' /tmp/sgc-test-body"
+    check "the certificate is for every name under the domain" body_has '"names":\["\*\.domain\.tld"\]'
+    check "and for the domain that is set up" body_has '"forDomain":true'
+    check "SGC says when it will renew it" sh -c "! grep -q '\"renewsAt\":null' /tmp/sgc-test-body"
+    check "the answer carries no key" sh -c "! grep -q 'PRIVATE KEY' /tmp/sgc-test-body"
+    first_serial="$(certificate_serial)"
+    check "the proof was removed from the zone again" no_records_left
+    expect_in_audit "the certificate is in the history" '"action":"certificate.issued"'
+    check "the owner's agreement is in the history too" body_has '"action":"certificate.terms_agreed"'
+    check "SGC's log holds no private key" log_has_no_private_key
+    check "nor the Zone.eu key" log_lacks_the_key
+    output="$(sudo sgc doctor 2>&1)"
+    if grep -q 'ok    The certificate for \*\.domain\.tld is valid for [0-9]* more days, and SGC renews it by itself' <<<"$output"; then pass "the doctor says that the certificate is valid"; else
+        fail "the doctor does not say that the certificate is valid"
+        indent <<<"$output"
+    fi
+
+    echo "Renewed from the page"
+    expect_status "renewing now" 202 POST /api/certificate/request '{}'
+    check "without a trial this time" body_has '"phase":"real"'
+    if wait_for 120 certificate_idle; then pass "the attempt ended"; else fail "the attempt is still running"; fi
+    check "it worked" sh -c "grep -q '\"lastAttempt\":{\"kind\":\"manual\"' /tmp/sgc-test-body && grep -q '\"ok\":true' /tmp/sgc-test-body"
+    check "the certificate is a new one" serial_differs_from "$first_serial"
+    certificate_serial >"$serial_file"
+    check "the proof was removed again" no_records_left
+    expect_in_audit "the renewal is in the history" '"action":"certificate.renewed"'
+    check "no unit of SGC's is marked as failed" sh -c "[ -z \"\$(systemctl list-units --failed --plain --no-legend 'sgc*')\" ]"
+    ;;
+
 old-install)
     echo "The previous release, as it was published"
     if run_installer good >/tmp/install.log; then pass "its installer succeeded"; else
@@ -1475,6 +1607,13 @@ restore)
     expect_status "asking Zone.eu with the key that came in the export" 200 POST /api/domain/check '{}'
     check "it is accepted" body_has '"ok":true'
 
+    echo "The certificate came back with its key; no new one was asked for"
+    expect_status "the state is available" 200 GET /api/certificate
+    check "the certificate is the very one from the old machine" body_has "\"serial\":\"$(cat "$serial_file")\""
+    check "and is for the domain that is set up" body_has '"forDomain":true'
+    check "no attempt was made on this machine" body_has '"lastAttempt":null'
+    check "the certificate's key is in SGC's database" sudo sh -c "grep -qa 'PRIVATE KEY' /var/lib/sgc/sgc.db /var/lib/sgc/sgc.db-wal 2>/dev/null"
+
     echo "Logs in memory was on on the old machine; here it waits for the owner"
     expect_status "the state is available" 200 GET /api/log2ram
     check "log2ram is installed here, by the installer" body_has '"installed":true'
@@ -1609,6 +1748,8 @@ after-restart)
     check "and the device does so" body_has '"daily":true'
     check "nothing is wrong with that" body_has '"problem":""'
     check "no restart is needed right after one" body_has '"restartNeeded":false'
+    expect_status "the certificate's state is available" 200 GET /api/certificate
+    check "the certificate is still there after the restart" body_has '"forDomain":true'
 
     echo "Logs in memory, after the restart"
     check "the logs are in memory" logs_in_memory
@@ -1667,6 +1808,7 @@ cli)
         "SSH accepts keys only, and nobody logs in as root" "The 1 key(s) added in SGC's page are in place for the account tester" \
         "Updates for the device install by themselves" "AdGuard Home [0-9.]* runs and answers DNS questions" "The logs are in memory ([0-9]* MB of 128 MB used)" \
         "Zone.eu accepted the saved API key for domain.tld when SGC last asked" \
+        "The certificate for \*\.domain\.tld is valid for [0-9]* more days, and SGC renews it by itself" \
         "The ports SGC needs, now or later, are free"; do
         if echo "$output" | grep -q "ok    $line"; then pass "it says: $line"; else
             fail "it does not say: $line"

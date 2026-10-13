@@ -9,7 +9,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -21,7 +20,6 @@ import (
 	"github.com/Troglobitten/sgc/internal/domaincontrol"
 	"github.com/Troglobitten/sgc/internal/layout"
 	"github.com/Troglobitten/sgc/internal/store"
-	"github.com/Troglobitten/sgc/internal/zone"
 )
 
 // Environment variable naming another address for Zone.eu's API. The tests
@@ -33,10 +31,9 @@ const zoneEndpointVariable = "SGC_ZONE_API"
 // newDomainControl keeps the owner's domain and Zone.eu account, and asks
 // Zone.eu about them.
 func newDomainControl(db *sql.DB, auditLog *audit.Log, log *slog.Logger) *domaincontrol.Service {
-	endpoint := zone.DefaultEndpoint
-	if address := os.Getenv(zoneEndpointVariable); address != "" {
-		endpoint = address
-		log.Warn("talking to a non-default address instead of Zone.eu", "address", address)
+	endpoint, standIn := zoneEndpoint()
+	if standIn {
+		log.Warn("talking to a stand-in instead of Zone.eu", "address", endpoint)
 	}
 	return domaincontrol.New(domaincontrol.Config{
 		DB:        db,
@@ -90,16 +87,24 @@ func doctorWorker(ctx context.Context, task, stateDir string, stdout, stderr io.
 		fmt.Fprintf(stderr, "%v\n", err)
 		return exitFailed
 	}
-	if task != "domain" {
-		return fail(fmt.Errorf("unknown task %q", task))
-	}
 	syscall.Umask(0o077)
 	db, err := store.Open(ctx, filepath.Join(stateDir, layout.DatabaseFile))
 	if err != nil {
 		return fail(err)
 	}
 	defer db.Close()
-	status, err := newDomainControl(db, audit.New(db), slog.New(slog.NewTextHandler(io.Discard, nil))).Status(ctx)
+	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+	domainControl := newDomainControl(db, audit.New(db), quiet)
+	// Both read what SGC has recorded; neither asks anybody.
+	var status any
+	switch task {
+	case "domain":
+		status, err = domainControl.Status(ctx)
+	case "certificate":
+		status, err = newCertControl(db, audit.New(db), quiet, domainControl).Status(ctx)
+	default:
+		return fail(fmt.Errorf("unknown task %q", task))
+	}
 	if err != nil {
 		return fail(err)
 	}

@@ -22,6 +22,11 @@ export function formatDuration(totalSeconds: number): string {
   return `${minutes} min`
 }
 
+/** Whole days from now until a moment; negative once it has passed. */
+export function daysUntil(iso: string, now: Date = new Date()): number {
+  return Math.floor((new Date(iso).getTime() - now.getTime()) / (24 * 60 * 60 * 1000))
+}
+
 /** "just now", "5 min ago", "3 h ago", then the date. */
 export function formatTimeAgo(iso: string, now: Date = new Date()): string {
   const then = new Date(iso)

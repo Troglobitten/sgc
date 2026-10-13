@@ -3,10 +3,17 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
+	"math/big"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -21,6 +28,7 @@ import (
 	"time"
 
 	"github.com/Troglobitten/sgc/internal/adguard"
+	"github.com/Troglobitten/sgc/internal/certcontrol"
 	"github.com/Troglobitten/sgc/internal/components"
 	"github.com/Troglobitten/sgc/internal/fwcontrol"
 	"github.com/Troglobitten/sgc/internal/helper"
@@ -181,6 +189,43 @@ func (i *instance) getJSON(path string, out any) int {
 	return resp.StatusCode
 }
 
+// madeUpCertificate returns a certificate for *.domain.tld with its private
+// key, as SGC keeps one (getting a real one takes an authority), and the
+// certificate's serial number as the page shows it.
+func madeUpCertificate(t *testing.T) (kept, serial string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(0x5ca1ab1e),
+		Subject:      pkix.Name{CommonName: "made up for the test"},
+		DNSNames:     []string{"*.domain.tld"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(60 * 24 * time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(map[string]any{
+		"domain":         "domain.tld",
+		"certificatePem": string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
+		"privateKeyPem":  string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})),
+		"directory":      "https://authority.domain.tld/directory",
+		"obtainedAt":     time.Now().UTC().Truncate(time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data), "5ca1ab1e"
+}
+
 // The promise of this milestone, end to end with the real programs: export
 // from one SGC, restore into a fresh one, and the fresh one is the old one.
 func TestExportFromOneInstallRestoresIntoAFreshOne(t *testing.T) {
@@ -238,6 +283,20 @@ func TestExportFromOneInstallRestoresIntoAFreshOne(t *testing.T) {
 		`INSERT INTO setting (key, value) VALUES ('log2ram.enabled', 'true')`,
 	} {
 		if _, err := oldDB.ExecContext(context.Background(), statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// And the certificate with its private key, and SGC's account at the
+	// authority, so that the restored gateway has its certificate without
+	// asking for a new one.
+	certificateKept, certificateSerial := madeUpCertificate(t)
+	travelling := map[string]string{
+		certcontrol.SettingCurrent:  certificateKept,
+		certcontrol.SettingAccounts: `{"https://authority.domain.tld/directory":{"privateKeyPem":"a made-up account key","uri":"https://authority.domain.tld/account/1"}}`,
+		certcontrol.SettingTerms:    `{"agreedAt":"2026-10-13T12:00:00Z","by":"alex"}`,
+	}
+	for key, value := range travelling {
+		if err := store.SetSetting(context.Background(), oldDB, key, value); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -370,6 +429,31 @@ func TestExportFromOneInstallRestoresIntoAFreshOne(t *testing.T) {
 	if resp, body := fresh.postJSON("/api/domain/check", map[string]string{}); resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"ok":true`) {
 		t.Errorf("Zone.eu about the restored key: %d %s", resp.StatusCode, body)
 	}
+	// The certificate is back, shown as it was, and so is everything about
+	// it that the page never shows: its private key, SGC's account at the
+	// authority, the owner's agreement.
+	var certificate struct {
+		TermsAgreed bool
+		Certificate *struct {
+			Serial    string
+			Names     []string
+			ForDomain bool
+		}
+	}
+	if fresh.getJSON("/api/certificate", &certificate) != http.StatusOK || certificate.Certificate == nil ||
+		certificate.Certificate.Serial != certificateSerial || !certificate.Certificate.ForDomain || !certificate.TermsAgreed {
+		t.Errorf("the certificate after the restore: %+v", certificate)
+	}
+	freshDB, err := store.Open(context.Background(), filepath.Join(fresh.stateDir, layout.DatabaseFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range travelling {
+		if got, _, err := store.Setting(context.Background(), freshDB, key); err != nil || got != want {
+			t.Errorf("%s after the restore: %v, and not what was exported", key, err)
+		}
+	}
+	freshDB.Close()
 	// Logs in memory was on on the old device. Whether this one runs from an
 	// SD card is not something the export knows: shown, not switched on.
 	var memoryLogs struct{ Installed, Enabled, Wanted bool }

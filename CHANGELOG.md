@@ -2,6 +2,18 @@
 
 What changed in each version of SGC, newest first. The section for a version is what SGC shows before you update to it, so it is written for the person running SGC, not for developers.
 
+## 0.15.0
+
+- The certificate: SGC can now get a real certificate from Let's Encrypt for every name under your domain (`*.your-domain`). On the System page, under "Network", press "Get the certificate". It takes a few minutes and goes on by itself if you leave the page.
+- SGC proves to Let's Encrypt that the domain is yours by publishing a piece of text in its DNS through your Zone.eu account, and removes it again afterwards.
+- Before the real certificate, SGC goes through the same steps with Let's Encrypt's test authority. If the set-up has a mistake in it, it shows there, where it does not count against your domain. Only if that works does SGC ask for the real one.
+- You are asked once to agree to Let's Encrypt's Subscriber Agreement. SGC does not agree on your behalf.
+- Good to know before you start: every certificate is listed in public logs. That a certificate for `*.your-domain` exists will be public. The names of your services are not in it, which is why SGC uses one certificate for all names.
+- SGC renews the certificate by itself, at the time Let's Encrypt suggests, and tries again twice a day if that fails. "Renew now" does it at once; because Let's Encrypt counts requests, the button waits two days after a certificate and fifteen minutes after a failure.
+- If something fails, the page says what, in words, and shows the steps as they were reported. The dashboard and `sudo sgc doctor` show how many days the certificate has left, and warn when renewing fails.
+- The certificate, its key and SGC's account at Let's Encrypt are part of an export. A restored device has its certificate back without asking for a new one. No key is ever shown in the page or written to the log.
+- Not yet: SGC's own page still uses its self-signed certificate. Serving the page under the new one, at a name of its own, is the next version.
+
 ## 0.14.0
 
 - Your domain: on the System page, under "Network", you can now enter the domain your names will end in and the Zone.eu account that holds its DNS (your ZoneID username and an API key). This is the first step towards a real certificate, which the next version gets.

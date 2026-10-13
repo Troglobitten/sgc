@@ -63,6 +63,7 @@ type Server struct {
 	DNS         DNS
 	Log2ram     MemoryLogs
 	Domain      Domain
+	Certificate Certificates
 	// AdguardAddress is where AdGuard Home's own page listens (host:port).
 	AdguardAddress string
 	// StartOver asks the process to wind down the web server and start
@@ -123,6 +124,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/domain", s.requireSession(s.handleDomainSave))
 	mux.HandleFunc("POST /api/domain/check", s.requireSession(s.handleDomainCheck))
 	mux.HandleFunc("POST /api/domain/remove", s.requireSession(s.handleDomainRemove))
+	mux.HandleFunc("GET /api/certificate", s.requireSession(s.handleCertificateStatus))
+	mux.HandleFunc("POST /api/certificate/request", s.requireSession(s.handleCertificateRequest))
 	// AdGuard Home's own page, behind SGC's login.
 	adguardPage := s.requireSession(s.adguardProxy().ServeHTTP)
 	mux.Handle(adguardPrefix, adguardPage)

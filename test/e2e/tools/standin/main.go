@@ -1,39 +1,135 @@
 // Command sgc-standin plays the parts of the outside world that the
-// whole-machine test must not touch for real. For now that is Zone.eu's API:
-// one account with one domain, which accepts one username and API key.
+// whole-machine test must not touch for real:
+//
+//   - Zone.eu: its API (one account with one domain, accepting one username
+//     and API key) and its name servers, which show the TXT records made
+//     through that API;
+//   - Let's Encrypt: its certificate authority and its test authority, both
+//     played by Pebble, which look for proofs at those name servers.
 //
 // It is built by the test-release scripts, copied to the test machine and
 // started there by cases.sh. It is not part of any release.
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"errors"
 	"flag"
 	"fmt"
+	"math/big"
+	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
+	"github.com/Troglobitten/sgc/internal/certcontrol/acmetest"
 	"github.com/Troglobitten/sgc/internal/zone/zonetest"
 )
 
 func main() {
-	listen := flag.String("listen", "127.0.0.1:9100", "address to listen on")
+	listen := flag.String("listen", "127.0.0.1:9100", "address of Zone.eu's API")
+	dnsAddress := flag.String("dns", "127.0.0.1:9153", "address of Zone.eu's name servers")
+	trial := flag.String("trial", "127.0.0.1:9143", "address of the test authority")
+	authority := flag.String("authority", "127.0.0.1:9144", "address of the certificate authority")
+	state := flag.String("state", "", "folder for the certificate the two authorities show")
+	onlyCertificate := flag.Bool("make-certificate", false, "make that certificate if it is not there, then end")
 	username := flag.String("username", "", "the ZoneID username the account accepts")
 	apiKey := flag.String("api-key", "", "the API key the account accepts")
 	domain := flag.String("domain", "domain.tld", "the domain whose DNS zone is in the account")
 	flag.Parse()
-	if *username == "" || *apiKey == "" {
-		fmt.Fprintln(os.Stderr, "sgc-standin: --username and --api-key are needed")
-		os.Exit(2)
-	}
-	server := &http.Server{
-		Addr:              *listen,
-		Handler:           zonetest.New(*username, *apiKey, *domain),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-	fmt.Printf("standing in for Zone.eu on %s, with the zone %s\n", *listen, *domain)
-	if err := server.ListenAndServe(); err != nil {
+
+	fail := func(err error) {
 		fmt.Fprintln(os.Stderr, "sgc-standin:", err)
 		os.Exit(1)
 	}
+	if *state == "" {
+		fail(errors.New("--state is needed"))
+	}
+	certFile, keyFile, err := ensureCertificate(*state)
+	if err != nil {
+		fail(err)
+	}
+	if *onlyCertificate {
+		fmt.Println(certFile)
+		return
+	}
+	if *username == "" || *apiKey == "" {
+		fail(errors.New("--username and --api-key are needed"))
+	}
+
+	zone := zonetest.New(*username, *apiKey, *domain)
+	dnsInUse, _, err := zone.ListenDNS(*dnsAddress)
+	if err != nil {
+		fail(err)
+	}
+	failed := make(chan error, 3)
+	serve := func(address string, handler http.Handler, tls bool) {
+		server := &http.Server{Addr: address, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
+		if tls {
+			failed <- server.ListenAndServeTLS(certFile, keyFile)
+		} else {
+			failed <- server.ListenAndServe()
+		}
+	}
+	go serve(*listen, zone, false)
+	// Two authorities, as with Let's Encrypt: what SGC tries with the first
+	// it then asks of the second.
+	go serve(*trial, acmetest.New(dnsInUse), true)
+	go serve(*authority, acmetest.New(dnsInUse), true)
+	fmt.Printf("standing in for Zone.eu (API on %s, name servers on %s, zone %s) and for Let's Encrypt (test authority on %s, authority on %s)\n",
+		*listen, dnsInUse, *domain, *trial, *authority)
+	fail(<-failed)
+}
+
+// ensureCertificate makes the certificate the two authorities show to
+// whoever connects (not what they issue), unless it is there already. SGC is
+// told to trust it, so it has to be the same from start to start.
+func ensureCertificate(dir string) (certFile, keyFile string, err error) {
+	certFile, keyFile = filepath.Join(dir, "authority-cert.pem"), filepath.Join(dir, "authority-key.pem")
+	if _, err := os.Stat(certFile); err == nil {
+		if _, err := os.Stat(keyFile); err == nil {
+			return certFile, keyFile, nil
+		}
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", "", err
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return "", "", err
+	}
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(time.Now().UnixNano()),
+		Subject:               pkix.Name{CommonName: "sgc-standin"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		IPAddresses:           []net.IP{net.IPv4(127, 0, 0, 1)},
+		DNSNames:              []string{"localhost"},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		return "", "", err
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return "", "", err
+	}
+	// The certificate is for SGC to read; the key is this program's alone.
+	if err := os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644); err != nil {
+		return "", "", err
+	}
+	if err := os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+		return "", "", err
+	}
+	return certFile, keyFile, nil
 }

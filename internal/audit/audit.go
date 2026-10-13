@@ -95,6 +95,15 @@ const (
 	// says what it answered), and accepted it again.
 	ActionZoneCheckFailed    = "zone.check_failed"
 	ActionZoneCheckRecovered = "zone.check_recovered"
+
+	// The owner agreed to the certificate authority's terms. A certificate
+	// was issued for the first time, or renewed (the detail names what it is
+	// for, who issued it and until when it is valid). An attempt at either
+	// failed (the detail says why).
+	ActionCertificateTermsAgreed = "certificate.terms_agreed"
+	ActionCertificateIssued      = "certificate.issued"
+	ActionCertificateRenewed     = "certificate.renewed"
+	ActionCertificateFailed      = "certificate.failed"
 )
 
 // ActorConsole is recorded for actions taken with the command-line tool.
