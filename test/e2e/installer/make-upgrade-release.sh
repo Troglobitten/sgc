@@ -70,5 +70,10 @@ cp "$keys/test.pub.pem" "$tree/installer/release-key.pem"
 (cd "$tree" && bash scripts/dist.sh "$out/updates/v$new" >/dev/null)
 sign "$out/updates/v$new"
 
+# What the test must not touch for real (Zone.eu) is played by a program of
+# the test's own (see make-test-release.sh).
+mkdir -p "$out/tools"
+(cd "$repo" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o "$out/tools/sgc-standin" ./test/e2e/tools/standin)
+
 echo "built in $out: install $previous (from $previous_tag), update to $new (the current source)"
 echo "$previous $new"

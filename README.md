@@ -2,7 +2,7 @@
 
 A secure front door for your home network, running on a Raspberry Pi or any small Debian machine.
 
-> **Status: early development.** The installer, the admin account, a dashboard with system health, self-updating, export and restore, the device's firewall, SSH keys with "keys only", updates for the device, a maintenance window, DNS (AdGuard Home) and logs in memory for SD cards work. VPN and the reverse proxy are not built yet.
+> **Status: early development.** The installer, the admin account, a dashboard with system health, self-updating, export and restore, the device's firewall, SSH keys with "keys only", updates for the device, a maintenance window, DNS (AdGuard Home), logs in memory for SD cards and the connection to Zone.eu work. VPN and the reverse proxy are not built yet.
 
 ## What it will do
 
@@ -141,6 +141,15 @@ Inside the window SGC restarts the device only if an installed update asked for 
 
 On the dashboard, SGC's own updates can be set to install by themselves in the same window (off by default). A new version then waits until your device has known it for three days, counted from when the device first saw it, not from a date the release carries. That leaves time for a faulty release to be noticed and withdrawn. With this on, a release reaches the device without a click from you; the wait is what stands between a bad release and your gateway.
 
+### Domain: Zone.eu
+
+Every name SGC will hand out ends in your domain, and the certificate for those names is obtained by proving to Let's Encrypt, through DNS, that the domain is yours. For that SGC needs the Zone.eu account that holds the domain's DNS. On the **System** page, under Network, enter the domain, your ZoneID username and an API key (made in your ZoneID account management at Zone.eu).
+
+- **Checked before it is saved.** SGC asks Zone.eu for the domain's DNS zone with the key. A wrong key, or a domain that is not in that account, is refused with the reason and nothing is saved.
+- **Watched afterwards.** SGC asks again every 6 hours (every hour while the answer is no). A key that stops working shows on the dashboard, on the System page and in `sudo sgc doctor`. Zone.eu allows 60 requests a minute; SGC stays far below that.
+- **The key is kept close.** It opens the whole Zone.eu account, not only DNS. It is stored in SGC's database (readable by SGC's own user only), carried by an export (which is encrypted with your passphrase), sent to `api.zone.eu` and nowhere else, and never returned to the page or written to a log.
+- **Not yet:** the certificate itself. That is the next part of this milestone.
+
 ### Logs in memory, for a device on an SD card
 
 An SD card wears out from being written to, and logs are written all the time. With **This device runs from an SD card** switched on (System page), [log2ram](https://github.com/azlux/log2ram) keeps the log folder (`/var/log`) in memory and writes it to the card once a day and at shutdown. The price: after a power cut, the log entries since the last write are gone.
@@ -163,7 +172,7 @@ An SD card wears out from being written to, and logs are written all the time. W
 sudo sgc doctor
 ```
 
-checks every part of SGC on the machine (the service, its page, the root helper, storage, the clock, the firewall, SSH, the device's updates, AdGuard Home, logs in memory, the ports SGC needs) and says what to do about each problem it finds. It asks the machine directly, so it also works when SGC's page does not answer.
+checks every part of SGC on the machine (the service, its page, the root helper, storage, the clock, the firewall, SSH, the device's updates, AdGuard Home, logs in memory, the domain's connection to Zone.eu, the ports SGC needs) and says what to do about each problem it finds. It asks the machine directly, so it also works when SGC's page does not answer.
 
 ### How releases are verified
 

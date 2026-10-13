@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -31,9 +32,17 @@ import (
 // interface does not answer. Each milestone adds the checks for what it
 // brings.
 func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	if len(args) != 0 {
+	flags := flag.NewFlagSet("sgc doctor", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	stateDir := flags.String("state-dir", defaultStateDir(), "folder for the database and certificate")
+	// Internal: the part that runs as the service user.
+	worker := flags.String("as-service-user", "", "")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		fmt.Fprintln(stderr, "usage: sgc doctor")
 		return exitUsage
+	}
+	if *worker != "" {
+		return doctorWorker(ctx, *worker, *stateDir, stdout, stderr)
 	}
 	// Reading the firewall's live rules and the state of other users'
 	// services needs root.
@@ -56,6 +65,7 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		checkOSUpdates,
 		checkDNS,
 		checkLog2ram,
+		checkDomain(*stateDir),
 		checkPorts,
 	})
 	if doctor.Print(stdout, results) > 0 {

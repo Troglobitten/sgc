@@ -86,6 +86,15 @@ const (
 	// when the device restarts.
 	ActionLog2ramSwitchedOn  = "log2ram.switched_on"
 	ActionLog2ramSwitchedOff = "log2ram.switched_off"
+
+	// The owner's domain and Zone.eu account were saved (the detail names
+	// both, never the key), or removed.
+	ActionDomainSaved   = "domain.saved"
+	ActionDomainRemoved = "domain.removed"
+	// Zone.eu stopped accepting the saved account for the domain (the detail
+	// says what it answered), and accepted it again.
+	ActionZoneCheckFailed    = "zone.check_failed"
+	ActionZoneCheckRecovered = "zone.check_recovered"
 )
 
 // ActorConsole is recorded for actions taken with the command-line tool.

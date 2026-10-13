@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/cookiejar"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -28,6 +29,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/osupdate"
 	"github.com/Troglobitten/sgc/internal/sshd"
 	"github.com/Troglobitten/sgc/internal/store"
+	"github.com/Troglobitten/sgc/internal/zone/zonetest"
 )
 
 // rootSide stands in for the root helper as far as AdGuard Home goes: a
@@ -189,6 +191,13 @@ func TestExportFromOneInstallRestoresIntoAFreshOne(t *testing.T) {
 	)
 
 	// --- The old gateway: set up, change a setting, export. -----------------
+	// A stand-in for Zone.eu, which both gateways ask instead of the real
+	// one. It accepts one key, so an answer of "yes" on the restored gateway
+	// means that the key itself travelled.
+	zoneStandIn := httptest.NewServer(zonetest.New("alex", "a-made-up-api-key", "domain.tld"))
+	defer zoneStandIn.Close()
+	t.Setenv(zoneEndpointVariable, zoneStandIn.URL+"/v2/")
+
 	// What the owner made of AdGuard Home's settings on the old gateway.
 	const dnsSettings = "user_rules:\n  - '||ads.domain.tld^'\n"
 	old := startInstance(t, dnsSettings)
@@ -199,6 +208,9 @@ func TestExportFromOneInstallRestoresIntoAFreshOne(t *testing.T) {
 	}
 	if resp, body := old.postJSON("/api/update/settings", map[string]bool{"autoCheck": false}); resp.StatusCode != http.StatusOK {
 		t.Fatalf("change setting: %d %s", resp.StatusCode, body)
+	}
+	if resp, body := old.postJSON("/api/domain", map[string]string{"domain": "domain.tld", "username": "alex", "apiKey": "a-made-up-api-key"}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("save the domain: %d %s", resp.StatusCode, body)
 	}
 	// As if the owner had switched the firewall on there. Doing that for
 	// real takes root and a firewall; what an export carries of it is the
@@ -342,6 +354,21 @@ func TestExportFromOneInstallRestoresIntoAFreshOne(t *testing.T) {
 	}
 	if enabled, settings := fresh.root.state(); !dns.Enabled || !enabled || settings != dnsSettings {
 		t.Errorf("DNS after the restore: %+v, and AdGuard Home runs on %q", dns, settings)
+	}
+	// The domain and the Zone.eu account are back, key included: Zone.eu's
+	// stand-in says yes to it. That this device has not asked before is
+	// bookkeeping the export does not carry.
+	var domain struct {
+		Configured       bool
+		Domain, Username string
+		OK               bool
+		CheckedAt        *time.Time
+	}
+	if fresh.getJSON("/api/domain", &domain) != http.StatusOK || !domain.Configured || domain.Domain != "domain.tld" || domain.Username != "alex" || domain.CheckedAt != nil {
+		t.Errorf("the domain after the restore: %+v", domain)
+	}
+	if resp, body := fresh.postJSON("/api/domain/check", map[string]string{}); resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"ok":true`) {
+		t.Errorf("Zone.eu about the restored key: %d %s", resp.StatusCode, body)
 	}
 	// Logs in memory was on on the old device. Whether this one runs from an
 	// SD card is not something the export knows: shown, not switched on.

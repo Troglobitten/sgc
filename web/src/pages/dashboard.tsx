@@ -20,6 +20,7 @@ import {
   errorMessage,
   type AuditEntry,
   type DnsStatus,
+  type DomainStatus,
   type FirewallStatus,
   type Health,
   type OsUpdatesStatus,
@@ -35,6 +36,7 @@ export function DashboardPage({ shell }: { shell: ShellProps }) {
   const [firewall, setFirewall] = useState<FirewallStatus | null>(null)
   const [osUpdates, setOsUpdates] = useState<OsUpdatesStatus | null>(null)
   const [dns, setDns] = useState<DnsStatus | null>(null)
+  const [domain, setDomain] = useState<DomainStatus | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
   // While an update runs: the number of the attempt before it (or null).
   const [updating, setUpdating] = useState<{ previousAttempt: number | null } | null>(null)
@@ -92,6 +94,10 @@ export function DashboardPage({ shell }: { shell: ShellProps }) {
       )
       api.dns().then(
         (status) => !stopped && setDns(status),
+        (e) => !stopped && handleError(e),
+      )
+      api.domain().then(
+        (status) => !stopped && setDomain(status),
         (e) => !stopped && handleError(e),
       )
     }
@@ -165,6 +171,20 @@ export function DashboardPage({ shell }: { shell: ShellProps }) {
       </Section>
 
       <Section title="Services">
+        {/* Zone.eu no longer accepting the key stops certificates from being
+            renewed, weeks before anything else shows it. */}
+        {domain?.configured && domain.checkedAt !== null && !domain.ok && (
+          <button
+            type="button"
+            onClick={() => onNavigate('system')}
+            className="mb-3 flex w-full items-start gap-2 rounded-xl bg-card p-3 text-left text-sm text-amber-700 ring-1 ring-foreground/10 outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 dark:text-amber-400"
+          >
+            <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+            <span>
+              The domain {domain.domain}: {domain.problem} The System page has the details.
+            </span>
+          </button>
+        )}
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
           <FirewallTile status={firewall} onOpen={() => onNavigate('system')} />
           <OsUpdatesTile status={osUpdates} onOpen={() => onNavigate('system')} />
@@ -383,6 +403,14 @@ function describeActivity(entry: AuditEntry): string {
       return `${entry.actor} made an export`
     case 'restore.completed':
       return `Restored ${entry.detail}`
+    case 'domain.saved':
+      return `${entry.actor} saved the domain ${entry.detail}`
+    case 'domain.removed':
+      return `${entry.actor} removed the domain ${entry.detail}`
+    case 'zone.check_failed':
+      return `Zone.eu: ${entry.detail}`
+    case 'zone.check_recovered':
+      return `Zone.eu accepts the saved key for ${entry.detail} again`
     case 'log2ram.switched_on':
       return `${entry.actor} switched logs in memory on (${entry.detail})`
     case 'log2ram.switched_off':
