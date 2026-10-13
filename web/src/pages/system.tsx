@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { RotateCw, TriangleAlert } from 'lucide-react'
 
 import { AppShell, type ShellProps } from '@/components/app-shell'
+import { CertificateCard } from '@/components/certificate-card'
 import { DnsCard } from '@/components/dns-card'
 import { DomainCard } from '@/components/domain-card'
 import { ExportCard } from '@/components/export-card'
@@ -74,6 +75,7 @@ export function SystemPage({
         <div className="grid gap-3 md:grid-cols-2">
           <DnsCard onError={handleError} />
           <DomainCard onError={handleError} />
+          <CertificateCard onError={handleError} />
         </div>
       </Section>
 

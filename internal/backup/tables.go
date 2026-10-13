@@ -40,6 +40,9 @@ var transientSettings = []string{
 	"update.first_seen",           // when this device first saw the newest version of SGC
 	"adguard.restore_pending",     // an export was restored and its DNS part is not in place on this device yet
 	"zone.check",                  // how this device's last question to Zone.eu ended
+	"certificate.attempt",         // how this device's last attempt at a certificate went
+	"certificate.open_records",    // DNS records an attempt at a certificate has made and not yet removed
+	"certificate.renewal",         // when this device means to renew, and whether that failed
 }
 
 func cleanupStatements() []string {

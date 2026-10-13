@@ -19,13 +19,14 @@ import {
   ApiError,
   errorMessage,
   type AuditEntry,
+  type CertificateStatus,
   type DnsStatus,
   type DomainStatus,
   type FirewallStatus,
   type Health,
   type OsUpdatesStatus,
 } from '@/lib/api'
-import { formatDuration, formatGigabytes, formatTimeAgo, percentOf } from '@/lib/format'
+import { daysUntil, formatDuration, formatGigabytes, formatTimeAgo, percentOf } from '@/lib/format'
 
 const healthInterval = 3_000
 const activityInterval = 15_000
@@ -37,6 +38,7 @@ export function DashboardPage({ shell }: { shell: ShellProps }) {
   const [osUpdates, setOsUpdates] = useState<OsUpdatesStatus | null>(null)
   const [dns, setDns] = useState<DnsStatus | null>(null)
   const [domain, setDomain] = useState<DomainStatus | null>(null)
+  const [certificate, setCertificate] = useState<CertificateStatus | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
   // While an update runs: the number of the attempt before it (or null).
   const [updating, setUpdating] = useState<{ previousAttempt: number | null } | null>(null)
@@ -98,6 +100,10 @@ export function DashboardPage({ shell }: { shell: ShellProps }) {
       )
       api.domain().then(
         (status) => !stopped && setDomain(status),
+        (e) => !stopped && handleError(e),
+      )
+      api.certificate().then(
+        (status) => !stopped && setCertificate(status),
         (e) => !stopped && handleError(e),
       )
     }
@@ -191,7 +197,7 @@ export function DashboardPage({ shell }: { shell: ShellProps }) {
           <ServiceTile icon={<ShieldCheck />} name="VPN" />
           <DnsTile status={dns} onOpen={() => onNavigate('system')} />
           <ServiceTile icon={<Route />} name="Proxy" />
-          <ServiceTile icon={<BadgeCheck />} name="Certificate" />
+          <CertificateTile status={certificate} onOpen={() => onNavigate('system')} />
         </div>
       </Section>
 
@@ -283,6 +289,44 @@ function FirewallTile({
       <span className="flex items-center gap-2 text-sm font-medium">
         <Shield className="size-4" aria-hidden="true" />
         Firewall
+      </span>
+      <span className={`mt-1 block text-xs ${tone}`}>{text}</span>
+    </button>
+  )
+}
+
+/** The certificate in a word; the System page has the rest. */
+function CertificateTile({
+  status,
+  onOpen,
+}: {
+  status: CertificateStatus | null
+  onOpen: () => void
+}) {
+  const good = 'text-emerald-700 dark:text-emerald-400'
+  const warn = 'text-amber-700 dark:text-amber-400'
+  let text = '…'
+  let tone = 'text-muted-foreground'
+  const current = status?.certificate?.forDomain ? status.certificate : null
+  const renewalFails =
+    status?.lastAttempt != null && !status.lastAttempt.ok && status.lastAttempt.kind === 'renewal'
+  if (status?.running) text = 'Being requested…'
+  else if (current) {
+    const days = daysUntil(current.notAfter)
+    if (days < 0) [text, tone] = ['Run out', warn]
+    else if (renewalFails) [text, tone] = [`${days} days left, renewing fails`, warn]
+    else [text, tone] = [`${days} days left`, days < 14 ? warn : good]
+  } else if (status?.lastAttempt != null && !status.lastAttempt.ok) [text, tone] = ['Last attempt failed', warn]
+  else if (status) text = 'Not set up yet'
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="rounded-xl bg-card p-3 text-left ring-1 ring-foreground/10 outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
+    >
+      <span className="flex items-center gap-2 text-sm font-medium">
+        <BadgeCheck className="size-4" aria-hidden="true" />
+        Certificate
       </span>
       <span className={`mt-1 block text-xs ${tone}`}>{text}</span>
     </button>
@@ -403,6 +447,16 @@ function describeActivity(entry: AuditEntry): string {
       return `${entry.actor} made an export`
     case 'restore.completed':
       return `Restored ${entry.detail}`
+    case 'certificate.terms_agreed':
+      return `${entry.actor} agreed to ${entry.detail}`
+    case 'certificate.issued':
+      return `A certificate was issued: ${entry.detail}`
+    case 'certificate.renewed':
+      return entry.actor === 'system'
+        ? `The certificate was renewed: ${entry.detail}`
+        : `${entry.actor} renewed the certificate: ${entry.detail}`
+    case 'certificate.failed':
+      return `Getting the certificate failed: ${entry.detail}`
     case 'domain.saved':
       return `${entry.actor} saved the domain ${entry.detail}`
     case 'domain.removed':

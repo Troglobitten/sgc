@@ -102,6 +102,79 @@ func (c *Client) Zone(ctx context.Context, domain string) (Zone, error) {
 	return zones[0], nil
 }
 
+// TXTRecord is a TXT record in a zone: a piece of text published under a
+// name. A certificate authority asks for one to see that whoever wants a
+// certificate for the domain can change the domain's DNS.
+type TXTRecord struct {
+	// ID is Zone.eu's number for the record, which removing it takes.
+	ID string
+	// Name is the full name the record is published under.
+	Name  string
+	Value string
+}
+
+// txtRecord is a record as Zone.eu writes it.
+type txtRecord struct {
+	ID          flexibleID `json:"id,omitempty"`
+	Name        string     `json:"name"`
+	Destination string     `json:"destination"`
+}
+
+// flexibleID reads a record's number whether it comes as a number or as
+// text. Zone.eu's description of the format says "integer"; its examples,
+// and the client other programs use, have it in quotes.
+type flexibleID string
+
+func (id *flexibleID) UnmarshalJSON(data []byte) error {
+	var text string
+	if err := json.Unmarshal(data, &text); err == nil {
+		*id = flexibleID(text)
+		return nil
+	}
+	var number json.Number
+	if err := json.Unmarshal(data, &number); err != nil {
+		return fmt.Errorf("a record's id is neither a number nor text: %s", data)
+	}
+	*id = flexibleID(number.String())
+	return nil
+}
+
+// TXTRecords returns the TXT records of a domain's zone.
+func (c *Client) TXTRecords(ctx context.Context, domain string) ([]TXTRecord, error) {
+	var found []txtRecord
+	if err := c.do(ctx, http.MethodGet, nil, &found, "dns", domain, "txt"); err != nil {
+		return nil, err
+	}
+	records := make([]TXTRecord, 0, len(found))
+	for _, r := range found {
+		records = append(records, TXTRecord{ID: string(r.ID), Name: r.Name, Value: r.Destination})
+	}
+	return records, nil
+}
+
+// AddTXT publishes a TXT record under the full name given, which must be in
+// the domain's zone, and returns it with the number Zone.eu gave it.
+func (c *Client) AddTXT(ctx context.Context, domain, name, value string) (TXTRecord, error) {
+	var created []txtRecord
+	if err := c.do(ctx, http.MethodPost, txtRecord{Name: name, Destination: value}, &created, "dns", domain, "txt"); err != nil {
+		return TXTRecord{}, err
+	}
+	if len(created) != 1 || created[0].ID == "" {
+		return TXTRecord{}, errors.New("Zone.eu did not say which record it made")
+	}
+	return TXTRecord{ID: string(created[0].ID), Name: created[0].Name, Value: created[0].Destination}, nil
+}
+
+// DeleteTXT removes a TXT record. A record that is already gone is not an
+// error: gone is what was asked for.
+func (c *Client) DeleteTXT(ctx context.Context, domain, id string) error {
+	err := c.do(ctx, http.MethodDelete, nil, nil, "dns", domain, "txt", id)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	return err
+}
+
 // do makes one request. path is joined to the endpoint piece by piece, each
 // piece escaped, so that nothing in a name can change where the request goes.
 func (c *Client) do(ctx context.Context, method string, body, answer any, path ...string) error {

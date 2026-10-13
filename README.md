@@ -2,7 +2,7 @@
 
 A secure front door for your home network, running on a Raspberry Pi or any small Debian machine.
 
-> **Status: early development.** The installer, the admin account, a dashboard with system health, self-updating, export and restore, the device's firewall, SSH keys with "keys only", updates for the device, a maintenance window, DNS (AdGuard Home), logs in memory for SD cards and the connection to Zone.eu work. VPN and the reverse proxy are not built yet.
+> **Status: early development.** The installer, the admin account, a dashboard with system health, self-updating, export and restore, the device's firewall, SSH keys with "keys only", updates for the device, a maintenance window, DNS (AdGuard Home), logs in memory for SD cards, the connection to Zone.eu and the certificate from Let's Encrypt work. VPN and the reverse proxy are not built yet.
 
 ## What it will do
 
@@ -148,7 +148,19 @@ Every name SGC will hand out ends in your domain, and the certificate for those 
 - **Checked before it is saved.** SGC asks Zone.eu for the domain's DNS zone with the key. A wrong key, or a domain that is not in that account, is refused with the reason and nothing is saved.
 - **Watched afterwards.** SGC asks again every 6 hours (every hour while the answer is no). A key that stops working shows on the dashboard, on the System page and in `sudo sgc doctor`. Zone.eu allows 60 requests a minute; SGC stays far below that.
 - **The key is kept close.** It opens the whole Zone.eu account, not only DNS. It is stored in SGC's database (readable by SGC's own user only), carried by an export (which is encrypted with your passphrase), sent to `api.zone.eu` and nowhere else, and never returned to the page or written to a log.
-- **Not yet:** the certificate itself. That is the next part of this milestone.
+
+### Certificate: Let's Encrypt
+
+With the domain set up, **Get the certificate** on the System page asks [Let's Encrypt](https://letsencrypt.org) for one certificate that covers every name under the domain (`*.domain.tld`).
+
+- **How the domain is proven.** Let's Encrypt names a piece of text; SGC publishes it in the domain's DNS through the Zone.eu account (a TXT record under `_acme-challenge`), waits until Zone.eu's name servers show it, and removes it afterwards. Nothing has to be reachable from the internet for this.
+- **A trial first.** Before the first certificate SGC goes through the same steps with Let's Encrypt's test authority (its "staging" service) and throws that certificate away. Mistakes in the set-up show there, and Let's Encrypt counts failures at the real authority: a handful within an hour locks the domain out for a while.
+- **Your agreement.** Let's Encrypt has a Subscriber Agreement. SGC asks you to agree once and records that you did; it never agrees for you.
+- **Public logs.** Every certificate a public authority issues is listed in public logs. That one exists for `*.domain.tld` will be public. The names of your services are not in it: that is the reason for one certificate for all names.
+- **Renewal.** SGC asks Let's Encrypt once a day when it wants the certificate renewed and does it then, by itself. If that fails it tries again twice a day, and the dashboard, the System page and `sudo sgc doctor` say so. "Renew now" renews at once, but not within two days of a certificate or fifteen minutes of a failure, because Let's Encrypt limits both.
+- **Where it is kept.** The certificate, its private key and SGC's account at Let's Encrypt are in SGC's database, readable by SGC's own user only, and travel in an export, so a restored device does not ask for a new certificate. No key is returned to the page or written to a log.
+- **The library.** The protocol (ACME) is the work of [lego](https://github.com/go-acme/lego), which SGC links in. SGC never talks to Let's Encrypt in its tests: those run against [Pebble](https://github.com/letsencrypt/pebble), Let's Encrypt's own small authority for tests.
+- **Not yet:** SGC's own page still shows its self-signed certificate. That changes with the next part.
 
 ### Logs in memory, for a device on an SD card
 
@@ -172,7 +184,7 @@ An SD card wears out from being written to, and logs are written all the time. W
 sudo sgc doctor
 ```
 
-checks every part of SGC on the machine (the service, its page, the root helper, storage, the clock, the firewall, SSH, the device's updates, AdGuard Home, logs in memory, the domain's connection to Zone.eu, the ports SGC needs) and says what to do about each problem it finds. It asks the machine directly, so it also works when SGC's page does not answer.
+checks every part of SGC on the machine (the service, its page, the root helper, storage, the clock, the firewall, SSH, the device's updates, AdGuard Home, logs in memory, the domain's connection to Zone.eu, the certificate, the ports SGC needs) and says what to do about each problem it finds. It asks the machine directly, so it also works when SGC's page does not answer.
 
 ### How releases are verified
 

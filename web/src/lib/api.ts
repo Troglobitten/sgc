@@ -166,6 +166,39 @@ export interface DomainStatus {
   failingSince: string | null
 }
 
+/** The certificate for the owner's domain, as SGC reports it (internal/certcontrol). No key is ever in it. */
+export interface CertificateStatus {
+  /** the domain that is set up, "" if none */
+  domain: string
+  /** why this SGC gets no certificates, "" if it does */
+  disabled: string
+  termsAgreed: boolean
+  certificate: {
+    names: string[]
+    issuer: string
+    notBefore: string
+    notAfter: string
+    serial: string
+    obtainedAt: string
+    /** it is for the domain that is set up now */
+    forDomain: boolean
+  } | null
+  /** an attempt in progress: "trial" with the test authority first, then "real" */
+  running: { kind: string; phase: string; since: string; log: string[] } | null
+  lastAttempt: {
+    kind: string
+    startedAt: string
+    finishedAt: string
+    ok: boolean
+    message: string
+    log: string[]
+  } | null
+  /** when SGC means to renew by itself */
+  renewsAt: string | null
+  /** until then a request from the page is refused */
+  waitUntil: string | null
+}
+
 /** Logs in memory (log2ram), as SGC reports it (internal/logcontrol). */
 export interface Log2ramStatus {
   /** false when the device could not be asked */
@@ -397,6 +430,10 @@ export const api = {
     request<DomainStatus>('POST', '/api/domain', { domain, username, apiKey }),
   checkDomain: () => request<DomainStatus>('POST', '/api/domain/check', {}),
   removeDomain: () => request<DomainStatus>('POST', '/api/domain/remove', { confirm: true }),
+  certificate: () => request<CertificateStatus>('GET', '/api/certificate'),
+  /** starts getting the first certificate, or a renewal; the state shows how it goes */
+  requestCertificate: (agreeToTerms: boolean) =>
+    request<CertificateStatus>('POST', '/api/certificate/request', { agreeToTerms }),
   log2ram: () => request<Log2ramStatus>('GET', '/api/log2ram'),
   /** in effect from the next restart; switching on installs log2ram first where it is missing */
   setLog2ramEnabled: (enabled: boolean) =>

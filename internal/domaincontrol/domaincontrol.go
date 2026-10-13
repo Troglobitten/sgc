@@ -121,6 +121,14 @@ func (s *Service) account(ctx context.Context) (account, bool, error) {
 	return a, a.domain != "" && a.username != "" && a.apiKey != "", nil
 }
 
+// Account returns the domain and the Zone.eu account that are saved, key
+// included, and whether any are. It is for the part of SGC that publishes
+// DNS records for a certificate, and for nothing that answers the page.
+func (s *Service) Account(ctx context.Context) (domain, username, apiKey string, configured bool, err error) {
+	a, configured, err := s.account(ctx)
+	return a.domain, a.username, a.apiKey, configured, err
+}
+
 func (s *Service) lastCheck(ctx context.Context) (*check, error) {
 	raw, _, err := store.Setting(ctx, s.cfg.DB, SettingCheck)
 	if err != nil || raw == "" {
