@@ -210,6 +210,10 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 	// Restarts the device, and updates SGC, in the owner's maintenance window.
 	background.Go(func() { maintenanceWindow.Run(runCtx) })
 
+	domainControl := newDomainControl(db, auditLog, log)
+	// Asks Zone.eu every few hours whether it still accepts the saved key.
+	background.Go(func() { domainControl.Run(runCtx) })
+
 	dnsControl := newDNSControl(db, opts.stateDir, helperClient, auditLog, log)
 	if restored != nil {
 		// The export's DNS part is put in place below. Until that is done,
@@ -242,6 +246,7 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 		Backups:        backups{db: db, stateDir: opts.stateDir, beforeExport: dnsControl.SaveForExport},
 		DNS:            dnsControl,
 		Log2ram:        newLogControl(db, helperClient, auditLog, log),
+		Domain:         domainControl,
 		AdguardAddress: adguard.WebAddress,
 		Firewall:       firewallControl,
 		SSH:            sshControl,

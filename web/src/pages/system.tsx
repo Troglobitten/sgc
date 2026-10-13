@@ -3,6 +3,7 @@ import { RotateCw, TriangleAlert } from 'lucide-react'
 
 import { AppShell, type ShellProps } from '@/components/app-shell'
 import { DnsCard } from '@/components/dns-card'
+import { DomainCard } from '@/components/domain-card'
 import { ExportCard } from '@/components/export-card'
 import { FirewallCard } from '@/components/firewall-card'
 import { Log2ramCard } from '@/components/log2ram-card'
@@ -72,6 +73,7 @@ export function SystemPage({
       <Section title="Network">
         <div className="grid gap-3 md:grid-cols-2">
           <DnsCard onError={handleError} />
+          <DomainCard onError={handleError} />
         </div>
       </Section>
 

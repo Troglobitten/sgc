@@ -15,7 +15,7 @@ BUILD_FLAGS := -trimpath -ldflags "-s -w"
 
 # Named explicitly rather than "./...": that would also walk through the
 # thousands of files in web/node_modules.
-GO_PACKAGES := . ./cmd/... ./internal/... ./web
+GO_PACKAGES := . ./cmd/... ./internal/... ./web ./test/...
 GO_SOURCES := cmd internal web/embed.go version.go version_test.go
 
 SHELL_SCRIPTS := installer/install.sh scripts/*.sh test/e2e/vm/*.sh test/e2e/installer/*.sh

@@ -108,4 +108,10 @@ done
 (cd "$out/updates/v$next2" && sha256sum sgc-*.tar.gz install.sh >SHA256SUMS)
 sign "$out/updates/v$next2" "$keys/test.pem"
 
+# --- Stand-ins for the outside world ------------------------------------------
+# What the test must not touch for real (Zone.eu) is played by a program of
+# the test's own on the test machine. It is not part of any release.
+mkdir -p "$out/tools"
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o "$out/tools/sgc-standin" ./test/e2e/tools/standin
+
 echo "test releases built in $out: install $base; updates $next1 (good), $next2 (broken), $next3 (good)"

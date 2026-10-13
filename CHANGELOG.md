@@ -2,6 +2,14 @@
 
 What changed in each version of SGC, newest first. The section for a version is what SGC shows before you update to it, so it is written for the person running SGC, not for developers.
 
+## 0.14.0
+
+- Your domain: on the System page, under "Network", you can now enter the domain your names will end in and the Zone.eu account that holds its DNS (your ZoneID username and an API key). This is the first step towards a real certificate, which the next version gets.
+- SGC asks Zone.eu before saving, and saves nothing Zone.eu does not accept: a wrong key, or a domain that is not in that account, is refused with the reason.
+- SGC then asks Zone.eu again every few hours. If the key stops being accepted, for example because it was replaced or withdrawn at Zone.eu, the dashboard and the System page say so, and `sudo sgc doctor` reports it. Later this is what will warn you weeks before a certificate fails to renew.
+- The API key opens your whole Zone.eu account. SGC keeps it on the device and in exports, sends it to Zone.eu only, and never shows it again, not in the page, the activity log or its own log.
+- The domain and the Zone.eu account are part of an export and come back with a restore.
+
 ## 0.13.0
 
 - Logs in memory, for a device that runs from an SD card: a new switch on the System page, under "This device". Switched on, the device's logs are kept in memory and written to the card once a day and at shutdown, instead of all the time, which spares the card. It uses log2ram, from Debian's own archive.

@@ -21,6 +21,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/auth"
 	"github.com/Troglobitten/sgc/internal/backup"
 	"github.com/Troglobitten/sgc/internal/dnscontrol"
+	"github.com/Troglobitten/sgc/internal/domaincontrol"
 	"github.com/Troglobitten/sgc/internal/fwcontrol"
 	"github.com/Troglobitten/sgc/internal/health"
 	"github.com/Troglobitten/sgc/internal/logcontrol"
@@ -232,6 +233,35 @@ func (f *fakeDNS) FinishRestore(_ context.Context, actor, remote string) error {
 	return f.err
 }
 
+// fakeDomain stands in for internal/domaincontrol.
+type fakeDomain struct {
+	status domaincontrol.Status
+	calls  []string
+	err    error
+}
+
+func (f *fakeDomain) Status(context.Context) (domaincontrol.Status, error) { return f.status, nil }
+
+func (f *fakeDomain) Save(_ context.Context, actor, remote, domain, username, apiKey string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.calls = append(f.calls, "save "+domain+" for "+username+" by "+actor)
+	f.status = domaincontrol.Status{Configured: true, Domain: domain, Username: username, OK: true}
+	return nil
+}
+
+func (f *fakeDomain) Remove(_ context.Context, actor, remote string) error {
+	f.calls = append(f.calls, "remove by "+actor)
+	f.status = domaincontrol.Status{}
+	return f.err
+}
+
+func (f *fakeDomain) CheckNow(context.Context) (domaincontrol.Status, error) {
+	f.calls = append(f.calls, "check")
+	return f.status, nil
+}
+
 // fakeLog2ram stands in for internal/logcontrol.
 type fakeLog2ram struct {
 	status logcontrol.Status
@@ -275,6 +305,7 @@ type testEnv struct {
 	maintenance *fakeMaintenance
 	dns         *fakeDNS
 	log2ram     *fakeLog2ram
+	domain      *fakeDomain
 	// Stands in for AdGuard Home's own page.
 	adguard   *httptest.Server
 	url       string
@@ -319,6 +350,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	maintenanceFake := &fakeMaintenance{status: maintenance.Status{Start: "04:00", End: "05:00", UpdateWaitDays: 3}}
 	dnsFake := &fakeDNS{status: dnscontrol.Status{Available: true, Pinned: "0.107.79"}}
 	log2ramFake := &fakeLog2ram{status: logcontrol.Status{Available: true, Installed: true, SizeBytes: 128 << 20}}
+	domainFake := &fakeDomain{}
 	adguardPage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/login.html" {
 			http.Redirect(w, r, "/", http.StatusFound)
@@ -328,7 +360,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		fmt.Fprintf(w, "adguard saw %s %s cookie=%q", r.Method, r.URL.Path, r.Header.Get("Cookie"))
 	}))
 	t.Cleanup(adguardPage.Close)
-	e := &testEnv{t: t, auth: authService, helper: helper, updates: updates, backups: backups, firewall: fw, ssh: sshFake, osUpdates: osFake, maintenance: maintenanceFake, dns: dnsFake, log2ram: log2ramFake, adguard: adguardPage, setupToken: token}
+	e := &testEnv{t: t, auth: authService, helper: helper, updates: updates, backups: backups, firewall: fw, ssh: sshFake, osUpdates: osFake, maintenance: maintenanceFake, dns: dnsFake, log2ram: log2ramFake, domain: domainFake, adguard: adguardPage, setupToken: token}
 	server := &Server{
 		Auth:           authService,
 		Audit:          audit.New(db),
@@ -343,6 +375,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		Maintenance:    maintenanceFake,
 		DNS:            dnsFake,
 		Log2ram:        log2ramFake,
+		Domain:         domainFake,
 		AdguardAddress: strings.TrimPrefix(adguardPage.URL, "http://"),
 		StartOver:      func() { backups.startOvers++ },
 		Version:        "9.9.9",

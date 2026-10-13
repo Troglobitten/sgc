@@ -39,6 +39,7 @@ var transientSettings = []string{
 	"maintenance.last_update_try", // when SGC last tried to update itself by itself
 	"update.first_seen",           // when this device first saw the newest version of SGC
 	"adguard.restore_pending",     // an export was restored and its DNS part is not in place on this device yet
+	"zone.check",                  // how this device's last question to Zone.eu ended
 }
 
 func cleanupStatements() []string {

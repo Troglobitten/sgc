@@ -26,6 +26,9 @@
 #   log2ram        logs in memory: there since the installer ran and off;
 #                  refused when the logs do not fit; switched on, which waits
 #                  for a restart (after-restart looks at it in memory)
+#   domain         the owner's domain and Zone.eu account, against a
+#                  stand-in for Zone.eu: saved only when accepted, a warning
+#                  when the key stops working, never the key in an answer
 #   update-setup   points the installed SGC at a local test update source
 #   update-refused a tampered update is refused and changes nothing
 #   update-good    a genuine update installs from the dashboard's API
@@ -365,6 +368,73 @@ journal_at_most() { [ "$(sudo du -sm /var/log/journal | cut -f1)" -le "$1" ]; }
 # A file of the test's own in the log folder, of data that cannot be made
 # smaller, to take up room there.
 log_filler=/var/log/sgc-test-filler
+# --- The domain and Zone.eu -----------------------------------------------------
+
+# The test never talks to the real Zone.eu. A program of the test's own
+# stands in for it on this machine: an account that has the DNS zone
+# domain.tld and accepts one made-up username and key.
+standin="$HOME/sgc-standin"
+zone_address=127.0.0.1:9100
+zone_user=alex
+zone_key=a-made-up-api-key
+
+# start_standin <the API key the account accepts>: (re)starts the stand-in.
+start_standin() {
+    # Copied as a program: what the build box wrote to a Windows folder does
+    # not arrive marked as one.
+    [ -x "$standin" ] || install -m 0755 /tmp/release/tools/sgc-standin "$standin" || return 1
+    sudo systemctl stop sgc-test-standin.service 2>/dev/null || true
+    sudo systemctl reset-failed sgc-test-standin.service 2>/dev/null || true
+    sudo systemd-run --quiet --unit sgc-test-standin "$standin" --listen "$zone_address" \
+        --username "$zone_user" --api-key "$1" --domain domain.tld || return 1
+    wait_for 10 curl -s -o /dev/null "http://$zone_address/"
+}
+
+# pointed_at_standin: the running SGC asks this machine, not Zone.eu.
+pointed_at_standin() {
+    local environment
+    environment="$(systemctl show sgc.service -p Environment)"
+    [[ "$environment" == *"SGC_ZONE_API=http://$zone_address/"* ]]
+}
+
+# point_at_standin: makes SGC ask this machine instead of Zone.eu, from now
+# on and after every restart, and starts the stand-in there.
+#
+# In that order, and checked: SGC must not be able to ask the real Zone.eu
+# even if the stand-in does not start. (A first version of this test started
+# the stand-in first; when it did not start, SGC asked the real Zone.eu with
+# the made-up account.)
+point_at_standin() {
+    sudo mkdir -p /etc/systemd/system/sgc.service.d
+    printf '[Service]\nEnvironment=SGC_ZONE_API=http://%s/v2/\n' "$zone_address" |
+        sudo tee /etc/systemd/system/sgc.service.d/test-zone.conf >/dev/null || return 1
+    sudo systemctl daemon-reload
+    sudo systemctl restart sgc
+    wait_for 30 curl -sk -o /dev/null "$api/api/state" || return 1
+    pointed_at_standin || return 1
+    start_standin "$zone_key"
+}
+
+# without_standin: ends the run. Nothing about a domain is asked of an SGC
+# that might turn to the real Zone.eu.
+without_standin() {
+    fail "the stand-in for Zone.eu could not be set up; stopping here, so that nothing is asked of the real Zone.eu"
+    echo
+    echo "$failures CHECK(S) FAILED ($mode)"
+    exit "$failures"
+}
+
+# domain_request <domain> <username> <API key>: the request that saves them.
+domain_request() { printf '{"domain":"%s","username":"%s","apiKey":"%s"}' "$1" "$2" "$3"; }
+
+# The made-up key is nowhere in what SGC wrote to its log.
+# shellcheck disable=SC2317  # called indirectly through check()
+log_lacks_the_key() {
+    local log
+    log="$(sudo journalctl -u sgc --no-pager)"
+    [[ "$log" != *"$zone_key"* ]]
+}
+
 # A name of the test's own that the "owner" blocks in AdGuard Home's page.
 blocked_by_owner=sgc-test-blocked.domain.tld
 
@@ -1055,6 +1125,71 @@ log2ram)
     check "no unit of SGC's is marked as failed" sh -c "[ -z \"\$(systemctl list-units --failed --plain --no-legend 'sgc*')\" ]"
     ;;
 
+domain)
+    echo "SGC is pointed at a stand-in for Zone.eu; the test never talks to the real one"
+    if point_at_standin; then pass "the stand-in runs, and SGC asks it"; else without_standin; fi
+    expect_status "the earlier sign-in still works" 200 GET /api/health
+    expect_status "the state is available" 200 GET /api/domain
+    check "no domain is set up" body_has '"configured":false'
+
+    echo "What Zone.eu does not accept is not saved"
+    expect_status "a wrong key is refused" 400 POST /api/domain "$(domain_request domain.tld "$zone_user" another-key)"
+    check "in words" body_has 'does not accept the username and API key'
+    expect_status "a domain that is not in the account is refused" 400 POST /api/domain "$(domain_request other.tld "$zone_user" "$zone_key")"
+    check "in words" body_has 'has no DNS zone for other.tld'
+    expect_status "what is no domain name is refused" 400 POST /api/domain "$(domain_request 'domain.tld/../x' "$zone_user" "$zone_key")"
+    expect_status "the state is available" 200 GET /api/domain
+    check "nothing was saved" body_has '"configured":false'
+
+    echo "Saved once Zone.eu says yes"
+    expect_status "the domain with the right key is saved" 200 POST /api/domain "$(domain_request Domain.TLD "$zone_user" "$zone_key")"
+    check "the page shows the domain, and that Zone.eu accepted the key" sh -c "grep -q '\"configured\":true' /tmp/sgc-test-body && grep -q '\"domain\":\"domain.tld\"' /tmp/sgc-test-body && grep -q '\"ok\":true' /tmp/sgc-test-body"
+    check "the answer does not carry the key" sh -c "! grep -q '$zone_key' /tmp/sgc-test-body"
+    expect_in_audit "it is in the history" '"action":"domain.saved"'
+    check "the history does not carry the key" sh -c "! grep -q '$zone_key' /tmp/sgc-test-body"
+    check "nor does SGC's log" log_lacks_the_key
+    output="$(sudo sgc doctor 2>&1)"
+    if grep -q 'ok    Zone.eu accepted the saved API key for domain.tld when SGC last asked' <<<"$output"; then pass "the doctor says that Zone.eu accepted the key"; else
+        fail "the doctor does not say that Zone.eu accepted the key"
+        indent <<<"$output"
+    fi
+
+    echo "The key is withdrawn at Zone.eu"
+    check "SGC still asks the stand-in" pointed_at_standin
+    start_standin a-key-made-later
+    expect_status "asking Zone.eu now" 200 POST /api/domain/check '{}'
+    check "the page says that the key is not accepted" sh -c "grep -q '\"ok\":false' /tmp/sgc-test-body && grep -q 'does not accept the username and API key' /tmp/sgc-test-body"
+    expect_in_audit "that it stopped working is in the history" '"action":"zone.check_failed"'
+    output="$(sudo sgc doctor 2>&1)"
+    code=$?
+    if [ "$code" -ne 0 ] && grep -q 'FAIL  The domain domain.tld: Zone.eu does not accept the username and API key' <<<"$output"; then
+        pass "the doctor reports it as a problem"
+    else
+        fail "the doctor does not report the refused key (exit code $code)"
+        indent <<<"$output"
+    fi
+    if grep -q 'make a new one in your ZoneID account' <<<"$output"; then pass "and says what to do"; else fail "it does not say what to do"; fi
+
+    echo "Zone.eu out of reach"
+    sudo systemctl stop sgc-test-standin.service
+    expect_status "asking Zone.eu now" 200 POST /api/domain/check '{}'
+    check "the page says that it could not be reached" body_has 'could not be reached'
+
+    echo "The key accepted again"
+    start_standin "$zone_key"
+    expect_status "asking Zone.eu now" 200 POST /api/domain/check '{}'
+    check "the page says that all is well" body_has '"ok":true'
+    expect_in_audit "that it works again is in the history" '"action":"zone.check_recovered"'
+
+    echo "Removed, and saved again"
+    expect_status "removing needs to be meant" 400 POST /api/domain/remove '{}'
+    expect_status "removing the domain" 200 POST /api/domain/remove '{"confirm":true}'
+    check "nothing is left" body_has '"configured":false'
+    expect_status "saving it again" 200 POST /api/domain "$(domain_request domain.tld "$zone_user" "$zone_key")"
+    check "it is there again" body_has '"configured":true'
+    check "no unit of SGC's is marked as failed" sh -c "[ -z \"\$(systemctl list-units --failed --plain --no-legend 'sgc*')\" ]"
+    ;;
+
 old-install)
     echo "The previous release, as it was published"
     if run_installer good >/tmp/install.log; then pass "its installer succeeded"; else
@@ -1287,6 +1422,10 @@ restore)
     rm -f "$cookies"
     expect_status "the fresh install asks for setup" 200 GET /api/state
     check "setup is required" body_has '"setupRequired":true'
+    # The export carries a domain and a (made-up) Zone.eu key. SGC is pointed
+    # at the stand-in before the export is restored, so that it never asks
+    # the real Zone.eu about them.
+    if point_at_standin; then pass "SGC is pointed at the stand-in for Zone.eu"; else without_standin; fi
 
     # upload <token> <passphrase>: prints the status code of a restore preview.
     upload() {
@@ -1329,6 +1468,12 @@ restore)
     if wait_for 30 is_blocked 127.0.0.1 "$blocked_by_owner"; then pass "the rule the owner made on the old machine is in force here"; else fail "the owner's rule did not travel"; fi
     expect_status "its settings can be read through SGC" 200 GET /adguard/control/dns_info
     check "it still asks Quad9" body_has 'https://dns.quad9.net/dns-query'
+
+    echo "The domain and the Zone.eu account came back, key included"
+    expect_status "the state is available" 200 GET /api/domain
+    check "the domain and the account are there" sh -c "grep -q '\"configured\":true' /tmp/sgc-test-body && grep -q '\"domain\":\"domain.tld\"' /tmp/sgc-test-body && grep -q '\"username\":\"$zone_user\"' /tmp/sgc-test-body"
+    expect_status "asking Zone.eu with the key that came in the export" 200 POST /api/domain/check '{}'
+    check "it is accepted" body_has '"ok":true'
 
     echo "Logs in memory was on on the old machine; here it waits for the owner"
     expect_status "the state is available" 200 GET /api/log2ram
@@ -1521,6 +1666,7 @@ cli)
         "The firewall is on, and its rules are loaded" "The firewall's rules load at every start-up" \
         "SSH accepts keys only, and nobody logs in as root" "The 1 key(s) added in SGC's page are in place for the account tester" \
         "Updates for the device install by themselves" "AdGuard Home [0-9.]* runs and answers DNS questions" "The logs are in memory ([0-9]* MB of 128 MB used)" \
+        "Zone.eu accepted the saved API key for domain.tld when SGC last asked" \
         "The ports SGC needs, now or later, are free"; do
         if echo "$output" | grep -q "ok    $line"; then pass "it says: $line"; else
             fail "it does not say: $line"

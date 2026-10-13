@@ -153,6 +153,19 @@ export interface DnsStatus {
   restorePending: boolean
 }
 
+/** The owner's domain and Zone.eu account, as SGC reports them (internal/domaincontrol). The API key is never in it. */
+export interface DomainStatus {
+  configured: boolean
+  domain: string
+  username: string
+  /** when Zone.eu was last asked; null if not yet */
+  checkedAt: string | null
+  /** its answer, and what was wrong in words */
+  ok: boolean
+  problem: string
+  failingSince: string | null
+}
+
 /** Logs in memory (log2ram), as SGC reports it (internal/logcontrol). */
 export interface Log2ramStatus {
   /** false when the device could not be asked */
@@ -378,6 +391,12 @@ export const api = {
   /** replaces the installed AdGuard Home with the newer one this SGC brings */
   installDns: () => request<DnsStatus>('POST', '/api/dns/install', {}),
   finishDnsRestore: () => request<DnsStatus>('POST', '/api/dns/restore', {}),
+  domain: () => request<DomainStatus>('GET', '/api/domain'),
+  /** saved only if Zone.eu says that domain and account belong together */
+  saveDomain: (domain: string, username: string, apiKey: string) =>
+    request<DomainStatus>('POST', '/api/domain', { domain, username, apiKey }),
+  checkDomain: () => request<DomainStatus>('POST', '/api/domain/check', {}),
+  removeDomain: () => request<DomainStatus>('POST', '/api/domain/remove', { confirm: true }),
   log2ram: () => request<Log2ramStatus>('GET', '/api/log2ram'),
   /** in effect from the next restart; switching on installs log2ram first where it is missing */
   setLog2ramEnabled: (enabled: boolean) =>

@@ -76,6 +76,7 @@ Invoke-Cases ssh $new
 Invoke-Cases os-updates-auto $new
 Invoke-Cases dns $new
 Invoke-Cases log2ram $new
+Invoke-Cases domain $new
 Invoke-Cases restart $new
 
 Write-Host ""

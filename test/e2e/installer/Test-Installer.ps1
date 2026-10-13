@@ -105,6 +105,10 @@ Invoke-Cases dns
 # restart further down, where after-restart looks at it in memory.
 Invoke-Cases log2ram
 
+# The owner's domain and Zone.eu account, against a stand-in for Zone.eu that
+# runs on the test machine. The test never talks to the real Zone.eu.
+Invoke-Cases domain
+
 # Updating: a tampered update, a genuine one, a signed-but-broken one that
 # must roll back, an older one, and the command-line way.
 Invoke-Cases update-setup
