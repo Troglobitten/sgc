@@ -71,9 +71,16 @@ const (
 	ActionOSUpdatesInstalled      = "os_updates.installed"
 	ActionOSUpdatesInstallFailed  = "os_updates.install_failed"
 
-	// AdGuard Home was installed (or replaced by a newer release), or removed.
+	// AdGuard Home was installed (or replaced by a newer release). "removed"
+	// is from SGC 0.11.0, which had a button for it; it stays so that the
+	// history of a device that used it can still be read.
 	ActionDNSInstalled = "dns.installed"
 	ActionDNSRemoved   = "dns.removed"
+	// DNS was switched on or off. And: the DNS part of a restored export was
+	// put in place; the detail says what that meant on this device.
+	ActionDNSSwitchedOn  = "dns.switched_on"
+	ActionDNSSwitchedOff = "dns.switched_off"
+	ActionDNSRestored    = "dns.restored"
 )
 
 // ActorConsole is recorded for actions taken with the command-line tool.

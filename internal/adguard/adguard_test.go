@@ -49,6 +49,7 @@ type device struct {
 
 	hasAccount bool
 	running    bool
+	enabled    bool
 	// The service stops again right after starting.
 	fallsOver bool
 	// Who listens on port 53, in the words of "ss".
@@ -138,13 +139,22 @@ func (d *device) run(_ context.Context, program string, args ...string) ([]byte,
 			return nil, nil
 		}
 		return nil, errors.New("exit status 3")
+	case program == systemctl && args[0] == "is-enabled":
+		if d.enabled {
+			return nil, nil
+		}
+		return nil, errors.New("exit status 1")
 	case program == systemctl:
 		d.calls = append(d.calls, "systemctl "+args[0])
 		switch args[0] {
-		case "restart":
+		case "restart", "start":
 			d.running = !d.fallsOver
-		case "disable":
+		case "stop":
 			d.running = false
+		case "enable":
+			d.enabled = true
+		case "disable":
+			d.running, d.enabled = false, false
 		}
 		return nil, nil
 	}
@@ -362,6 +372,114 @@ func TestANewerReleaseReplacesTheInstalledOne(t *testing.T) {
 	}
 	if d.settingsOnDisk() != "the owner's settings\n" {
 		t.Errorf("the owner's settings were touched: %q", d.settingsOnDisk())
+	}
+}
+
+func TestSwitchingOffAndOn(t *testing.T) {
+	ctx := context.Background()
+	d := newDevice(t, "0.107.79")
+	if err := d.system.SetEnabled(ctx, true); err == nil {
+		t.Error("switched on without being installed")
+	}
+	if err := d.system.Install(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if status := d.system.Status(ctx); !status.Enabled || !status.Running {
+		t.Fatalf("after installing: %+v", status)
+	}
+	if err := d.system.SetEnabled(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if status := d.system.Status(ctx); !status.Installed || status.Enabled || status.Running {
+		t.Errorf("switched off: %+v", status)
+	}
+	if d.settingsOnDisk() == "" || d.programOnDisk() == "" {
+		t.Error("switching off took the program or its settings away")
+	}
+	if err := d.system.SetEnabled(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	if status := d.system.Status(ctx); !status.Enabled || !status.Running {
+		t.Errorf("switched on again: %+v", status)
+	}
+	// Switched on, it falls over: that is said, not reported as done.
+	d.fallsOver = true
+	if err := d.system.SetEnabled(ctx, true); err == nil || !strings.Contains(err.Error(), "started and stopped again") {
+		t.Errorf("a service that falls over: %v", err)
+	}
+}
+
+func TestSettingsFromAnExportReplaceTheOnesInUse(t *testing.T) {
+	ctx := context.Background()
+	d := newDevice(t, "0.107.79")
+	if err := d.system.Install(ctx); err != nil {
+		t.Fatal(err)
+	}
+	initial := d.settingsOnDisk()
+	hand := func(settings string) {
+		t.Helper()
+		if err := os.WriteFile(d.system.Paths.RestoredSettings(), []byte(settings), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	leftovers := func() {
+		t.Helper()
+		entries, _ := os.ReadDir(d.system.Paths.DataDir)
+		for _, entry := range entries {
+			if entry.Name() != filepath.Base(d.system.Paths.SettingsFile()) {
+				t.Errorf("left in AdGuard Home's folder: %s", entry.Name())
+			}
+		}
+	}
+
+	// Settings AdGuard Home itself refuses: nothing changes, it keeps running.
+	hand("not settings\n")
+	d.badSettings = true
+	if err := d.system.ApplySettings(ctx); err == nil || !strings.Contains(err.Error(), "does not accept the settings from the export") {
+		t.Fatalf("refused settings: %v", err)
+	}
+	if d.settingsOnDisk() != initial || !d.running {
+		t.Error("refused settings changed something")
+	}
+	leftovers()
+	d.badSettings = false
+
+	// Settings it does not stay up on: the previous ones come back, and it runs on them.
+	hand("settings it falls over on\n")
+	d.fallsOver = true
+	if err := d.system.ApplySettings(ctx); err == nil || !strings.Contains(err.Error(), "the previous settings are back") {
+		t.Fatalf("settings it falls over on: %v", err)
+	}
+	if d.settingsOnDisk() != initial {
+		t.Errorf("after the failure the settings are %q", d.settingsOnDisk())
+	}
+	leftovers()
+	d.fallsOver = false
+	d.running = true
+
+	// Good settings: in place, running, nothing left in the spool.
+	hand("settings from the old device\n")
+	if err := d.system.ApplySettings(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if d.settingsOnDisk() != "settings from the old device\n" || !d.running {
+		t.Errorf("after applying: %q, running %v", d.settingsOnDisk(), d.running)
+	}
+	if _, err := os.Stat(d.system.Paths.RestoredSettings()); !errors.Is(err, os.ErrNotExist) {
+		t.Error("the handed-over settings were left in the spool")
+	}
+	leftovers()
+
+	// Switched off, the settings are replaced without starting it.
+	if err := d.system.SetEnabled(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	hand("settings for later\n")
+	if err := d.system.ApplySettings(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if d.settingsOnDisk() != "settings for later\n" || d.running {
+		t.Errorf("switched off: %q, running %v", d.settingsOnDisk(), d.running)
 	}
 }
 

@@ -15,8 +15,9 @@ import (
 // DNS is what the interface can do about AdGuard Home (internal/dnscontrol).
 type DNS interface {
 	Status(ctx context.Context) (dnscontrol.Status, error)
+	SetEnabled(ctx context.Context, actor, remote string, enabled bool) error
 	Install(ctx context.Context, actor, remote string) error
-	Remove(ctx context.Context, actor, remote string) error
+	FinishRestore(ctx context.Context, actor, remote string) error
 }
 
 func (s *Server) handleDNSStatus(w http.ResponseWriter, r *http.Request) {
@@ -40,27 +41,39 @@ func (s *Server) dnsResult(w http.ResponseWriter, r *http.Request, err error) {
 	}
 }
 
-// handleDNSInstall downloads and installs AdGuard Home, which takes a while.
+type dnsEnabledRequest struct {
+	// A pointer, so that a request without the field is refused, not read as "off".
+	Enabled *bool `json:"enabled"`
+}
+
+// handleDNSEnabled switches DNS on or off. On a device that does not have
+// AdGuard Home yet, switching on downloads and installs it, which takes a
+// while.
+func (s *Server) handleDNSEnabled(w http.ResponseWriter, r *http.Request) {
+	var req dnsEnabledRequest
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if req.Enabled == nil {
+		writeError(w, http.StatusBadRequest, "the request does not say whether DNS is to be on or off")
+		return
+	}
+	extendDeadlines(w)
+	s.dnsResult(w, r, s.DNS.SetEnabled(r.Context(), sessionFrom(r).Username, remoteIP(r), *req.Enabled))
+}
+
+// handleDNSInstall replaces the installed AdGuard Home with the newer
+// release this SGC brings, which takes a while.
 func (s *Server) handleDNSInstall(w http.ResponseWriter, r *http.Request) {
 	extendDeadlines(w)
 	s.dnsResult(w, r, s.DNS.Install(r.Context(), sessionFrom(r).Username, remoteIP(r)))
 }
 
-type dnsRemoveRequest struct {
-	Confirm bool `json:"confirm"`
-}
-
-func (s *Server) handleDNSRemove(w http.ResponseWriter, r *http.Request) {
-	var req dnsRemoveRequest
-	if !readJSON(w, r, &req) {
-		return
-	}
-	if !req.Confirm {
-		writeError(w, http.StatusBadRequest, "removing AdGuard Home needs confirmation")
-		return
-	}
+// handleDNSFinishRestore puts the DNS part of a restored export in place.
+// SGC does that by itself after a restore; this is for when that failed.
+func (s *Server) handleDNSFinishRestore(w http.ResponseWriter, r *http.Request) {
 	extendDeadlines(w)
-	s.dnsResult(w, r, s.DNS.Remove(r.Context(), sessionFrom(r).Username, remoteIP(r)))
+	s.dnsResult(w, r, s.DNS.FinishRestore(r.Context(), sessionFrom(r).Username, remoteIP(r)))
 }
 
 // adguardPrefix is where AdGuard Home's own page appears in SGC's.
@@ -93,7 +106,7 @@ func (s *Server) adguardProxy() http.Handler {
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			s.Log.Warn("reach AdGuard Home's page", "error", err)
-			http.Error(w, "AdGuard Home does not answer. Is it installed and running? See SGC's System page.", http.StatusBadGateway)
+			http.Error(w, "AdGuard Home does not answer. Is DNS switched on? See SGC's System page.", http.StatusBadGateway)
 		},
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

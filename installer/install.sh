@@ -175,6 +175,16 @@ start_service() {
         || fail "the service did not start. Details: journalctl -u sgc --no-pager -n 30"
 }
 
+install_dns() {
+    # AdGuard Home, the DNS server, is part of SGC and comes with it. SGC
+    # downloads it and checks it itself (which release, and its checksum, are
+    # built into SGC), then starts it. This happens on a device nobody has
+    # decided about yet; where an admin account exists, DNS stays as its
+    # owner left it and this does nothing.
+    "$INSTALL_ROOT/current/sgc" dns first-install \
+        || info "AdGuard Home (DNS) could not be installed just now; the reason is above. SGC itself is fine. Switch DNS on later on SGC's System page, or with: sudo sgc dns on"
+}
+
 print_next_step() {
     printf '\nSGC %s is installed and running.\n\n' "$SGC_VERSION"
     # On a new installation this prints the one-time link for creating the
@@ -195,6 +205,7 @@ main() {
     download_and_verify
     install_files
     start_service
+    install_dns
     print_next_step
 }
 

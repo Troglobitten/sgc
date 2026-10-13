@@ -13,7 +13,8 @@ func TestDNSNeedsASession(t *testing.T) {
 	e := newTestEnv(t)
 	e.expectStatus(e.call("GET", "/api/dns", nil, nil), http.StatusUnauthorized)
 	e.expectStatus(e.call("POST", "/api/dns/install", map[string]any{}, nil), http.StatusUnauthorized)
-	e.expectStatus(e.call("POST", "/api/dns/remove", map[string]any{"confirm": true}, nil), http.StatusUnauthorized)
+	e.expectStatus(e.call("POST", "/api/dns/enabled", map[string]any{"enabled": false}, nil), http.StatusUnauthorized)
+	e.expectStatus(e.call("POST", "/api/dns/restore", map[string]any{}, nil), http.StatusUnauthorized)
 	// AdGuard Home's own page has no login of its own. SGC's is the only one.
 	for _, path := range []string{"/adguard", "/adguard/", "/adguard/control/status", "/adguard/control/dns_config"} {
 		e.expectStatus(e.call("GET", path, nil, nil), http.StatusUnauthorized)
@@ -32,10 +33,13 @@ func TestDNSOperations(t *testing.T) {
 	if !status.Available || status.Pinned != "0.107.79" {
 		t.Errorf("status = %+v", status)
 	}
+	// A request that does not say on or off is not read as "off".
+	e.expectStatus(e.call("POST", "/api/dns/enabled", map[string]any{}, nil), http.StatusBadRequest)
+	e.expectStatus(e.call("POST", "/api/dns/enabled", map[string]any{"enabled": false}, nil), http.StatusOK)
+	e.expectStatus(e.call("POST", "/api/dns/enabled", map[string]any{"enabled": true}, nil), http.StatusOK)
 	e.expectStatus(e.call("POST", "/api/dns/install", map[string]any{}, nil), http.StatusOK)
-	e.expectStatus(e.call("POST", "/api/dns/remove", map[string]any{}, nil), http.StatusBadRequest)
-	e.expectStatus(e.call("POST", "/api/dns/remove", map[string]any{"confirm": true}, nil), http.StatusOK)
-	if got := strings.Join(e.dns.calls, ", "); got != "install by "+testUser+", remove by "+testUser {
+	e.expectStatus(e.call("POST", "/api/dns/restore", map[string]any{}, nil), http.StatusOK)
+	if got := strings.Join(e.dns.calls, ", "); got != "switched off by "+testUser+", switched on by "+testUser+", install by "+testUser+", finish restore by "+testUser {
 		t.Errorf("calls = %s", got)
 	}
 	e.dns.err = &dnscontrol.ChangeError{Message: "AdGuard Home could not be installed: port 53 is taken. Nothing was changed."}

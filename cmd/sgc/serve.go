@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"sync"
 	"syscall"
@@ -25,8 +24,6 @@ import (
 	"github.com/Troglobitten/sgc/internal/audit"
 	"github.com/Troglobitten/sgc/internal/auth"
 	"github.com/Troglobitten/sgc/internal/backup"
-	"github.com/Troglobitten/sgc/internal/components"
-	"github.com/Troglobitten/sgc/internal/dnscontrol"
 	"github.com/Troglobitten/sgc/internal/firewall"
 	"github.com/Troglobitten/sgc/internal/fwcontrol"
 	"github.com/Troglobitten/sgc/internal/health"
@@ -213,17 +210,20 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 	// Restarts the device, and updates SGC, in the owner's maintenance window.
 	background.Go(func() { maintenanceWindow.Run(runCtx) })
 
-	adguardPaths := adguard.DefaultPaths()
-	adguardPaths.SpoolDir = filepath.Join(opts.stateDir, "components")
-	dnsControl := dnscontrol.New(dnscontrol.Config{
-		DB:        db,
-		Helper:    helperClient,
-		Audit:     auditLog,
-		Paths:     adguardPaths,
-		Component: components.AdGuardHome,
-		Arch:      runtime.GOARCH,
-		HTTP:      &http.Client{Timeout: 10 * time.Minute},
-		Log:       log,
+	dnsControl := newDNSControl(db, opts.stateDir, helperClient, auditLog, log)
+	if restored != nil {
+		// The export's DNS part is put in place below. Until that is done,
+		// the page says that it is still to do.
+		if err := dnsControl.MarkRestored(ctx); err != nil {
+			return fail("note the restore for DNS", err)
+		}
+	}
+	// After a restore, AdGuard Home gets the settings from the export and is
+	// on or off as it was. At any other start this finds nothing to do.
+	background.Go(func() {
+		if err := dnsControl.FinishRestore(runCtx, audit.ActorSystem, ""); err != nil {
+			log.Error("put the DNS part of the restored export in place", "error", err)
+		}
 	})
 
 	ui, err := fs.Sub(webui.Dist, "dist")

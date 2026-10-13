@@ -2,7 +2,7 @@
 
 A secure front door for your home network, running on a Raspberry Pi or any small Debian machine.
 
-> **Status: early development.** The installer, the admin account, a dashboard with system health, self-updating, export and restore, the device's firewall, and SSH keys with "keys only" work. VPN, DNS and the reverse proxy are not built yet.
+> **Status: early development.** The installer, the admin account, a dashboard with system health, self-updating, export and restore, the device's firewall, SSH keys with "keys only", updates for the device, a maintenance window and DNS (AdGuard Home) work. VPN and the reverse proxy are not built yet.
 
 ## What it will do
 
@@ -35,7 +35,7 @@ less install.sh
 sudo bash install.sh
 ```
 
-At the end the installer prints a one-time link. Open it in a browser on your network to create the admin account; you then land on the dashboard. Until SGC has a certificate from Let's Encrypt (a later milestone) it uses a self-signed one, so the browser shows a warning; the installer prints the certificate's fingerprint so you can check you are talking to your own device.
+It then has SGC install AdGuard Home, the DNS server, and start it (see [DNS](#dns-adguard-home) below). At the end the installer prints a one-time link. Open it in a browser on your network to create the admin account; you then land on the dashboard. Until SGC has a certificate from Let's Encrypt (a later milestone) it uses a self-signed one, so the browser shows a warning; the installer prints the certificate's fingerprint so you can check you are talking to your own device.
 
 If the link has expired, `sudo sgc setup-link` prints a new one.
 
@@ -106,15 +106,17 @@ Being able to add keys in the page means that whoever gets into SGC's page, with
 
 ### DNS: AdGuard Home
 
-The **System** page installs [AdGuard Home](https://github.com/AdguardTeam/AdGuardHome), which answers the name lookups of your network and leaves out advertising and tracking. To use it, enter the device's address as the DNS server in your router, or on single devices.
+[AdGuard Home](https://github.com/AdguardTeam/AdGuardHome) answers the name lookups of your network and leaves out advertising and tracking. It is part of SGC: the installer installs it and starts it. To use it, enter the device's address as the DNS server in your router, or on single devices.
+
+On the **System** page it is a switch. Off means that AdGuard Home does not run and does not start with the device; the program and your settings stay. `sgc dns` says whether it is on; `sudo sgc dns on` and `sudo sgc dns off` do what the switch does. A device that was updated from a version without AdGuard Home gets it when DNS is first switched on. If the installer could not download it, SGC is installed all the same and says so.
 
 - **A program of its own.** It runs as a service of its own under an account of its own (`sgc-adguard.service`), and keeps answering when SGC is stopped or being updated.
 - **Pinned.** SGC downloads the release from AdGuard's page on GitHub and installs it only if it is exactly the file this version of SGC expects (size and SHA-256, checked by the web process and again by the root side). A newer AdGuard Home comes with a newer SGC.
 - **Its settings are yours.** SGC writes AdGuard Home's settings once, at installation: Quad9 over HTTPS as the upstream, DNSSEC, a query log kept for 7 days, AdGuard's own blocklist. From then on you change them in AdGuard Home's own page and SGC leaves them alone.
 - **One login.** That page listens on the device only and has no login of its own. SGC serves it at `/adguard/` behind its own sign-in.
-- **Reachable from inside only.** With the firewall on, DNS is let in from home-network addresses. A firewall switched on before AdGuard Home was installed has to have its rules made afresh ("Let DNS in"), which you confirm like any firewall change.
-- **systemd-resolved.** On a Debian that runs it (the cloud images do; Raspberry Pi OS does not), it holds the DNS port. Installing AdGuard Home makes it give up its listener (`/etc/systemd/resolved.conf.d/60-sgc-adguard.conf`) and points `/etc/resolv.conf` at the real name servers, so the device's own lookups never depend on AdGuard Home. If the device could not look up names afterwards, both are undone and nothing is installed. Removing AdGuard Home puts them back.
-- **In the export.** An export carries AdGuard Home's settings. On a restored device, installing AdGuard Home starts it with them.
+- **Answers the home network only.** AdGuard Home runs from the moment SGC is installed, when the firewall is still off, so the settings SGC gives it name who gets answers: private addresses and the device itself (`allowed_clients`). Anyone else gets none. With the firewall on, DNS is let in from home-network addresses only, which is a second lock on the same door. A firewall switched on before AdGuard Home was there has to have its rules made afresh ("Let DNS in"), which you confirm like any firewall change.
+- **systemd-resolved.** On a Debian that runs it (the cloud images do; Raspberry Pi OS does not), it holds the DNS port. Installing AdGuard Home makes it give up its listener (`/etc/systemd/resolved.conf.d/60-sgc-adguard.conf`) and points `/etc/resolv.conf` at the real name servers, so the device's own lookups never depend on AdGuard Home. If the device could not look up names afterwards, both are undone and nothing is installed. Switching DNS off leaves this as it is: the device's own lookups do not go through AdGuard Home either way.
+- **In the export.** An export carries AdGuard Home's settings and whether DNS was on. After a restore SGC puts those settings into the AdGuard Home of the new device by itself: AdGuard Home checks them first, and if it does not stay up on them the previous ones come back. If that could not be done, the System page says so and offers to try again.
 
 ### Updates for the device
 
@@ -189,7 +191,7 @@ To work on the interface, run `sgc serve --dev-insecure-http --state-dir <folder
 | `sgc-helper firewall` | root with only the right to load firewall rules, as one-off systemd units | Puts firewall rules into effect, keeps them on confirmation, undoes them otherwise |
 | `sgc-helper ssh` | root without any capabilities, as one-off systemd units | Installs SSH keys and settings, keeps a restricting change only if a login with a key is seen, undoes it otherwise; puts the confirmed settings in place before the SSH server starts |
 | `sgc-helper packages` | root, as a one-off systemd unit | Installs the Debian packages one of SGC's features needs, from lists fixed in the program (nftables for the firewall, unattended-upgrades for the device's updates) |
-| `sgc-helper adguard` | root, as one-off systemd units | Installs the pinned release of AdGuard Home that the web process downloaded, after checking it again; removes it; copies its settings for an export (that unit can read files and do nothing else) |
+| `sgc-helper adguard` | root, as one-off systemd units | Installs the pinned release of AdGuard Home that the web process downloaded, after checking it again; puts the settings from a restored export in place; copies its settings for an export (that unit can read files and do nothing else). Switching it on and off is done by the helper itself, which asks systemd |
 | AdGuard Home | its own unprivileged user, in a systemd sandbox | Answers DNS; may bind port 53 and write to its own folder, nothing else |
 | `sgc-helper os-updates` | root, as one-off systemd units | Writes SGC's one file among apt's settings; runs Debian's update tool to look for the device's updates or to install them |
 | `nft -f /etc/sgc/firewall.nft` | systemd, early at start-up | Loads the confirmed firewall rules; uses none of SGC's own programs |

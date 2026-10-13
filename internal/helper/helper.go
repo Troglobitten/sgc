@@ -25,7 +25,8 @@
 //	POST /v1/os-updates/start     look for Debian's updates, or install them
 //	GET  /v1/adguard/status       is AdGuard Home installed and running?
 //	POST /v1/adguard/install      install the pinned release the web process downloaded
-//	POST /v1/adguard/remove       stop AdGuard Home and take the program away
+//	POST /v1/adguard/enabled      switch AdGuard Home on or off
+//	POST /v1/adguard/apply-settings  give AdGuard Home the settings from a restored export
 //	GET  /v1/adguard/settings     AdGuard Home's settings file, for an export
 package helper
 
@@ -67,6 +68,11 @@ const (
 	// Installing AdGuard Home: unpacking, starting, and watching it stay up.
 	adguardTimeout = 4 * time.Minute
 )
+
+type adguardEnabledRequest struct {
+	// A pointer, so that a request without the field is refused, not read as "off".
+	Enabled *bool `json:"enabled"`
+}
 
 type adguardSettingsResponse struct {
 	Settings string `json:"settings"`
@@ -230,9 +236,18 @@ func (c *Client) AdguardInstall(ctx context.Context) error {
 	return c.call(ctx, adguardTimeout, http.MethodPost, "/v1/adguard/install", nil, nil)
 }
 
-// AdguardRemove stops AdGuard Home and takes the program away. Its settings stay.
-func (c *Client) AdguardRemove(ctx context.Context) error {
-	return c.call(ctx, adguardTimeout, http.MethodPost, "/v1/adguard/remove", nil, nil)
+// AdguardSetEnabled switches AdGuard Home on (running, and started with the
+// device) or off. It returns when that is so.
+func (c *Client) AdguardSetEnabled(ctx context.Context, enabled bool) error {
+	return c.call(ctx, adguardTimeout, http.MethodPost, "/v1/adguard/enabled", adguardEnabledRequest{Enabled: &enabled}, nil)
+}
+
+// AdguardApplySettings replaces AdGuard Home's settings with the ones from a
+// restored export, which have been put in the spool folder. If AdGuard Home
+// does not accept them or does not stay up on them, the previous ones are
+// kept and the reason comes back.
+func (c *Client) AdguardApplySettings(ctx context.Context) error {
+	return c.call(ctx, adguardTimeout, http.MethodPost, "/v1/adguard/apply-settings", nil, nil)
 }
 
 // AdguardSettings returns AdGuard Home's settings file, for an export.
@@ -312,10 +327,11 @@ type Server struct {
 	OSUpdateStart    func(job string) (int64, error)
 	// AdGuard Home; see internal/adguard. None of these takes anything from
 	// the request.
-	AdguardStatus   func() adguard.Status
-	AdguardInstall  func() error
-	AdguardRemove   func() error
-	AdguardSettings func() ([]byte, error)
+	AdguardStatus        func() adguard.Status
+	AdguardInstall       func() error
+	AdguardSetEnabled    func(enabled bool) error
+	AdguardApplySettings func() error
+	AdguardSettings      func() ([]byte, error)
 }
 
 type peerUIDKey struct{}
@@ -532,9 +548,24 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, http.StatusOK, struct{}{})
 	})
-	mux.HandleFunc("POST /v1/adguard/remove", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("POST /v1/adguard/enabled", func(w http.ResponseWriter, r *http.Request) {
+		var req adguardEnabledRequest
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&req); err != nil || req.Enabled == nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "the request could not be read"})
+			return
+		}
 		allow(w, adguardTimeout)
-		if err := s.AdguardRemove(); err != nil {
+		if err := s.AdguardSetEnabled(*req.Enabled); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, struct{}{})
+	})
+	mux.HandleFunc("POST /v1/adguard/apply-settings", func(w http.ResponseWriter, _ *http.Request) {
+		allow(w, adguardTimeout)
+		if err := s.AdguardApplySettings(); err != nil {
 			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error()})
 			return
 		}

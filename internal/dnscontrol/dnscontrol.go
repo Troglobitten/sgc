@@ -1,11 +1,15 @@
 // Package dnscontrol is the web process's side of AdGuard Home.
 //
-// The web process downloads the pinned release and checks it, asks the root
-// helper to install or remove it, and remembers that the owner wanted it
-// (which is what an export carries, together with a copy of AdGuard Home's
-// settings file). It does not configure AdGuard Home: after the first start
-// its settings are the owner's, made in AdGuard Home's own page, which SGC
-// serves behind its login (internal/web).
+// AdGuard Home is part of SGC: the installer installs it and switches it on,
+// and in the page it is switched off and on, not installed and removed. This
+// package downloads the pinned release and checks it, asks the root helper to
+// install it or to switch it, and remembers the owner's choice (which is what
+// an export carries, together with a copy of AdGuard Home's settings file).
+// After a restore it puts those settings back into AdGuard Home.
+//
+// It does not configure AdGuard Home: after the first start its settings are
+// the owner's, made in AdGuard Home's own page, which SGC serves behind its
+// login (internal/web).
 //
 // What the root side does is in internal/adguard.
 package dnscontrol
@@ -20,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 
 	"github.com/Troglobitten/sgc/internal/adguard"
@@ -29,14 +34,21 @@ import (
 )
 
 const (
-	// SettingInstalled is "true" once the owner has installed AdGuard Home,
-	// here or on the device an export came from. On a restored device it is
-	// shown and not acted on: installing is the owner's step there too.
+	// SettingEnabled is the owner's choice: "true" for DNS switched on,
+	// "false" for switched off. Absent on a device where nobody chose yet (one
+	// that was updated from a version that did not install AdGuard Home).
+	SettingEnabled = "adguard.enabled"
+	// SettingInstalled is what SGC 0.11.0 wrote instead, when AdGuard Home
+	// was installed and removed with buttons. It is only read: in a database
+	// or an export of that version, "true" counts as switched on.
 	SettingInstalled = "adguard.installed"
 	// SettingSettingsFile holds AdGuard Home's settings file as it was at
-	// the last export. It is how the owner's DNS settings travel: a device
-	// restored from the export starts its AdGuard Home from them.
+	// the last export. It is how the owner's DNS settings travel.
 	SettingSettingsFile = "adguard.settings_file"
+	// SettingRestorePending is "true" from the moment an export was restored
+	// until its DNS part is in place on this device. Bookkeeping of one
+	// installation; an export does not carry it.
+	SettingRestorePending = "adguard.restore_pending"
 )
 
 // ChangeError is a failed request with a message fit for the owner.
@@ -48,7 +60,8 @@ func (e *ChangeError) Error() string { return e.Message }
 type Helper interface {
 	AdguardStatus(ctx context.Context) (adguard.Status, error)
 	AdguardInstall(ctx context.Context) error
-	AdguardRemove(ctx context.Context) error
+	AdguardSetEnabled(ctx context.Context, enabled bool) error
+	AdguardApplySettings(ctx context.Context) error
 	AdguardSettings(ctx context.Context) (string, error)
 }
 
@@ -66,7 +79,7 @@ type Config struct {
 
 type Service struct {
 	cfg Config
-	// One installation or removal at a time.
+	// One change at a time.
 	mu sync.Mutex
 }
 
@@ -74,31 +87,29 @@ func New(cfg Config) *Service { return &Service{cfg: cfg} }
 
 type Status struct {
 	// Available is false when the root helper could not be asked.
-	Available bool   `json:"available"`
+	Available bool `json:"available"`
+	// Installed: the program is on this device. Enabled: it is switched on,
+	// which is what the switch in the page shows. Running: it runs right now.
 	Installed bool   `json:"installed"`
+	Enabled   bool   `json:"enabled"`
 	Version   string `json:"version"`
 	Running   bool   `json:"running"`
 	// Pinned is the version this SGC installs. A different installed
 	// version means: this SGC brings a newer AdGuard Home.
 	Pinned          string `json:"pinned"`
 	UpdateAvailable bool   `json:"updateAvailable"`
-	// Wanted: installed on the device an export came from, not here yet.
-	Wanted bool `json:"wanted"`
-	// RestoredSettings: settings from that export are kept and will be what
-	// AdGuard Home starts with here.
-	RestoredSettings bool `json:"restoredSettings"`
+	// RestorePending: this SGC was restored from an export, and the DNS part
+	// of that export is not in place on this device yet.
+	RestorePending bool `json:"restorePending"`
 }
 
 func (s *Service) Status(ctx context.Context) (Status, error) {
 	status := Status{Pinned: s.cfg.Component.Version}
-	wanted, _, err := store.Setting(ctx, s.cfg.DB, SettingInstalled)
+	pending, _, err := store.Setting(ctx, s.cfg.DB, SettingRestorePending)
 	if err != nil {
 		return status, err
 	}
-	kept, _, err := store.Setting(ctx, s.cfg.DB, SettingSettingsFile)
-	if err != nil {
-		return status, err
-	}
+	status.RestorePending = pending == "true"
 	device, err := s.cfg.Helper.AdguardStatus(ctx)
 	if err != nil {
 		s.cfg.Log.Warn("ask the helper about AdGuard Home", "error", err)
@@ -106,19 +117,96 @@ func (s *Service) Status(ctx context.Context) (Status, error) {
 	}
 	status.Available = true
 	status.Installed, status.Version, status.Running = device.Installed, device.Version, device.Running
+	status.Enabled = device.Installed && device.Enabled
 	status.UpdateAvailable = device.Installed && device.Version != status.Pinned
-	status.Wanted = wanted == "true" && !device.Installed
-	status.RestoredSettings = kept != "" && !device.Installed
 	return status, nil
 }
 
-// Install downloads the pinned release, checks it and has it installed and
-// started. With a newer release pinned than the one installed, it replaces
-// the installed one. An error means the device is as it was.
-func (s *Service) Install(ctx context.Context, actor, remote string) error {
+// choice returns what the owner chose for DNS, and whether anything was
+// chosen at all.
+func (s *Service) choice(ctx context.Context) (enabled, known bool, err error) {
+	for _, key := range []string{SettingEnabled, SettingInstalled} {
+		value, found, err := store.Setting(ctx, s.cfg.DB, key)
+		if err != nil {
+			return false, false, err
+		}
+		if found && value != "" {
+			return value == "true", true, nil
+		}
+	}
+	return false, false, nil
+}
+
+// FirstInstallDue says whether this is a device on which nobody has decided
+// about DNS yet and nobody could have: no choice is recorded and there is no
+// admin account. That is a device the installer has just run on, and the
+// installer then switches DNS on. A device updated from a version without
+// AdGuard Home has an admin, and gets nothing installed unasked.
+func (s *Service) FirstInstallDue(ctx context.Context, setupRequired bool) (bool, error) {
+	_, known, err := s.choice(ctx)
+	return setupRequired && !known, err
+}
+
+// SetEnabled switches DNS on or off. Switching on installs AdGuard Home
+// first if it is not on this device: on one that was updated from a version
+// that did not install it, or where the installer could not download it.
+// An error means the device is as it was.
+func (s *Service) SetEnabled(ctx context.Context, actor, remote string, enabled bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	device, err := s.cfg.Helper.AdguardStatus(ctx)
+	if err != nil {
+		s.cfg.Log.Error("ask the helper about AdGuard Home", "error", err)
+		return &ChangeError{"The device could not be asked about AdGuard Home. Nothing was changed."}
+	}
+	switch {
+	case enabled && !device.Installed:
+		if err := s.install(ctx); err != nil {
+			return err
+		}
+		s.record(ctx, actor, audit.ActionDNSInstalled, "AdGuard Home "+s.cfg.Component.Version, remote)
+	case enabled:
+		if err := s.cfg.Helper.AdguardSetEnabled(ctx, true); err != nil {
+			s.cfg.Log.Error("switch AdGuard Home on", "error", err)
+			return &ChangeError{"DNS could not be switched on: " + err.Error() + "."}
+		}
+	case device.Installed:
+		if err := s.cfg.Helper.AdguardSetEnabled(ctx, false); err != nil {
+			s.cfg.Log.Error("switch AdGuard Home off", "error", err)
+			return &ChangeError{"DNS could not be switched off: " + err.Error() + "."}
+		}
+	}
+	if err := s.remember(ctx, enabled); err != nil {
+		return err
+	}
+	action := audit.ActionDNSSwitchedOff
+	if enabled {
+		action = audit.ActionDNSSwitchedOn
+	}
+	s.record(ctx, actor, action, "", remote)
+	return nil
+}
+
+// Install replaces the installed AdGuard Home with the release this SGC
+// pins, when that is a newer one. An error means the device is as it was.
+func (s *Service) Install(ctx context.Context, actor, remote string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.install(ctx); err != nil {
+		return err
+	}
+	// The root side starts what it installs.
+	if err := s.remember(ctx, true); err != nil {
+		return err
+	}
+	s.record(ctx, actor, audit.ActionDNSInstalled, "AdGuard Home "+s.cfg.Component.Version, remote)
+	return nil
+}
+
+// install downloads the pinned release, checks it and has it installed and
+// started.
+func (s *Service) install(ctx context.Context) error {
 	file, err := s.cfg.Component.File(s.cfg.Arch)
 	if err != nil {
 		return &ChangeError{"SGC has no AdGuard Home for this device's processor type."}
@@ -136,10 +224,11 @@ func (s *Service) Install(ctx context.Context, actor, remote string) error {
 	// On a device restored from an export, AdGuard Home starts from the
 	// settings in that export. The root side uses them only if AdGuard Home
 	// has no settings here yet.
-	if kept, _, err := store.Setting(ctx, s.cfg.DB, SettingSettingsFile); err == nil && kept != "" {
-		if err := os.WriteFile(s.cfg.Paths.RestoredSettings(), []byte(kept), 0o600); err != nil {
-			return fmt.Errorf("hand over the restored settings: %w", err)
-		}
+	handed, err := s.handOverSettings(ctx)
+	if err != nil {
+		return err
+	}
+	if handed {
 		defer os.Remove(s.cfg.Paths.RestoredSettings())
 	}
 
@@ -147,27 +236,114 @@ func (s *Service) Install(ctx context.Context, actor, remote string) error {
 		s.cfg.Log.Error("install AdGuard Home", "error", err)
 		return &ChangeError{"AdGuard Home could not be installed: " + err.Error() + ". Nothing was changed."}
 	}
-	if err := store.SetSetting(context.WithoutCancel(ctx), s.cfg.DB, SettingInstalled, "true"); err != nil {
-		return err
-	}
-	s.record(ctx, actor, audit.ActionDNSInstalled, "AdGuard Home "+s.cfg.Component.Version, remote)
 	return nil
 }
 
-// Remove stops AdGuard Home and takes the program away. Its settings stay
-// on the device.
-func (s *Service) Remove(ctx context.Context, actor, remote string) error {
+// handOverSettings puts the settings file an export brought along where the
+// root side looks for it. It says whether there was one.
+func (s *Service) handOverSettings(ctx context.Context) (bool, error) {
+	kept, _, err := store.Setting(ctx, s.cfg.DB, SettingSettingsFile)
+	if err != nil || kept == "" {
+		return false, err
+	}
+	if err := os.MkdirAll(s.cfg.Paths.SpoolDir, 0o700); err != nil {
+		return false, err
+	}
+	if err := os.WriteFile(s.cfg.Paths.RestoredSettings(), []byte(kept), 0o600); err != nil {
+		return false, fmt.Errorf("hand over the restored settings: %w", err)
+	}
+	return true, nil
+}
+
+func (s *Service) remember(ctx context.Context, enabled bool) error {
+	return store.SetSetting(context.WithoutCancel(ctx), s.cfg.DB, SettingEnabled, strconv.FormatBool(enabled))
+}
+
+// MarkRestored notes that an export has just been put in place, so that
+// FinishRestore has work to do. It is called once, before anything else
+// looks at the restored database.
+func (s *Service) MarkRestored(ctx context.Context) error {
+	return store.SetSetting(ctx, s.cfg.DB, SettingRestorePending, "true")
+}
+
+// FinishRestore makes AdGuard Home on this device what the restored export
+// says: its settings are the ones from the export, and it is on or off as it
+// was. It does nothing unless a restore is waiting for that, so it is called
+// at every start: what failed once is tried again, and the page offers it
+// too.
+//
+// The device a restore lands on normally has AdGuard Home already, installed
+// with SGC and running on SGC's first settings.
+func (s *Service) FinishRestore(ctx context.Context, actor, remote string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.cfg.Helper.AdguardRemove(ctx); err != nil {
-		s.cfg.Log.Error("remove AdGuard Home", "error", err)
-		return &ChangeError{"AdGuard Home could not be removed: " + err.Error() + "."}
-	}
-	if err := store.SetSetting(context.WithoutCancel(ctx), s.cfg.DB, SettingInstalled, "false"); err != nil {
+
+	if pending, _, err := store.Setting(ctx, s.cfg.DB, SettingRestorePending); err != nil || pending != "true" {
 		return err
 	}
-	s.record(ctx, actor, audit.ActionDNSRemoved, "AdGuard Home", remote)
+	enabled, known, err := s.choice(ctx)
+	if err != nil {
+		return err
+	}
+	device, err := s.cfg.Helper.AdguardStatus(ctx)
+	if err != nil {
+		s.cfg.Log.Error("ask the helper about AdGuard Home", "error", err)
+		return &ChangeError{"The device could not be asked about AdGuard Home."}
+	}
+
+	detail := "AdGuard Home runs on the settings from the export"
+	switch {
+	case !known:
+		// The export is from a device where nobody had chosen about DNS: it
+		// says nothing. This device stays as the installer left it.
+		if !device.Installed {
+			return s.restoreDone(ctx)
+		}
+		enabled = device.Enabled
+		detail = "the export says nothing about DNS; AdGuard Home stays as it is on this device"
+	case !device.Installed && !enabled:
+		detail = "DNS was switched off in the export and AdGuard Home is not on this device"
+	case !device.Installed:
+		// install hands the export's settings over itself.
+		if err := s.install(ctx); err != nil {
+			return err
+		}
+	default:
+		handed, err := s.handOverSettings(ctx)
+		if err != nil {
+			return err
+		}
+		if handed {
+			defer os.Remove(s.cfg.Paths.RestoredSettings())
+			if err := s.cfg.Helper.AdguardApplySettings(ctx); err != nil {
+				s.cfg.Log.Error("put the restored settings into AdGuard Home", "error", err)
+				return &ChangeError{"The DNS settings from the export could not be put in place: " + err.Error() + "."}
+			}
+		} else {
+			detail = "the export holds no settings for AdGuard Home; it keeps the ones on this device"
+		}
+		if device.Enabled != enabled {
+			if err := s.cfg.Helper.AdguardSetEnabled(ctx, enabled); err != nil {
+				s.cfg.Log.Error("switch AdGuard Home as in the export", "error", err)
+				return &ChangeError{"DNS could not be switched as it was in the export: " + err.Error() + "."}
+			}
+		}
+		if !enabled {
+			detail += ", switched off as it was"
+		}
+	}
+	if err := s.remember(ctx, enabled); err != nil {
+		return err
+	}
+	if err := s.restoreDone(ctx); err != nil {
+		return err
+	}
+	s.record(ctx, actor, audit.ActionDNSRestored, detail, remote)
 	return nil
+}
+
+func (s *Service) restoreDone(ctx context.Context) error {
+	return store.SetSetting(context.WithoutCancel(ctx), s.cfg.DB, SettingRestorePending, "false")
 }
 
 // SaveForExport copies AdGuard Home's settings file into the database, so
@@ -177,10 +353,8 @@ func (s *Service) Remove(ctx context.Context, actor, remote string) error {
 func (s *Service) SaveForExport(ctx context.Context) error {
 	// On a device where AdGuard Home was never installed there is nothing to
 	// ask the root side about, and an export must not depend on it.
-	if wanted, _, err := store.Setting(ctx, s.cfg.DB, SettingInstalled); err != nil {
+	if _, known, err := s.choice(ctx); err != nil || !known {
 		return err
-	} else if wanted != "true" {
-		return nil
 	}
 	device, err := s.cfg.Helper.AdguardStatus(ctx)
 	if err != nil {

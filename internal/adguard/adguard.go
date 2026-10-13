@@ -118,8 +118,13 @@ func InstalledVersion(paths Paths) string {
 //
 //   - No login of its own, and its page on this device only: SGC's login is
 //     the one login.
-//   - DNS on every address of the device. Who may reach it is the firewall's
-//     business, which lets DNS in from the home network only.
+//   - DNS on every address of the device, answering home-network addresses
+//     only (allowed_clients). AdGuard Home runs from the moment SGC is
+//     installed, when the firewall is still off; on a device with a public
+//     address it would otherwise answer the whole internet, which is abused
+//     for attacks on others. With the firewall on, that is a second lock on
+//     the same door. The ranges are the firewall's "inside" plus the device
+//     itself.
 //   - Upstream: Quad9 over HTTPS (the owner's choice): does not log who asks,
 //     refuses known malware sites, and the internet provider cannot read
 //     the questions. DNSSEC on.
@@ -139,6 +144,15 @@ dns:
     - 9.9.9.9
     - 149.112.112.112
   enable_dnssec: true
+  allowed_clients:
+    - 127.0.0.0/8
+    - ::1/128
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 169.254.0.0/16
+    - fc00::/7
+    - fe80::/10
 querylog:
   interval: 7d
   enabled: true
@@ -175,12 +189,16 @@ type Status struct {
 	Installed bool   `json:"installed"`
 	Version   string `json:"version"`
 	Running   bool   `json:"running"`
+	// Enabled: switched on, which is to say started with the device.
+	Enabled bool `json:"enabled"`
 }
 
 func (s *System) Status(ctx context.Context) Status {
 	status := Status{Installed: Installed(s.Paths), Version: InstalledVersion(s.Paths)}
 	if status.Installed {
 		status.Running = s.active(ctx)
+		_, err := s.Run(ctx, systemctl, "is-enabled", "--quiet", ServiceUnit)
+		status.Enabled = err == nil
 	}
 	return status
 }
@@ -275,13 +293,9 @@ func (s *System) Install(ctx context.Context) error {
 		undo()
 		return fmt.Errorf("AdGuard Home could not be started: %s", lastLine(output, err))
 	}
-	// A service that starts and falls over is "active" for a moment.
-	for range 5 {
-		s.Sleep(time.Second)
-		if !s.active(ctx) {
-			undo()
-			return errors.New("AdGuard Home started and stopped again (its log: sudo journalctl -u sgc-adguard --no-pager -n 30)")
-		}
+	if err := s.staysUp(ctx); err != nil {
+		undo()
+		return err
 	}
 	if previous != "" && previous != s.Component.Version {
 		os.RemoveAll(filepath.Join(s.Paths.Root, previous))
@@ -291,8 +305,120 @@ func (s *System) Install(ctx context.Context) error {
 	return nil
 }
 
+// SetEnabled switches AdGuard Home on (running, and started with the
+// device) or off (stopped, and not started with the device). The program
+// and its settings stay where they are either way.
+func (s *System) SetEnabled(ctx context.Context, enabled bool) error {
+	if !Installed(s.Paths) {
+		return errors.New("AdGuard Home is not installed on this device")
+	}
+	if !enabled {
+		if output, err := s.Run(ctx, systemctl, "disable", "--now", ServiceUnit); err != nil {
+			return fmt.Errorf("AdGuard Home could not be stopped: %s", lastLine(output, err))
+		}
+		return nil
+	}
+	if output, err := s.Run(ctx, systemctl, "enable", ServiceUnit); err != nil {
+		return fmt.Errorf("AdGuard Home could not be made part of start-up: %s", lastLine(output, err))
+	}
+	if output, err := s.Run(ctx, systemctl, "restart", ServiceUnit); err != nil {
+		return fmt.Errorf("AdGuard Home could not be started: %s", lastLine(output, err))
+	}
+	return s.staysUp(ctx)
+}
+
+// staysUp watches a freshly started AdGuard Home for a few seconds: a
+// service that starts and falls over is "active" for a moment.
+func (s *System) staysUp(ctx context.Context) error {
+	for range 5 {
+		s.Sleep(time.Second)
+		if !s.active(ctx) {
+			return errors.New("AdGuard Home started and stopped again (its log: sudo journalctl -u sgc-adguard --no-pager -n 30)")
+		}
+	}
+	return nil
+}
+
+// ApplySettings replaces AdGuard Home's settings file with the one the web
+// process handed over: the owner's settings from a restored export. On a
+// freshly installed device AdGuard Home is already running on SGC's initial
+// settings when the export is restored.
+//
+// The new file is checked by AdGuard Home itself before it is put in place.
+// If AdGuard Home was running and does not stay up on the new settings, the
+// previous file is put back and it is started on that again. An error means
+// the settings are as they were.
+func (s *System) ApplySettings(ctx context.Context) error {
+	if !Installed(s.Paths) {
+		return errors.New("AdGuard Home is not installed on this device")
+	}
+	restored, err := readLimited(s.Paths.RestoredSettings(), maxSettings)
+	if err != nil {
+		return fmt.Errorf("read the settings to restore: %w", err)
+	}
+	settings := s.Paths.SettingsFile()
+	candidate, previous := settings+".restored", settings+".before-restore"
+	if err := os.WriteFile(candidate, restored, 0o600); err != nil {
+		return err
+	}
+	defer os.Remove(candidate)
+	output, checkErr := s.Run(ctx, s.Paths.Program(), "--check-config", "--no-permcheck", "-c", candidate, "-w", s.Paths.DataDir)
+	// Whatever that check wrote as root belongs to the service's account.
+	if err := s.chownAll(); err != nil {
+		return err
+	}
+	if checkErr != nil {
+		return fmt.Errorf("AdGuard Home does not accept the settings from the export: %s", lastLine(output, checkErr))
+	}
+
+	wasRunning := s.active(ctx)
+	if wasRunning {
+		if output, err := s.Run(ctx, systemctl, "stop", ServiceUnit); err != nil {
+			return fmt.Errorf("AdGuard Home could not be stopped: %s", lastLine(output, err))
+		}
+	}
+	putBack := func() {
+		os.Rename(previous, settings)
+		s.chownAll()
+		if wasRunning {
+			s.Run(ctx, systemctl, "start", ServiceUnit)
+		}
+	}
+	os.Remove(previous)
+	if err := os.Rename(settings, previous); err != nil && !errors.Is(err, os.ErrNotExist) {
+		putBack()
+		return err
+	}
+	if err := os.Rename(candidate, settings); err != nil {
+		putBack()
+		return err
+	}
+	if err := s.chownAll(); err != nil {
+		putBack()
+		return err
+	}
+	if wasRunning {
+		if output, err := s.Run(ctx, systemctl, "start", ServiceUnit); err != nil {
+			putBack()
+			return fmt.Errorf("AdGuard Home could not be started on the restored settings: %s", lastLine(output, err))
+		}
+		if err := s.staysUp(ctx); err != nil {
+			s.Run(ctx, systemctl, "stop", ServiceUnit)
+			putBack()
+			return fmt.Errorf("on the restored settings %w; the previous settings are back", err)
+		}
+	}
+	os.Remove(previous)
+	os.Remove(s.Paths.RestoredSettings())
+	s.Log.Info("AdGuard Home's settings replaced by the ones from the export")
+	return nil
+}
+
 // Remove stops AdGuard Home and takes the program away. Its settings and
-// data stay, so that installing it again continues where it left off.
+// data stay, so that installing it again continues where it left off. Not
+// offered in SGC's page, where AdGuard Home is switched off instead; kept
+// for taking it off a device by hand (sudo systemctl start
+// sgc-adguard-remove), which also gives systemd-resolved its port back.
 func (s *System) Remove(ctx context.Context) error {
 	if output, err := s.Run(ctx, systemctl, "disable", "--now", ServiceUnit); err != nil && Installed(s.Paths) {
 		return fmt.Errorf("AdGuard Home could not be stopped: %s", lastLine(output, err))

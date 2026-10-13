@@ -140,16 +140,17 @@ export interface OsUpdatesStatus {
 export interface DnsStatus {
   /** false when the device could not be asked */
   available: boolean
+  /** the program is on this device */
   installed: boolean
+  /** switched on: what the switch shows */
+  enabled: boolean
   version: string
   running: boolean
   /** the version this SGC installs */
   pinned: string
   updateAvailable: boolean
-  /** installed on the device an export came from, not here yet */
-  wanted: boolean
-  /** settings from that export will be used when it is installed here */
-  restoredSettings: boolean
+  /** restored from an export whose DNS part is not in place on this device yet */
+  restorePending: boolean
 }
 
 /** The maintenance window, as SGC reports it (internal/maintenance). */
@@ -347,8 +348,12 @@ export const api = {
   changeFirewall: (enabled: boolean, again = false) =>
     request<FirewallStatus>('POST', '/api/firewall/change', { enabled, again }),
   dns: () => request<DnsStatus>('GET', '/api/dns'),
+  /** switching on installs AdGuard Home first where it is not on the device yet */
+  setDnsEnabled: (enabled: boolean) =>
+    request<DnsStatus>('POST', '/api/dns/enabled', { enabled }),
+  /** replaces the installed AdGuard Home with the newer one this SGC brings */
   installDns: () => request<DnsStatus>('POST', '/api/dns/install', {}),
-  removeDns: () => request<DnsStatus>('POST', '/api/dns/remove', { confirm: true }),
+  finishDnsRestore: () => request<DnsStatus>('POST', '/api/dns/restore', {}),
   confirmFirewall,
   undoFirewall: () => request<FirewallStatus>('POST', '/api/firewall/undo', {}),
   ssh: () => request<SshStatus>('GET', '/api/ssh'),

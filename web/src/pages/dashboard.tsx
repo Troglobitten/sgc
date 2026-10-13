@@ -273,9 +273,9 @@ function FirewallTile({
 function DnsTile({ status, onOpen }: { status: DnsStatus | null; onOpen: () => void }) {
   let text = '…'
   let tone = 'text-muted-foreground'
-  if (status && !status.installed) text = 'Not installed'
-  else if (status?.running) [text, tone] = ['Running', 'text-emerald-700 dark:text-emerald-400']
-  else if (status) [text, tone] = ['Stopped', 'text-amber-700 dark:text-amber-400']
+  if (status?.available && !status.enabled) text = 'Off'
+  else if (status?.running) [text, tone] = ['On', 'text-emerald-700 dark:text-emerald-400']
+  else if (status?.available) [text, tone] = ['Not running', 'text-amber-700 dark:text-amber-400']
   return (
     <button
       type="button"
@@ -422,9 +422,21 @@ function describeActivity(entry: AuditEntry): string {
     case 'ssh.change_failed':
       return 'A change to SSH failed'
     case 'dns.installed':
-      return `${entry.actor} installed ${entry.detail}`
+      return entry.actor === 'console'
+        ? `${entry.detail} was installed with SGC, or from the command line`
+        : `${entry.actor} installed ${entry.detail}`
     case 'dns.removed':
       return `${entry.actor} removed AdGuard Home`
+    case 'dns.switched_on':
+      return entry.actor === 'console'
+        ? 'DNS was switched on from the command line'
+        : `${entry.actor} switched DNS on`
+    case 'dns.switched_off':
+      return entry.actor === 'console'
+        ? 'DNS was switched off from the command line'
+        : `${entry.actor} switched DNS off`
+    case 'dns.restored':
+      return `DNS after the restore: ${entry.detail}`
     case 'os_updates.mode_automatic':
       return `${entry.actor} set updates for the device to install by themselves`
     case 'os_updates.mode_by_hand':
