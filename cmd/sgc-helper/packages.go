@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 
 	"github.com/Troglobitten/sgc/internal/firewall"
 	"github.com/Troglobitten/sgc/internal/helper"
+	"github.com/Troglobitten/sgc/internal/log2ram"
 	"github.com/Troglobitten/sgc/internal/osupdate"
 )
 
@@ -40,6 +42,10 @@ type debianPackage struct {
 var requiredPackages = map[string][]debianPackage{
 	helper.PackagesFirewall: {{"nftables", firewall.NftProgram}},
 	helper.PackagesUpdates:  {{"unattended-upgrades", osupdate.ToolProgram}},
+	// rsync is what log2ram copies with. Without it log2ram falls back to a
+	// way of copying that never removes a log from the disk again, so that
+	// the logs on the disk only grow.
+	helper.PackagesLog2ram: {{"log2ram", log2ram.DefaultPaths().Program}, {"rsync", "/usr/bin/rsync"}},
 }
 
 type packagesRequest struct {
@@ -127,6 +133,16 @@ func runPackages() error {
 	for _, p := range wanted {
 		if !programExists(p.program) {
 			return fmt.Errorf("%s was installed, but %s is still missing", p.name, p.program)
+		}
+	}
+	// Debian's log2ram package makes itself part of start-up when it is
+	// installed: at the next restart the logs would be in memory. Whether
+	// they are is the owner's choice in SGC's page, so a log2ram that was
+	// installed just now is switched off again at once. (It was not started:
+	// the package leaves that to a restart.)
+	if slices.Contains(missing, "log2ram") {
+		if err := runSystemctl("disable", log2ram.ServiceUnit, log2ram.TimerUnit); err != nil {
+			return fmt.Errorf("log2ram was installed, but could not be switched off again: %w", err)
 		}
 	}
 	return nil

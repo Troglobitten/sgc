@@ -23,6 +23,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/dnscontrol"
 	"github.com/Troglobitten/sgc/internal/fwcontrol"
 	"github.com/Troglobitten/sgc/internal/health"
+	"github.com/Troglobitten/sgc/internal/logcontrol"
 	"github.com/Troglobitten/sgc/internal/maintenance"
 	"github.com/Troglobitten/sgc/internal/oscontrol"
 	"github.com/Troglobitten/sgc/internal/sshcontrol"
@@ -231,6 +232,24 @@ func (f *fakeDNS) FinishRestore(_ context.Context, actor, remote string) error {
 	return f.err
 }
 
+// fakeLog2ram stands in for internal/logcontrol.
+type fakeLog2ram struct {
+	status logcontrol.Status
+	calls  []string
+	err    error
+}
+
+func (f *fakeLog2ram) Status(context.Context) (logcontrol.Status, error) { return f.status, nil }
+
+func (f *fakeLog2ram) SetEnabled(_ context.Context, actor, remote string, enabled bool) error {
+	state := "off"
+	if enabled {
+		state = "on"
+	}
+	f.calls = append(f.calls, "switched "+state+" by "+actor)
+	return f.err
+}
+
 // fakeMaintenance stands in for internal/maintenance.
 type fakeMaintenance struct {
 	status maintenance.Status
@@ -255,6 +274,7 @@ type testEnv struct {
 	t           *testing.T
 	maintenance *fakeMaintenance
 	dns         *fakeDNS
+	log2ram     *fakeLog2ram
 	// Stands in for AdGuard Home's own page.
 	adguard   *httptest.Server
 	url       string
@@ -298,6 +318,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	osFake := &fakeOSUpdates{status: oscontrol.Status{Available: true, ToolInstalled: true, Waiting: []string{}, RestartPackages: []string{}}}
 	maintenanceFake := &fakeMaintenance{status: maintenance.Status{Start: "04:00", End: "05:00", UpdateWaitDays: 3}}
 	dnsFake := &fakeDNS{status: dnscontrol.Status{Available: true, Pinned: "0.107.79"}}
+	log2ramFake := &fakeLog2ram{status: logcontrol.Status{Available: true, Installed: true, SizeBytes: 128 << 20}}
 	adguardPage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/login.html" {
 			http.Redirect(w, r, "/", http.StatusFound)
@@ -307,7 +328,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		fmt.Fprintf(w, "adguard saw %s %s cookie=%q", r.Method, r.URL.Path, r.Header.Get("Cookie"))
 	}))
 	t.Cleanup(adguardPage.Close)
-	e := &testEnv{t: t, auth: authService, helper: helper, updates: updates, backups: backups, firewall: fw, ssh: sshFake, osUpdates: osFake, maintenance: maintenanceFake, dns: dnsFake, adguard: adguardPage, setupToken: token}
+	e := &testEnv{t: t, auth: authService, helper: helper, updates: updates, backups: backups, firewall: fw, ssh: sshFake, osUpdates: osFake, maintenance: maintenanceFake, dns: dnsFake, log2ram: log2ramFake, adguard: adguardPage, setupToken: token}
 	server := &Server{
 		Auth:           authService,
 		Audit:          audit.New(db),
@@ -321,6 +342,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		OSUpdates:      osFake,
 		Maintenance:    maintenanceFake,
 		DNS:            dnsFake,
+		Log2ram:        log2ramFake,
 		AdguardAddress: strings.TrimPrefix(adguardPage.URL, "http://"),
 		StartOver:      func() { backups.startOvers++ },
 		Version:        "9.9.9",

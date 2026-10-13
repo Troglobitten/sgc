@@ -74,6 +74,8 @@ func main() {
 		err = runOSUpdates(os.Args[2:])
 	case "adguard":
 		err = runAdguard(os.Args[2:])
+	case "log2ram":
+		err = runLog2ram(os.Args[2:])
 	default:
 		err = runService()
 	}
@@ -117,6 +119,8 @@ func runService() error {
 			AdguardSetEnabled:    setAdguardEnabled,
 			AdguardApplySettings: applyAdguardSettings,
 			AdguardSettings:      adguardSettings,
+			Log2ramStatus:        log2ramStatus,
+			Log2ramSetEnabled:    setLog2ram,
 		}).Handler(),
 		ConnContext:       helper.ConnContext,
 		ReadHeaderTimeout: 5 * time.Second,

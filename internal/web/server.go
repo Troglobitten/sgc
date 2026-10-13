@@ -61,6 +61,7 @@ type Server struct {
 	OSUpdates   OSUpdates
 	Maintenance Maintenance
 	DNS         DNS
+	Log2ram     MemoryLogs
 	// AdguardAddress is where AdGuard Home's own page listens (host:port).
 	AdguardAddress string
 	// StartOver asks the process to wind down the web server and start
@@ -115,6 +116,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/dns/enabled", s.requireSession(s.handleDNSEnabled))
 	mux.HandleFunc("POST /api/dns/install", s.requireSession(s.handleDNSInstall))
 	mux.HandleFunc("POST /api/dns/restore", s.requireSession(s.handleDNSFinishRestore))
+	mux.HandleFunc("GET /api/log2ram", s.requireSession(s.handleLog2ramStatus))
+	mux.HandleFunc("POST /api/log2ram/enabled", s.requireSession(s.handleLog2ramEnabled))
 	// AdGuard Home's own page, behind SGC's login.
 	adguardPage := s.requireSession(s.adguardProxy().ServeHTTP)
 	mux.Handle(adguardPrefix, adguardPage)

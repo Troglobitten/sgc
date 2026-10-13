@@ -175,14 +175,19 @@ start_service() {
         || fail "the service did not start. Details: journalctl -u sgc --no-pager -n 30"
 }
 
-install_dns() {
-    # AdGuard Home, the DNS server, is part of SGC and comes with it. SGC
-    # downloads it and checks it itself (which release, and its checksum, are
-    # built into SGC), then starts it. This happens on a device nobody has
-    # decided about yet; where an admin account exists, DNS stays as its
-    # owner left it and this does nothing.
-    "$INSTALL_ROOT/current/sgc" dns first-install \
-        || info "AdGuard Home (DNS) could not be installed just now; the reason is above. SGC itself is fine. Switch DNS on later on SGC's System page, or with: sudo sgc dns on"
+install_parts() {
+    # The parts of SGC that are programs of their own come with it:
+    #   - AdGuard Home, the DNS server: installed and switched on. SGC
+    #     downloads it and checks it itself (which release, and its checksum,
+    #     are built into SGC).
+    #   - log2ram, which keeps logs in memory on a device that runs from an
+    #     SD card: installed from Debian and left switched off.
+    # SGC does this itself, through the same code as the switches in its
+    # page. It happens on a device nobody has set up yet; where an admin
+    # account exists, everything stays as its owner left it. A part that
+    # cannot be installed now is said and is installed when it is switched on.
+    "$INSTALL_ROOT/current/sgc" first-install \
+        || info "Some parts of SGC could not be installed just now; the reason is above. SGC itself is fine: they are installed when you switch them on, on SGC's System page."
 }
 
 print_next_step() {
@@ -205,7 +210,7 @@ main() {
     download_and_verify
     install_files
     start_service
-    install_dns
+    install_parts
     print_next_step
 }
 

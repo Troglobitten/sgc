@@ -241,6 +241,7 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 		LastUpdate:     func() (*updater.Status, error) { return updater.ReadStatus(opts.updateWorkDir) },
 		Backups:        backups{db: db, stateDir: opts.stateDir, beforeExport: dnsControl.SaveForExport},
 		DNS:            dnsControl,
+		Log2ram:        newLogControl(db, helperClient, auditLog, log),
 		AdguardAddress: adguard.WebAddress,
 		Firewall:       firewallControl,
 		SSH:            sshControl,

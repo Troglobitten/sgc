@@ -75,6 +75,7 @@ Invoke-Cases ssh $new
 # install by themselves, and Debian's own daily run then does the installing.
 Invoke-Cases os-updates-auto $new
 Invoke-Cases dns $new
+Invoke-Cases log2ram $new
 Invoke-Cases restart $new
 
 Write-Host ""

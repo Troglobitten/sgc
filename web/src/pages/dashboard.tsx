@@ -383,6 +383,10 @@ function describeActivity(entry: AuditEntry): string {
       return `${entry.actor} made an export`
     case 'restore.completed':
       return `Restored ${entry.detail}`
+    case 'log2ram.switched_on':
+      return `${entry.actor} switched logs in memory on (${entry.detail})`
+    case 'log2ram.switched_off':
+      return `${entry.actor} switched logs in memory off (${entry.detail})`
     case 'system.packages_installed':
       return `SGC installed ${entry.detail}`
     case 'firewall.change_started':

@@ -18,7 +18,6 @@ import (
 
 	"github.com/Troglobitten/sgc/internal/adguard"
 	"github.com/Troglobitten/sgc/internal/audit"
-	"github.com/Troglobitten/sgc/internal/auth"
 	"github.com/Troglobitten/sgc/internal/components"
 	"github.com/Troglobitten/sgc/internal/dnscontrol"
 	"github.com/Troglobitten/sgc/internal/helper"
@@ -45,11 +44,8 @@ func newDNSControl(db *sql.DB, stateDir string, helperClient *helper.Client, aud
 
 // dnsCommand is `sgc dns`: say whether DNS (AdGuard Home) is on, or switch it
 // on or off from the machine itself. It does what the switch in SGC's page
-// does, through the same code.
-//
-// The installer runs "sgc dns first-install": on a device nobody has decided
-// about yet it switches DNS on, which downloads and installs AdGuard Home; on
-// any other device it does nothing.
+// does, through the same code. (So does the installer, through
+// `sgc first-install`.)
 func dnsCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	const usage = "usage: sgc dns [status|on|off]"
 	flags := flag.NewFlagSet("sgc dns", flag.ContinueOnError)
@@ -80,7 +76,7 @@ func dnsCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	switch action {
 	case "status":
 		return dnsStatus(ctx, stdout)
-	case "on", "off", "first-install":
+	case "on", "off":
 	default:
 		fmt.Fprintf(stderr, "sgc: unknown dns command %q\n%s\n", action, usage)
 		return exitUsage
@@ -103,13 +99,6 @@ func dnsCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		default:
 			return answer, fail("%v", err)
 		}
-	}
-	if action == "first-install" {
-		answer, code := work("due")
-		if code != exitOK || !answer.Due {
-			return code
-		}
-		action = "on"
 	}
 	if action == "on" && !adguard.Installed(adguard.DefaultPaths()) {
 		fmt.Fprintf(stdout, "Installing AdGuard Home %s, the DNS server (about a minute) ...\n", components.AdGuardHome.Version)
@@ -145,8 +134,6 @@ func dnsStatus(ctx context.Context, stdout io.Writer) int {
 
 // dnsAnswer is what the part running as the service user prints.
 type dnsAnswer struct {
-	// Due: this is a device the installer should switch DNS on for.
-	Due     bool   `json:"due,omitempty"`
 	Message string `json:"message,omitempty"`
 }
 
@@ -168,18 +155,6 @@ func dnsWorker(ctx context.Context, task, stateDir, helperSocket string, stdout,
 
 	var answer dnsAnswer
 	switch task {
-	case "due":
-		authService, err := auth.NewService(db)
-		if err != nil {
-			return fail(err)
-		}
-		setupRequired, err := authService.SetupRequired(ctx)
-		if err != nil {
-			return fail(err)
-		}
-		if answer.Due, err = control.FirstInstallDue(ctx, setupRequired); err != nil {
-			return fail(err)
-		}
 	case "on":
 		if err := control.SetEnabled(ctx, audit.ActorConsole, "", true); err != nil {
 			return fail(err)
