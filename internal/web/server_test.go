@@ -217,8 +217,17 @@ func (f *fakeDNS) Install(_ context.Context, actor, remote string) error {
 	return f.err
 }
 
-func (f *fakeDNS) Remove(_ context.Context, actor, remote string) error {
-	f.calls = append(f.calls, "remove by "+actor)
+func (f *fakeDNS) SetEnabled(_ context.Context, actor, remote string, enabled bool) error {
+	state := "off"
+	if enabled {
+		state = "on"
+	}
+	f.calls = append(f.calls, "switched "+state+" by "+actor)
+	return f.err
+}
+
+func (f *fakeDNS) FinishRestore(_ context.Context, actor, remote string) error {
+	f.calls = append(f.calls, "finish restore by "+actor)
 	return f.err
 }
 

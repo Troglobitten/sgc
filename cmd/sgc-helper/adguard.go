@@ -22,7 +22,7 @@ import (
 // sgc-adguard.service.
 const (
 	adguardInstallUnit  = "sgc-adguard-install.service"
-	adguardRemoveUnit   = "sgc-adguard-remove.service"
+	adguardApplyUnit    = "sgc-adguard-apply.service"
 	adguardSettingsUnit = "sgc-adguard-settings.service"
 )
 
@@ -95,10 +95,21 @@ func installAdguard() error {
 	return nil
 }
 
-func removeAdguard() error {
-	if err := runSystemctl("start", adguardRemoveUnit); err != nil {
-		runSystemctl("reset-failed", adguardRemoveUnit)
-		return errors.New(lastJournalLine(adguardRemoveUnit))
+// setAdguardEnabled switches AdGuard Home on or off. The helper does this
+// itself: it only asks systemd to start or stop one fixed unit.
+func setAdguardEnabled(enabled bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	return adguardSystem().SetEnabled(ctx, enabled)
+}
+
+// applyAdguardSettings runs the unit that replaces AdGuard Home's settings
+// with the ones from a restored export, which the web process has put in the
+// spool folder, and waits for it.
+func applyAdguardSettings() error {
+	if err := runSystemctl("start", adguardApplyUnit); err != nil {
+		runSystemctl("reset-failed", adguardApplyUnit)
+		return errors.New(lastJournalLine(adguardApplyUnit))
 	}
 	return nil
 }
@@ -124,7 +135,7 @@ func lastJournalLine(unit string) string {
 // runAdguard is "sgc-helper adguard <job>".
 func runAdguard(args []string) error {
 	if len(args) != 1 {
-		return errors.New("usage: sgc-helper adguard install|remove|copy-settings")
+		return errors.New("usage: sgc-helper adguard install|apply-settings|remove|copy-settings")
 	}
 	if os.Geteuid() != 0 {
 		return errors.New("installing AdGuard Home needs root")
@@ -133,6 +144,8 @@ func runAdguard(args []string) error {
 	switch args[0] {
 	case "install":
 		return system.Install(context.Background())
+	case "apply-settings":
+		return system.ApplySettings(context.Background())
 	case "remove":
 		return system.Remove(context.Background())
 	case "copy-settings":

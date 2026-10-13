@@ -5,20 +5,92 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/Troglobitten/sgc/internal/adguard"
+	"github.com/Troglobitten/sgc/internal/components"
 	"github.com/Troglobitten/sgc/internal/fwcontrol"
+	"github.com/Troglobitten/sgc/internal/helper"
 	"github.com/Troglobitten/sgc/internal/layout"
+	"github.com/Troglobitten/sgc/internal/osupdate"
+	"github.com/Troglobitten/sgc/internal/sshd"
 	"github.com/Troglobitten/sgc/internal/store"
 )
+
+// rootSide stands in for the root helper as far as AdGuard Home goes: a
+// device that has it, switched on, as the installer leaves one. It keeps the
+// settings AdGuard Home "runs on".
+type rootSide struct {
+	mu       sync.Mutex
+	enabled  bool
+	settings string
+}
+
+func (r *rootSide) state() (enabled bool, settings string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.enabled, r.settings
+}
+
+func startRootSide(t *testing.T, stateDir, settings string) (socket string, side *rootSide) {
+	t.Helper()
+	side = &rootSide{enabled: true, settings: settings}
+	// Where the web process hands over the settings from an export.
+	handedOver := adguard.Paths{SpoolDir: filepath.Join(stateDir, "components")}.RestoredSettings()
+	socket = filepath.Join(t.TempDir(), "helper.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notHere := errors.New("not on this test's device")
+	server := &http.Server{
+		ConnContext: helper.ConnContext,
+		Handler: (&helper.Server{
+			AllowedUID: uint32(os.Getuid()),
+			AdguardStatus: func() adguard.Status {
+				enabled, _ := side.state()
+				return adguard.Status{Installed: true, Version: components.AdGuardHome.Version, Running: enabled, Enabled: enabled}
+			},
+			AdguardSettings: func() ([]byte, error) {
+				_, settings := side.state()
+				return []byte(settings), nil
+			},
+			AdguardSetEnabled: func(enabled bool) error {
+				side.mu.Lock()
+				defer side.mu.Unlock()
+				side.enabled = enabled
+				return nil
+			},
+			AdguardApplySettings: func() error {
+				data, err := os.ReadFile(handedOver)
+				if err != nil {
+					return err
+				}
+				side.mu.Lock()
+				defer side.mu.Unlock()
+				side.settings = string(data)
+				return nil
+			},
+			SSHStatus:        func() (sshd.Status, error) { return sshd.Status{}, notHere },
+			OSUpdateSettings: func() (osupdate.Settings, error) { return osupdate.Settings{}, notHere },
+		}).Handler(),
+	}
+	go server.Serve(listener)
+	t.Cleanup(func() { server.Close() })
+	return socket, side
+}
 
 // instance is one running `sgc serve` with its own state folder, driven the
 // way a browser would.
@@ -27,21 +99,26 @@ type instance struct {
 	stateDir string
 	out      *syncBuffer
 	client   *http.Client
+	root     *rootSide
 }
 
-func startInstance(t *testing.T) *instance {
+// startInstance starts an SGC on a device whose AdGuard Home runs on the
+// given settings.
+func startInstance(t *testing.T, dnsSettings string) *instance {
 	t.Helper()
 	stateDir := t.TempDir()
+	helperSocket, root := startRootSide(t, stateDir, dnsSettings)
 	// What the root side would keep (the updater's outcome, the firewall's
 	// state) is pointed inside the test's own folder, so nothing on the
 	// machine running the test is read.
 	_, out, _ := startServe(t, "--state-dir", stateDir, "--update-work-dir", stateDir+"/update-work",
 		"--firewall-file", stateDir+"/firewall/firewall.nft", "--firewall-run-dir", stateDir+"/firewall/run",
 		"--ssh-state-file", stateDir+"/ssh/state.json", "--ssh-run-dir", stateDir+"/ssh/run",
-		"--os-updates-file", stateDir+"/apt/52sgc-updates", "--os-updates-run-dir", stateDir+"/os-updates/run")
+		"--os-updates-file", stateDir+"/apt/52sgc-updates", "--os-updates-run-dir", stateDir+"/os-updates/run",
+		"--helper-socket", helperSocket)
 	jar, _ := cookiejar.New(nil)
 	return &instance{
-		t: t, stateDir: stateDir, out: out,
+		t: t, stateDir: stateDir, out: out, root: root,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 			Jar:     jar,
@@ -109,7 +186,9 @@ func TestExportFromOneInstallRestoresIntoAFreshOne(t *testing.T) {
 	)
 
 	// --- The old gateway: set up, change a setting, export. -----------------
-	old := startInstance(t)
+	// What the owner made of AdGuard Home's settings on the old gateway.
+	const dnsSettings = "user_rules:\n  - '||ads.domain.tld^'\n"
+	old := startInstance(t, dnsSettings)
 	if resp, body := old.postJSON("/api/setup", map[string]string{
 		"token": old.setupToken(), "username": username, "password": password,
 	}); resp.StatusCode != http.StatusOK {
@@ -136,6 +215,9 @@ func TestExportFromOneInstallRestoresIntoAFreshOne(t *testing.T) {
 		`INSERT INTO setting (key, value) VALUES ('ssh.account', 'alex'), ('ssh.keys_only', 'true')`,
 		// And updates for the device: set to install by themselves.
 		`INSERT INTO setting (key, value) VALUES ('os_updates.mode', 'automatic')`,
+		// And DNS: switched on, as the installer leaves it. Its settings are
+		// AdGuard Home's own file, which the export fetches from the device.
+		`INSERT INTO setting (key, value) VALUES ('adguard.enabled', 'true')`,
 	} {
 		if _, err := oldDB.ExecContext(context.Background(), statement); err != nil {
 			t.Fatal(err)
@@ -152,7 +234,7 @@ func TestExportFromOneInstallRestoresIntoAFreshOne(t *testing.T) {
 	}
 
 	// --- A fresh gateway: restore through the setup link. -------------------
-	fresh := startInstance(t)
+	fresh := startInstance(t, "the settings SGC gives a new AdGuard Home")
 	token := fresh.setupToken()
 
 	preview := func(pass string) (*http.Response, []byte) {
@@ -242,13 +324,26 @@ func TestExportFromOneInstallRestoresIntoAFreshOne(t *testing.T) {
 	if fresh.getJSON("/api/os-updates", &osUpdates) != http.StatusOK || osUpdates.Wanted != "automatic" || osUpdates.Mode != "" {
 		t.Errorf("updates for the device after the restore: %+v", osUpdates)
 	}
+	// DNS needs nobody: the AdGuard Home the installer put on this device
+	// gets the settings from the export by itself.
+	var dns struct{ Enabled, RestorePending bool }
+	deadline = time.Now().Add(10 * time.Second)
+	for fresh.getJSON("/api/dns", &dns) != http.StatusOK || dns.RestorePending {
+		if time.Now().After(deadline) {
+			t.Fatalf("the DNS part of the restore was never finished: %+v\n%s", dns, fresh.out.String())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if enabled, settings := fresh.root.state(); !dns.Enabled || !enabled || settings != dnsSettings {
+		t.Errorf("DNS after the restore: %+v, and AdGuard Home runs on %q", dns, settings)
+	}
 	var history []struct{ Actor, Action, Detail string }
 	fresh.getJSON("/api/audit", &history)
 	seen := map[string]bool{}
 	for _, entry := range history {
 		seen[entry.Action] = true
 	}
-	for _, action := range []string{"setup.completed", "setting.changed", "restore.completed"} {
+	for _, action := range []string{"setup.completed", "setting.changed", "restore.completed", "dns.restored"} {
 		if !seen[action] {
 			t.Errorf("the restored history is missing %q: %+v", action, history)
 		}

@@ -53,6 +53,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return firewallCommand(ctx, args[1:], stdout, stderr)
 	case "ssh":
 		return sshCommand(ctx, args[1:], stdout, stderr)
+	case "dns":
+		return dnsCommand(ctx, args[1:], stdout, stderr)
 	case "doctor":
 		return doctorCommand(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -75,6 +77,7 @@ Commands:
   doctor       Check every part of SGC and say what to do about problems
   firewall     Show the firewall's state ("firewall off": switch it off)
   ssh          Show what SGC set up for SSH ("ssh allow-passwords": undo "keys only")
+  dns          Show whether DNS (AdGuard Home) is on ("dns on", "dns off": switch it)
   version      Print the installed SGC version
   help         Show this help
 `)

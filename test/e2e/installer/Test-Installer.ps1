@@ -95,8 +95,9 @@ Invoke-Cases ssh
 # themselves, which is how the rest of the test finds it.
 Invoke-Cases os-updates
 
-# AdGuard Home: installed from the page (a real download of the pinned
-# release), answering, blocking, and let in by the firewall from inside only.
+# AdGuard Home, which the installer put there (a real download of the pinned
+# release): answering, blocking, switched off and on, and let in by the
+# firewall from inside only.
 Invoke-Cases dns
 
 # Updating: a tampered update, a genuine one, a signed-but-broken one that

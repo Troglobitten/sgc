@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -34,6 +35,8 @@ type rootSide struct {
 	// What was in the spool folder when the installation was asked for.
 	spooled  []string
 	restored string
+	// The settings from an export that were put into AdGuard Home.
+	applied string
 }
 
 func (r *rootSide) AdguardStatus(context.Context) (adguard.Status, error) { return r.status, nil }
@@ -50,13 +53,26 @@ func (r *rootSide) AdguardInstall(context.Context) error {
 	if r.refuse != "" {
 		return errors.New(r.refuse)
 	}
-	r.status = adguard.Status{Installed: true, Version: "0.107.79", Running: true}
+	r.status = adguard.Status{Installed: true, Version: "0.107.79", Running: true, Enabled: true}
 	return nil
 }
 
-func (r *rootSide) AdguardRemove(context.Context) error {
-	r.calls = append(r.calls, "remove")
-	r.status = adguard.Status{}
+func (r *rootSide) AdguardSetEnabled(_ context.Context, enabled bool) error {
+	r.calls = append(r.calls, "enabled "+strconv.FormatBool(enabled))
+	if r.refuse != "" {
+		return errors.New(r.refuse)
+	}
+	r.status.Enabled, r.status.Running = enabled, enabled
+	return nil
+}
+
+func (r *rootSide) AdguardApplySettings(context.Context) error {
+	r.calls = append(r.calls, "apply-settings")
+	if r.refuse != "" {
+		return errors.New(r.refuse)
+	}
+	data, _ := os.ReadFile(r.paths.RestoredSettings())
+	r.applied = string(data)
 	return nil
 }
 
@@ -112,16 +128,41 @@ func (e *env) lastHistory() string {
 	if err != nil || len(entries) == 0 {
 		return ""
 	}
-	return entries[0].Actor + " " + entries[0].Action + " " + entries[0].Detail
+	return strings.TrimSpace(entries[0].Actor + " " + entries[0].Action + " " + entries[0].Detail)
 }
 
-func TestInstallAndRemove(t *testing.T) {
+func (e *env) setting(key string) string {
+	e.t.Helper()
+	value, _, err := store.Setting(context.Background(), e.db, key)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return value
+}
+
+// hasAdguard makes this a device the installer has run on: AdGuard Home is
+// there and switched on.
+func (e *env) hasAdguard() {
+	e.root.status = adguard.Status{Installed: true, Version: "0.107.79", Running: true, Enabled: true}
+}
+
+func TestSwitchingOnAndOff(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
-	if s := e.status(); !s.Available || s.Installed || s.Wanted || s.Pinned != "0.107.79" {
+	if s := e.status(); !s.Available || s.Installed || s.Enabled || s.Pinned != "0.107.79" {
 		t.Fatalf("to begin with: %+v", s)
 	}
-	if err := e.service.Install(ctx, "alex", "192.168.1.10"); err != nil {
+	// A device the installer has just run on: nothing chosen, no admin yet.
+	if due, err := e.service.FirstInstallDue(ctx, true); err != nil || !due {
+		t.Errorf("on a new device: due %v, %v", due, err)
+	}
+	// A device that was updated from a version without AdGuard Home has an admin.
+	if due, _ := e.service.FirstInstallDue(ctx, false); due {
+		t.Error("due on a device that has an admin")
+	}
+
+	// Switched on where AdGuard Home is not yet: downloaded and installed.
+	if err := e.service.SetEnabled(ctx, "alex", "192.168.1.10", true); err != nil {
 		t.Fatal(err)
 	}
 	// The root side found the downloaded release, and nothing else.
@@ -131,26 +172,59 @@ func TestInstallAndRemove(t *testing.T) {
 	if entries, _ := os.ReadDir(e.root.paths.SpoolDir); len(entries) != 0 {
 		t.Errorf("left in the spool afterwards: %v", entries)
 	}
-	if s := e.status(); !s.Installed || !s.Running || s.UpdateAvailable || s.Wanted {
-		t.Errorf("after installing: %+v", s)
+	if s := e.status(); !s.Installed || !s.Enabled || !s.Running || s.UpdateAvailable {
+		t.Errorf("after switching on: %+v", s)
 	}
-	if e.lastHistory() != "alex dns.installed AdGuard Home 0.107.79" {
-		t.Errorf("history: %s", e.lastHistory())
+	if e.lastHistory() != "alex dns.switched_on" || e.setting(SettingEnabled) != "true" {
+		t.Errorf("history: %s; setting: %s", e.lastHistory(), e.setting(SettingEnabled))
 	}
+	if due, _ := e.service.FirstInstallDue(ctx, true); due {
+		t.Error("due again after the choice was made")
+	}
+
 	// This SGC brings a newer release than the one installed.
 	e.root.status.Version = "0.107.70"
 	if s := e.status(); !s.UpdateAvailable {
 		t.Errorf("with an older version installed: %+v", s)
 	}
-
-	if err := e.service.Remove(ctx, "alex", ""); err != nil {
+	if err := e.service.Install(ctx, "alex", ""); err != nil {
 		t.Fatal(err)
 	}
-	if s := e.status(); s.Installed || s.Wanted {
-		t.Errorf("after removing: %+v", s)
+	if s := e.status(); s.UpdateAvailable || e.lastHistory() != "alex dns.installed AdGuard Home 0.107.79" {
+		t.Errorf("after replacing it: %+v, history: %s", s, e.lastHistory())
 	}
-	if e.lastHistory() != "alex dns.removed AdGuard Home" {
-		t.Errorf("history: %s", e.lastHistory())
+
+	// Off: the program stays, nothing is downloaded or installed.
+	e.served = []byte("a download now would be refused")
+	installs := len(e.root.calls)
+	if err := e.service.SetEnabled(ctx, "alex", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if s := e.status(); !s.Installed || s.Enabled || s.Running {
+		t.Errorf("switched off: %+v", s)
+	}
+	if e.lastHistory() != "alex dns.switched_off" || e.setting(SettingEnabled) != "false" {
+		t.Errorf("history: %s; setting: %s", e.lastHistory(), e.setting(SettingEnabled))
+	}
+	// And on again.
+	if err := e.service.SetEnabled(ctx, "alex", "", true); err != nil {
+		t.Fatal(err)
+	}
+	if s := e.status(); !s.Enabled || !s.Running {
+		t.Errorf("switched on again: %+v", s)
+	}
+	if got := strings.Join(e.root.calls[installs:], ", "); got != "enabled false, enabled true" {
+		t.Errorf("asked of the root side: %s", got)
+	}
+
+	// The root side cannot do it: said in words, and the choice stays as it was.
+	e.root.refuse = "AdGuard Home could not be stopped: Unit is masked"
+	var failure *ChangeError
+	if err := e.service.SetEnabled(ctx, "alex", "", false); !errors.As(err, &failure) || !strings.Contains(failure.Message, "Unit is masked") {
+		t.Errorf("a refusal: %v", err)
+	}
+	if e.setting(SettingEnabled) != "true" {
+		t.Error("the choice was changed although the device was not")
 	}
 }
 
@@ -192,49 +266,125 @@ func TestAnInstallationTheRootSideRefuses(t *testing.T) {
 }
 
 // The owner's DNS settings travel in the database: copied in before an
-// export, handed to the root side when AdGuard Home is installed on the
-// device the export was restored to.
+// export, and put into the AdGuard Home of the device the export is restored
+// to, without anybody asking.
 func TestSettingsTravelWithAnExport(t *testing.T) {
 	ctx := context.Background()
 	old := newEnv(t)
-	// Nothing installed: nothing to copy, and nothing is invented.
+	// Nothing chosen, nothing installed: nothing to copy, and nothing is invented.
 	if err := old.service.SaveForExport(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if kept, _, _ := store.Setting(ctx, old.db, SettingSettingsFile); kept != "" {
+	if kept := old.setting(SettingSettingsFile); kept != "" {
 		t.Fatalf("settings kept without AdGuard Home: %q", kept)
 	}
-	if err := old.service.Install(ctx, "alex", ""); err != nil {
+	if err := old.service.SetEnabled(ctx, "alex", "", true); err != nil {
 		t.Fatal(err)
 	}
 	old.root.settings = "user_rules:\n  - '||ads.domain.tld^'\n"
 	if err := old.service.SaveForExport(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// restoredTo makes a device on which the export has just been put in
+	// place: what an export carries came with the database.
+	restoredTo := func(settings map[string]string) *env {
+		t.Helper()
+		fresh := newEnv(t)
+		for key, value := range settings {
+			if err := store.SetSetting(ctx, fresh.db, key, value); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return fresh
+	}
+	exported := map[string]string{SettingEnabled: old.setting(SettingEnabled), SettingSettingsFile: old.setting(SettingSettingsFile)}
+	if exported[SettingEnabled] != "true" || exported[SettingSettingsFile] != old.root.settings {
+		t.Fatalf("what the export carries: %v", exported)
+	}
 
-	// The restored device: the two settings came with the database.
-	fresh := newEnv(t)
-	for _, key := range []string{SettingInstalled, SettingSettingsFile} {
-		value, _, _ := store.Setting(ctx, old.db, key)
-		store.SetSetting(ctx, fresh.db, key, value)
+	// The usual case: the installer has put AdGuard Home on the new device,
+	// running on SGC's first settings.
+	fresh := restoredTo(exported)
+	fresh.hasAdguard()
+	// Without a restore there is nothing to finish.
+	if err := fresh.service.FinishRestore(ctx, audit.ActorSystem, ""); err != nil || len(fresh.root.calls) != 0 {
+		t.Fatalf("without a restore: %v, %v", err, fresh.root.calls)
 	}
-	if s := fresh.status(); s.Installed || !s.Wanted || !s.RestoredSettings {
-		t.Fatalf("on the restored device: %+v", s)
-	}
-	// Exporting again from there, before installing, keeps what came along.
-	if err := fresh.service.SaveForExport(ctx); err != nil {
+	if err := fresh.service.MarkRestored(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := fresh.service.Install(ctx, "alex", ""); err != nil {
+	if !fresh.status().RestorePending {
+		t.Error("the page is not told that the DNS part of the restore is still to do")
+	}
+	// The root side cannot do it now: it stays to do.
+	fresh.root.refuse = "AdGuard Home could not be stopped"
+	var failure *ChangeError
+	if err := fresh.service.FinishRestore(ctx, audit.ActorSystem, ""); !errors.As(err, &failure) || !strings.Contains(failure.Message, "could not be put in place") {
+		t.Errorf("a refusal: %v", err)
+	}
+	if !fresh.status().RestorePending {
+		t.Error("a restore that failed is no longer waiting")
+	}
+	fresh.root.refuse = ""
+	if err := fresh.service.FinishRestore(ctx, "alex", ""); err != nil {
 		t.Fatal(err)
 	}
-	if fresh.root.restored != old.root.settings {
-		t.Errorf("handed to the root side: %q", fresh.root.restored)
+	if fresh.root.applied != old.root.settings {
+		t.Errorf("put into AdGuard Home: %q", fresh.root.applied)
 	}
 	if _, err := os.Stat(fresh.root.paths.RestoredSettings()); !errors.Is(err, os.ErrNotExist) {
 		t.Error("the handed-over settings were left in the spool")
 	}
-	if s := fresh.status(); !s.Installed || s.Wanted || s.RestoredSettings {
-		t.Errorf("after installing there: %+v", s)
+	if s := fresh.status(); s.RestorePending || !s.Enabled {
+		t.Errorf("after the restore: %+v", s)
+	}
+	if fresh.lastHistory() != "alex dns.restored AdGuard Home runs on the settings from the export" {
+		t.Errorf("history: %s", fresh.lastHistory())
+	}
+	// Done is done.
+	calls := len(fresh.root.calls)
+	if err := fresh.service.FinishRestore(ctx, audit.ActorSystem, ""); err != nil || len(fresh.root.calls) != calls {
+		t.Errorf("a second time: %v, %v", err, fresh.root.calls[calls:])
+	}
+
+	// Switched off in the export: its settings are put in place, and it is
+	// off on the new device too.
+	off := restoredTo(map[string]string{SettingEnabled: "false", SettingSettingsFile: old.root.settings})
+	off.hasAdguard()
+	off.service.MarkRestored(ctx)
+	if err := off.service.FinishRestore(ctx, audit.ActorSystem, ""); err != nil {
+		t.Fatal(err)
+	}
+	if s := off.status(); off.root.applied != old.root.settings || s.Enabled || s.RestorePending {
+		t.Errorf("switched off in the export: applied %q, %+v", off.root.applied, s)
+	}
+
+	// An export of SGC 0.11.0, which noted "installed", on a device where the
+	// installer could not download AdGuard Home: installed now, starting
+	// from the export's settings.
+	legacy := restoredTo(map[string]string{SettingInstalled: "true", SettingSettingsFile: old.root.settings})
+	legacy.service.MarkRestored(ctx)
+	if err := legacy.service.FinishRestore(ctx, audit.ActorSystem, ""); err != nil {
+		t.Fatal(err)
+	}
+	if s := legacy.status(); legacy.root.restored != old.root.settings || !s.Enabled || s.RestorePending || legacy.setting(SettingEnabled) != "true" {
+		t.Errorf("an export of 0.11.0: handed over %q, %+v", legacy.root.restored, s)
+	}
+
+	// An export that says nothing about DNS: the device stays as the
+	// installer left it, and that becomes the choice, so that the next
+	// export carries its settings.
+	silent := restoredTo(nil)
+	silent.hasAdguard()
+	silent.service.MarkRestored(ctx)
+	if err := silent.service.FinishRestore(ctx, audit.ActorSystem, ""); err != nil {
+		t.Fatal(err)
+	}
+	if s := silent.status(); len(silent.root.calls) != 0 || !s.Enabled || s.RestorePending || silent.setting(SettingEnabled) != "true" {
+		t.Errorf("an export without DNS: %v, %+v", silent.root.calls, s)
+	}
+	silent.root.settings = "settings made on the new device\n"
+	if err := silent.service.SaveForExport(ctx); err != nil || silent.setting(SettingSettingsFile) != silent.root.settings {
+		t.Errorf("the next export: %v, %q", err, silent.setting(SettingSettingsFile))
 	}
 }

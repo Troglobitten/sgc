@@ -2,6 +2,17 @@
 
 What changed in each version of SGC, newest first. The section for a version is what SGC shows before you update to it, so it is written for the person running SGC, not for developers.
 
+## 0.12.0
+
+- DNS now comes with SGC. The installer installs AdGuard Home and starts it, so a new device answers the name lookups of your network from the start. The installer tells you so. To use it, enter the device's address as the DNS server in your router, or on single devices.
+- On the System page, DNS is a switch: on or off. Switching it off stops AdGuard Home answering; nothing is removed and your settings stay. The "Install" and "Remove" buttons are gone.
+- AdGuard Home now answers home-network addresses only, by itself, also while the firewall is off. This is set where this version installs AdGuard Home. On a device where 0.11.0 installed it, your existing settings are left alone: there the firewall does this once it is on, or you set it in AdGuard Home's page under "Settings", "DNS settings", "Access settings".
+- After a restore your DNS settings are back without a click: SGC puts the settings from the export into AdGuard Home and switches it on or off as it was. AdGuard Home checks the settings first, and if it does not stay up on them the previous ones come back. If it could not be done, the System page says so and offers to try again.
+- A device that updates from 0.11.0 and has no AdGuard Home gets nothing installed unasked. Switching DNS on installs it.
+- New on the command line: `sgc dns` says whether DNS is on, and `sudo sgc dns on` and `sudo sgc dns off` do what the switch does.
+- If the installer cannot download AdGuard Home, SGC is installed all the same and says so. Switch DNS on later, on the System page.
+- `sudo sgc doctor` tells a DNS that is switched off from one that should be running and is not.
+
 ## 0.11.0
 
 - DNS: SGC can now install AdGuard Home, which answers the name lookups of your network and leaves out advertising and tracking. One button on the System page installs it; SGC keeps it running, also when SGC itself is not.

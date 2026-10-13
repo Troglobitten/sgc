@@ -17,11 +17,17 @@ const adguardLog = "Its log: sudo journalctl -u sgc-adguard --no-pager -n 30"
 
 func checkDNS(ctx context.Context) []doctor.Result {
 	paths := adguard.DefaultPaths()
+	const switchOn = "to switch it on: SGC's System page, or sudo sgc dns on"
 	if !adguard.Installed(paths) {
-		return one(doctor.Good("AdGuard Home (DNS) is not installed"))
+		return one(doctor.Good("DNS is off: AdGuard Home is not on this device (" + switchOn + ")"))
 	}
 	version := adguard.InstalledVersion(paths)
 	if state, _ := ask(ctx, "/usr/bin/systemctl", "is-active", adguard.ServiceUnit); state != "active" {
+		// Switched off by the owner is no problem. Switched on and not
+		// running is one.
+		if enabled, _ := ask(ctx, "/usr/bin/systemctl", "is-enabled", adguard.ServiceUnit); enabled != "enabled" {
+			return one(doctor.Good("DNS is switched off; AdGuard Home " + version + " and its settings stay on this device (" + switchOn + ")"))
+		}
 		return one(doctor.Bad("AdGuard Home "+version+" is installed but not running ("+state+")",
 			"Start it: sudo systemctl start sgc-adguard\n"+adguardLog))
 	}

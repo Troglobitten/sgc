@@ -18,9 +18,11 @@
 #   os-updates     updates for the device: nothing until the owner chooses;
 #                  by hand, the page lists what waits and installs it; then
 #                  set to install by themselves
-#   dns            AdGuard Home: installed from the page, answers and
-#                  blocks, its own page only behind SGC's login, let in by
-#                  the firewall from the home network only
+#   dns            AdGuard Home: there since the installer ran (or, on a
+#                  machine updated from a version without it, since DNS was
+#                  switched on), answers and blocks, its own page only behind
+#                  SGC's login, switched off and on, let in by the firewall
+#                  from the home network only
 #   update-setup   points the installed SGC at a local test update source
 #   update-refused a tampered update is refused and changes nothing
 #   update-good    a genuine update installs from the dashboard's API
@@ -338,6 +340,8 @@ resolves() { local got; got="$(dns_answer "$@")" && [ "$got" != none ] && [ "$go
 is_blocked() { [ "$(dns_answer "$@")" = 0.0.0.0 ]; }
 # shellcheck disable=SC2317  # called indirectly through check()
 gets_no_dns_answer() { ! dns_answer "$@" >/dev/null; }
+# shellcheck disable=SC2317  # called indirectly through check() and wait_for()
+dns_state_has() { [ "$(http GET /api/dns)" = 200 ] && grep -q "$1" /tmp/sgc-test-body; }
 # A name of the test's own that the "owner" blocks in AdGuard Home's page.
 blocked_by_owner=sgc-test-blocked.domain.tld
 
@@ -374,6 +378,14 @@ accepted)
     check "state folder is private to sgc" sudo sh -c "[ \"\$(stat -c %U:%a /var/lib/sgc)\" = sgc:700 ]"
     check "database is private to sgc" sudo sh -c "[ \"\$(stat -c %U:%a /var/lib/sgc/sgc.db)\" = sgc:600 ]"
     check "service log shows it started" sh -c "sudo journalctl -u sgc --no-pager | grep -q 'sgc $version started'"
+
+    echo "AdGuard Home, the DNS server, came with it"
+    check "the installer says that it installs AdGuard Home" grep -q '^Installing AdGuard Home [0-9.]*, the DNS server' /tmp/install.log
+    check "and that DNS is on" grep -q '^DNS is on: AdGuard Home answers' /tmp/install.log
+    check "it is running" systemctl is-active --quiet sgc-adguard.service
+    check "it will start with the machine" systemctl is-enabled --quiet sgc-adguard.service
+    if wait_for 60 resolves 127.0.0.1 debian.org; then pass "it answers a name lookup"; else fail "it does not answer a name lookup"; fi
+    check "nothing of the download is left behind" sudo sh -c "[ -z \"\$(ls /var/lib/sgc/components 2>/dev/null)\" ]"
 
     echo "The installer hands over a one-time setup link"
     link="$(grep -o 'https://[^ ]*/setup#[A-Za-z0-9_-]*' /tmp/install.log)"
@@ -442,9 +454,13 @@ accepted)
     fi
     check "it says SGC is already set up instead of a new link" grep -q 'already set up' /tmp/install2.log
     check "no new setup link was printed" sh -c "! grep -q '/setup#' /tmp/install2.log"
+    check "and AdGuard Home is not installed a second time" sh -c "! grep -q 'Installing AdGuard Home' /tmp/install2.log"
     check "service is still running" systemctl is-active --quiet sgc
     sleep 1
     expect_status "the earlier sign-in still works" 200 GET /api/health
+    expect_in_audit "that AdGuard Home was installed with SGC is in the history" '"action":"dns.installed"'
+    expect_status "the page knows about DNS" 200 GET /api/dns
+    check "and shows it as switched on" body_has '"enabled":true'
     ;;
 
 firewall)
@@ -461,6 +477,16 @@ firewall)
     fi
     check "without a firewall the public neighbour reaches SGC's page" reaches "$outside_net" "$outside_gateway" 8443
     check "and SSH" reaches "$outside_net" "$outside_gateway" 22
+    if [ -e /opt/sgc/components/adguardhome/current ]; then
+        # AdGuard Home came with the installer and runs before there is any
+        # firewall. It is AdGuard Home itself that answers home addresses only.
+        dns_from_start=true
+        check "without a firewall, AdGuard Home answers the neighbour with a home address" resolves "$inside_gateway" debian.org "$inside_net"
+        check "and not the one with a public address" gets_no_dns_answer "$outside_gateway" debian.org "$outside_net"
+    else
+        # A machine updated from a version that did not install it.
+        dns_from_start=false
+    fi
 
     echo "Switched on and not confirmed: it undoes itself"
     expect_status "switching on is accepted" 202 POST /api/firewall/change '{"enabled":true}'
@@ -536,7 +562,7 @@ firewall)
     expect_status "confirming" 200 POST /api/firewall/confirm '{}'
     check "the firewall is on" body_has '"state":"on"'
     check "and recorded as what the owner wants" body_has '"wanted":true'
-    check "SSH and SGC's page are what is let in, and not DNS" body_has '"sshPorts":\[22\],"dns":false,"webPort":8443'
+    check "SSH and SGC's page are let in, and DNS where AdGuard Home is there ($dns_from_start)" body_has "\"sshPorts\":\[22\],\"dns\":$dns_from_start,\"webPort\":8443"
     check "the confirmed rules are saved, owned by root" sudo sh -c "[ \"\$(stat -c %U:%a /etc/sgc/firewall.nft)\" = root:644 ]"
     check "the web process cannot change them" sh -c '! sudo -u sgc sh -c "echo >> /etc/sgc/firewall.nft"'
     sleep 2
@@ -864,15 +890,20 @@ os-updates-auto)
     ;;
 
 dns)
-    echo "AdGuard Home: not there until it is asked for"
     expect_status "the state is available" 200 GET /api/dns
-    check "it is not installed" body_has '"installed":false'
-    check "nothing answers DNS on this machine" gets_no_dns_answer 127.0.0.1 debian.org
-    check "its page behind SGC's login says that it is not there" sh -c "[ \"\$(curl -sk -o /dev/null -w '%{http_code}' -b '$cookies' '$api/adguard/')\" = 502 ]"
-
-    echo "Installing it from the page"
-    expect_status "installing AdGuard Home" 200 POST /api/dns/install '{}'
-    check "it is installed and running" sh -c "grep -q '\"installed\":true' /tmp/sgc-test-body && grep -q '\"running\":true' /tmp/sgc-test-body"
+    if body_has '"installed":true'; then
+        echo "AdGuard Home: there since the installer ran"
+    else
+        echo "AdGuard Home on a machine updated from a version without it: not there until DNS is switched on"
+        check "DNS is off" body_has '"enabled":false'
+        check "nothing answers DNS on this machine" gets_no_dns_answer 127.0.0.1 debian.org
+        check "its page behind SGC's login says that it is not there" sh -c "[ \"\$(curl -sk -o /dev/null -w '%{http_code}' -b '$cookies' '$api/adguard/')\" = 502 ]"
+        check "the command line says so too" sh -c "sgc dns | grep -q '^DNS is off: AdGuard Home is not on this device'"
+        expect_status "switching DNS on downloads and installs it" 200 POST /api/dns/enabled '{"enabled":true}'
+        expect_in_audit "the installation is in the history" '"action":"dns.installed"'
+    fi
+    expect_status "the page reports on it" 200 GET /api/dns
+    check "it is installed, switched on and running" sh -c "grep -q '\"installed\":true' /tmp/sgc-test-body && grep -q '\"enabled\":true' /tmp/sgc-test-body && grep -q '\"running\":true' /tmp/sgc-test-body"
     pinned="$(grep -o '"pinned":"[^"]*"' /tmp/sgc-test-body | cut -d'"' -f4)"
     check "the program is the version SGC pins ($pinned)" sh -c "/opt/sgc/components/adguardhome/current/AdGuardHome --version | grep -q 'v$pinned\$'"
     check "it belongs to root, not to the account it runs as" sh -c "[ \"\$(stat -c %U /opt/sgc/components/adguardhome/current/AdGuardHome)\" = root ]"
@@ -899,22 +930,44 @@ dns)
     expect_status "a rule of the owner's is saved" 200 POST /adguard/control/filtering/set_rules "{\"rules\":[\"||$blocked_by_owner^\"]}"
     if wait_for 15 is_blocked 127.0.0.1 "$blocked_by_owner"; then pass "and takes effect"; else fail "the owner's rule does not take effect"; fi
 
+    echo "Switched off, and on again"
+    expect_status "a request that does not say on or off is refused" 400 POST /api/dns/enabled '{}'
+    expect_status "switching DNS off" 200 POST /api/dns/enabled '{"enabled":false}'
+    check "the page shows it as off, and still on the machine" sh -c "grep -q '\"enabled\":false' /tmp/sgc-test-body && grep -q '\"installed\":true' /tmp/sgc-test-body && grep -q '\"running\":false' /tmp/sgc-test-body"
+    check "nothing answers DNS any more" gets_no_dns_answer 127.0.0.1 debian.org
+    check "it would not start with the machine" sh -c '! systemctl is-enabled --quiet sgc-adguard.service'
+    check "the machine itself still looks up names" getent ahosts deb.debian.org
+    output="$(sudo sgc doctor 2>&1)"
+    if grep -q 'ok    DNS is switched off' <<<"$output"; then pass "the doctor says that DNS is switched off, not that something is wrong"; else
+        fail "the doctor does not say that DNS is switched off"
+        indent <<<"$output"
+    fi
+    check "the command line says so too" sh -c "sgc dns | grep -q '^DNS is off. AdGuard Home [0-9.]* and its settings are on this device'"
+    expect_status "switching DNS on again" 200 POST /api/dns/enabled '{"enabled":true}'
+    check "the page shows it as on and running" sh -c "grep -q '\"enabled\":true' /tmp/sgc-test-body && grep -q '\"running\":true' /tmp/sgc-test-body"
+    if wait_for 30 resolves 127.0.0.1 debian.org; then pass "it answers again"; else fail "it does not answer after being switched on"; fi
+    if wait_for 30 is_blocked 127.0.0.1 "$blocked_by_owner"; then pass "the owner's rule is still in force"; else fail "the owner's rule was lost"; fi
+    check "it will start with the machine again" systemctl is-enabled --quiet sgc-adguard.service
+    expect_in_audit "switching off is in the history" '"action":"dns.switched_off"'
+    expect_in_audit "and so is switching on" '"action":"dns.switched_on"'
+
     echo "From the network: only once the firewall lets DNS in, and only from inside"
     neighbour "$outside_net" "$outside_gateway" "$outside_peer"
     neighbour "$inside_net" "$inside_gateway" "$inside_peer"
     expect_status "the firewall's state is available" 200 GET /api/firewall
-    check "the firewall is on, from before AdGuard Home was there" body_has '"state":"on"'
-    check "and does not let DNS in yet" body_has '"dns":false'
-    check "a neighbour with a home address gets no answer" gets_no_dns_answer "$inside_gateway" debian.org "$inside_net"
-    expect_status "the rules are made afresh" 202 POST /api/firewall/change '{"enabled":true,"again":true}'
-    expect_status "and confirmed like any firewall change" 200 POST /api/firewall/confirm '{}'
-    check "the firewall now lets DNS in" firewall_is on
+    check "the firewall is on" body_has '"state":"on"'
+    if body_has '"dns":false'; then
+        echo "The firewall was switched on before AdGuard Home was there"
+        check "a neighbour with a home address gets no answer" gets_no_dns_answer "$inside_gateway" debian.org "$inside_net"
+        expect_status "the rules are made afresh" 202 POST /api/firewall/change '{"enabled":true,"again":true}'
+        expect_status "and confirmed like any firewall change" 200 POST /api/firewall/confirm '{}'
+    fi
+    check "the firewall lets DNS in" firewall_is on
     check "the page knows" body_has '"dns":true'
     check "the neighbour with a home address gets answers" resolves "$inside_gateway" debian.org "$inside_net"
     check "and has advertising left out" is_blocked "$inside_gateway" doubleclick.net "$inside_net"
     check "the neighbour with a public address gets none" gets_no_dns_answer "$outside_gateway" debian.org "$outside_net"
     check "AdGuard Home's own page is out of reach even from a home address" does_not_reach "$inside_net" "$inside_gateway" 3000
-    expect_in_audit "the installation is in the history" '"action":"dns.installed"'
     check "no unit of SGC's is marked as failed" sh -c "[ -z \"\$(systemctl list-units --failed --plain --no-legend 'sgc*')\" ]"
     ;;
 
@@ -1184,12 +1237,10 @@ restore)
     check "but on this new machine nothing was switched on unasked" body_has '"state":"off"'
     check "no rules are loaded" no_rules_loaded
 
-    echo "AdGuard Home is known to have been there, and comes back with the owner's settings"
-    expect_status "the state is available" 200 GET /api/dns
-    check "it is not installed here unasked" body_has '"installed":false'
-    check "the page knows it was installed on the old machine" body_has '"wanted":true'
-    check "and that its settings came along" body_has '"restoredSettings":true'
-    expect_status "installing it here" 200 POST /api/dns/install '{}'
+    echo "AdGuard Home came with the installer, and the owner's settings went into it by themselves"
+    if wait_for 90 dns_state_has '"restorePending":false'; then pass "the DNS part of the restore is done, without a click"; else fail "the DNS part of the restore is still waiting"; fi
+    check "DNS is on and running, as on the old machine" sh -c "grep -q '\"enabled\":true' /tmp/sgc-test-body && grep -q '\"running\":true' /tmp/sgc-test-body"
+    expect_in_audit "what was done is in the history" '"action":"dns.restored"'
     if wait_for 60 resolves 127.0.0.1 debian.org; then pass "it answers"; else fail "it does not answer"; fi
     if wait_for 30 is_blocked 127.0.0.1 "$blocked_by_owner"; then pass "the rule the owner made on the old machine is in force here"; else fail "the owner's rule did not travel"; fi
     expect_status "its settings can be read through SGC" 200 GET /adguard/control/dns_info
@@ -1387,6 +1438,23 @@ cli)
     # for it (it cannot: see Restore in internal/sshd).
     if wait_for 10 passwords_not_offered; then pass "passwords are not offered again"; else fail "passwords are still offered"; fi
     check "and the key gets in again" gets_in "$ssh_key2"
+    echo "DNS from the command line"
+    check "it says that DNS is on" sh -c "sgc dns | grep -q '^DNS is on: AdGuard Home [0-9.]* is running'"
+    check "switching it needs root" sh -c "! sgc dns off 2>/dev/null"
+    output="$(sudo sgc dns off 2>&1)"
+    if grep -q '^DNS is off' <<<"$output"; then pass "sudo sgc dns off switches it off"; else
+        fail "sudo sgc dns off did not"
+        indent <<<"$output"
+    fi
+    check "nothing answers DNS" gets_no_dns_answer 127.0.0.1 debian.org
+    output="$(sudo sgc dns on 2>&1)"
+    if grep -q '^DNS is on' <<<"$output"; then pass "sudo sgc dns on switches it on"; else
+        fail "sudo sgc dns on did not"
+        indent <<<"$output"
+    fi
+    if wait_for 30 resolves 127.0.0.1 debian.org; then pass "and it answers again"; else fail "it does not answer after being switched on"; fi
+
+    echo "The doctor again, with things broken on purpose"
     sudo systemctl stop sgc-adguard
     # Something else on a port a later part of SGC will need.
     sudo python3 -m http.server 80 --bind 127.0.0.1 >/dev/null 2>&1 &

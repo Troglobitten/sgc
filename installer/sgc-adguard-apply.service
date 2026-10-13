@@ -1,0 +1,24 @@
+[Unit]
+Description=Server Gateway Control: put the settings from an export into AdGuard Home
+Documentation=https://github.com/Troglobitten/sgc
+# Never refused for having been started often (see sgc-firewall-change.service).
+StartLimitIntervalSec=0
+
+[Service]
+# After a restore: replaces AdGuard Home's settings file with the one from
+# the export, which SGC's web process has put in its spool folder. AdGuard
+# Home itself checks the file first. If it was running and does not stay up
+# on the new settings, the previous file is put back and it is started on
+# that again. Started by the helper; see ApplySettings in internal/adguard.
+Type=oneshot
+ExecStart=/opt/sgc/current/sgc-helper adguard apply-settings
+TimeoutStartSec=120
+
+# Root, because the settings file belongs to AdGuard Home's account and the
+# service is stopped and started around the change. It needs no network.
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+LockPersonality=yes

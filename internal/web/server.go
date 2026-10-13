@@ -112,8 +112,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/os-updates/check", s.requireSession(s.handleOSUpdatesCheck))
 	mux.HandleFunc("POST /api/os-updates/install", s.requireSession(s.handleOSUpdatesInstall))
 	mux.HandleFunc("GET /api/dns", s.requireSession(s.handleDNSStatus))
+	mux.HandleFunc("POST /api/dns/enabled", s.requireSession(s.handleDNSEnabled))
 	mux.HandleFunc("POST /api/dns/install", s.requireSession(s.handleDNSInstall))
-	mux.HandleFunc("POST /api/dns/remove", s.requireSession(s.handleDNSRemove))
+	mux.HandleFunc("POST /api/dns/restore", s.requireSession(s.handleDNSFinishRestore))
 	// AdGuard Home's own page, behind SGC's login.
 	adguardPage := s.requireSession(s.adguardProxy().ServeHTTP)
 	mux.Handle(adguardPrefix, adguardPage)
