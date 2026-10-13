@@ -219,9 +219,11 @@ function Running({ status }: { status: CertificateStatus }) {
       <p className="text-sm">
         {running.phase === 'trial'
           ? 'Trying with Let’s Encrypt’s test authority first. That takes a few minutes; the real certificate follows.'
-          : running.kind === 'first'
-            ? 'The trial worked. Getting the real certificate now, which takes a few minutes more.'
-            : 'Renewing the certificate. That takes a few minutes.'}
+          : running.phase === 'pause'
+            ? 'The trial worked. SGC waits a couple of minutes before it asks for the real certificate, so that every name server has forgotten the trial’s proof.'
+            : running.kind === 'first'
+              ? 'Getting the real certificate now, which takes a few minutes more.'
+              : 'Renewing the certificate. That takes a few minutes.'}
       </p>
       <p className="text-xs text-muted-foreground">
         You can leave this page; it goes on by itself.
@@ -266,7 +268,8 @@ function FirstDialog({
             SGC asks Let&apos;s Encrypt for one certificate that covers every name under{' '}
             {status.domain}. It first goes through the same steps with Let&apos;s Encrypt&apos;s
             test authority, so that a mistake in the set-up does not count against your domain.
-            Altogether that takes a few minutes. Every certificate is listed in public logs:
+            Altogether that takes about ten minutes, most of it waiting for name servers
+            around the world to catch up. Every certificate is listed in public logs:
             that there is one for *.{status.domain} will be public. The names of your services
             are not in it.
           </AlertDialogDescription>

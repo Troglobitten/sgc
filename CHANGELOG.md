@@ -2,6 +2,14 @@
 
 What changed in each version of SGC, newest first. The section for a version is what SGC shows before you update to it, so it is written for the person running SGC, not for developers.
 
+## 0.15.1
+
+- Fixed: the first real certificate could fail with "Let's Encrypt refused: Incorrect TXT record … found". SGC tries with Let's Encrypt's test authority first, and both proofs are published under the same name in your domain's DNS. SGC asked Let's Encrypt to look as soon as the name servers it could reach showed the new proof; Let's Encrypt, asking from other parts of the world, still got the old one.
+- SGC now waits: two minutes between the trial and the real request, and two minutes more in every attempt after it sees the proof itself. Getting the first certificate therefore takes about ten minutes instead of a few, and a renewal about three. It still runs by itself in the background, and the page says what it is waiting for.
+- If Let's Encrypt does not find the proof, the page now says that in plain words, and that trying again later usually works.
+- Fixed: on a device where AdGuard Home had taken over the DNS port after SGC started, SGC's checks for the certificate went through AdGuard Home. They now always use the device's own DNS servers, so getting and renewing a certificate does not depend on AdGuard Home running.
+- If your first attempt failed with the message above: nothing is wrong with your set-up. Press "Get the certificate" again once the page allows it (fifteen minutes after a failure).
+
 ## 0.15.0
 
 - The certificate: SGC can now get a real certificate from Let's Encrypt for every name under your domain (`*.your-domain`). On the System page, under "Network", press "Get the certificate". It takes a few minutes and goes on by itself if you leave the page.

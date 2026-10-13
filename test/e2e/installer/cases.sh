@@ -1297,6 +1297,8 @@ certificate)
     check "the certificate is for every name under the domain" body_has '"names":\["\*\.domain\.tld"\]'
     check "and for the domain that is set up" body_has '"forDomain":true'
     check "SGC says when it will renew it" sh -c "! grep -q '\"renewsAt\":null' /tmp/sgc-test-body"
+    check "between the trial and the real request it waited" body_has 'before asking for the real certificate'
+    check "and each time it waited for name servers further away" body_has 'more, for name servers further away'
     check "the answer carries no key" sh -c "! grep -q 'PRIVATE KEY' /tmp/sgc-test-body"
     first_serial="$(certificate_serial)"
     check "the proof was removed from the zone again" no_records_left
