@@ -5,6 +5,7 @@ import { AppShell, type ShellProps } from '@/components/app-shell'
 import { DnsCard } from '@/components/dns-card'
 import { ExportCard } from '@/components/export-card'
 import { FirewallCard } from '@/components/firewall-card'
+import { Log2ramCard } from '@/components/log2ram-card'
 import { MaintenanceCard } from '@/components/maintenance-card'
 import { OsUpdatesCard } from '@/components/os-updates-card'
 import { SshCard } from '@/components/ssh-card'
@@ -78,6 +79,7 @@ export function SystemPage({
         <div className="grid gap-3 md:grid-cols-2">
           <OsUpdatesCard onError={handleError} />
           <MaintenanceCard onError={handleError} />
+          <Log2ramCard onError={handleError} />
           <ExportCard minPassphraseLength={minPassphraseLength} />
           <Card>
             <CardContent className="flex flex-col gap-3">

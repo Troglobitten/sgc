@@ -128,7 +128,15 @@ func InstalledVersion(paths Paths) string {
 //   - Upstream: Quad9 over HTTPS (the owner's choice): does not log who asks,
 //     refuses known malware sites, and the internet provider cannot read
 //     the questions. DNSSEC on.
-//   - The query log is kept for 7 days (the owner's choice).
+//   - The query log is kept for 7 days (the owner's choice). AdGuard Home
+//     collects lookups in memory and writes them to the log in batches;
+//     size_memory is the size of a batch. 5000 instead of its own 1000
+//     means a fifth of the writes for the same log, which is what counts on
+//     an SD card, for about 20 MB of memory. It is a number of entries, so
+//     it cannot grow beyond that. After a power cut the lookups of the
+//     batch in memory are missing from the log; a stop or restart writes
+//     them out. (Measured on the test machine: 9000 lookups, no file; at
+//     10000 the batch was written, 358 bytes per lookup.)
 //   - One blocklist, AdGuard's own.
 const InitialSettings = `http:
   address: ` + WebAddress + `
@@ -157,6 +165,7 @@ querylog:
   interval: 7d
   enabled: true
   file_enabled: true
+  size_memory: 5000
 statistics:
   interval: 1d
   enabled: true

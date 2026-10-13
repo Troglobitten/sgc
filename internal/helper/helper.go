@@ -28,6 +28,8 @@
 //	POST /v1/adguard/enabled      switch AdGuard Home on or off
 //	POST /v1/adguard/apply-settings  give AdGuard Home the settings from a restored export
 //	GET  /v1/adguard/settings     AdGuard Home's settings file, for an export
+//	GET  /v1/log2ram/status       is log2ram installed, switched on, in memory, and how full?
+//	POST /v1/log2ram/enabled      switch log2ram on or off (in effect from the next restart)
 package helper
 
 import (
@@ -43,6 +45,7 @@ import (
 
 	"github.com/Troglobitten/sgc/internal/adguard"
 	"github.com/Troglobitten/sgc/internal/firewall"
+	"github.com/Troglobitten/sgc/internal/log2ram"
 	"github.com/Troglobitten/sgc/internal/osupdate"
 	"github.com/Troglobitten/sgc/internal/release"
 	"github.com/Troglobitten/sgc/internal/sshd"
@@ -67,7 +70,15 @@ const (
 	osUpdateTimeout = 60 * time.Second
 	// Installing AdGuard Home: unpacking, starting, and watching it stay up.
 	adguardTimeout = 4 * time.Minute
+	// Switching log2ram: restarting the journal and cutting it down. (Longer
+	// than the unit that does the work may run.)
+	log2ramTimeout = 200 * time.Second
 )
+
+type log2ramEnabledRequest struct {
+	// A pointer, so that a request without the field is refused, not read as "off".
+	Enabled *bool `json:"enabled"`
+}
 
 type adguardEnabledRequest struct {
 	// A pointer, so that a request without the field is refused, not read as "off".
@@ -83,6 +94,7 @@ type adguardSettingsResponse struct {
 const (
 	PackagesFirewall = "firewall"
 	PackagesUpdates  = "updates"
+	PackagesLog2ram  = "log2ram"
 )
 
 type installPackagesRequest struct {
@@ -250,6 +262,20 @@ func (c *Client) AdguardApplySettings(ctx context.Context) error {
 	return c.call(ctx, adguardTimeout, http.MethodPost, "/v1/adguard/apply-settings", nil, nil)
 }
 
+// Log2ramStatus asks how "logs in memory" is doing on the device.
+func (c *Client) Log2ramStatus(ctx context.Context) (log2ram.Status, error) {
+	var status log2ram.Status
+	err := c.call(ctx, firewallTimeout, http.MethodGet, "/v1/log2ram/status", nil, &status)
+	return status, err
+}
+
+// Log2ramSetEnabled switches log2ram on or off, which takes effect at the
+// next restart of the device. Switching on is refused, with the reason in
+// words, if the device's logs would not fit in memory.
+func (c *Client) Log2ramSetEnabled(ctx context.Context, enabled bool) error {
+	return c.call(ctx, log2ramTimeout, http.MethodPost, "/v1/log2ram/enabled", log2ramEnabledRequest{Enabled: &enabled}, nil)
+}
+
 // AdguardSettings returns AdGuard Home's settings file, for an export.
 func (c *Client) AdguardSettings(ctx context.Context) (string, error) {
 	var resp adguardSettingsResponse
@@ -332,6 +358,10 @@ type Server struct {
 	AdguardSetEnabled    func(enabled bool) error
 	AdguardApplySettings func() error
 	AdguardSettings      func() ([]byte, error)
+	// Logs in memory; see internal/log2ram. The request to switch says on
+	// or off and nothing else.
+	Log2ramStatus     func() log2ram.Status
+	Log2ramSetEnabled func(enabled bool) error
 }
 
 type peerUIDKey struct{}
@@ -406,12 +436,12 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, struct{}{})
 	})
 	mux.HandleFunc("POST /v1/install-packages", func(w http.ResponseWriter, r *http.Request) {
-		// The request names a feature, from a list of two. No package name
+		// The request names a feature, from a fixed list. No package name
 		// can be sent.
 		var req installPackagesRequest
 		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
 		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&req); err != nil || (req.For != PackagesFirewall && req.For != PackagesUpdates) {
+		if err := decoder.Decode(&req); err != nil || (req.For != PackagesFirewall && req.For != PackagesUpdates && req.For != PackagesLog2ram) {
 			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "the request could not be read"})
 			return
 		}
@@ -566,6 +596,24 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/adguard/apply-settings", func(w http.ResponseWriter, _ *http.Request) {
 		allow(w, adguardTimeout)
 		if err := s.AdguardApplySettings(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, struct{}{})
+	})
+	mux.HandleFunc("GET /v1/log2ram/status", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, s.Log2ramStatus())
+	})
+	mux.HandleFunc("POST /v1/log2ram/enabled", func(w http.ResponseWriter, r *http.Request) {
+		var req log2ramEnabledRequest
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&req); err != nil || req.Enabled == nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "the request could not be read"})
+			return
+		}
+		allow(w, log2ramTimeout)
+		if err := s.Log2ramSetEnabled(*req.Enabled); err != nil {
 			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error()})
 			return
 		}

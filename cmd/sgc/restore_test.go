@@ -24,6 +24,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/fwcontrol"
 	"github.com/Troglobitten/sgc/internal/helper"
 	"github.com/Troglobitten/sgc/internal/layout"
+	"github.com/Troglobitten/sgc/internal/log2ram"
 	"github.com/Troglobitten/sgc/internal/osupdate"
 	"github.com/Troglobitten/sgc/internal/sshd"
 	"github.com/Troglobitten/sgc/internal/store"
@@ -83,6 +84,8 @@ func startRootSide(t *testing.T, stateDir, settings string) (socket string, side
 				side.settings = string(data)
 				return nil
 			},
+			// log2ram as the installer leaves it: installed, switched off.
+			Log2ramStatus:    func() log2ram.Status { return log2ram.Status{Installed: true, SizeBytes: 128 << 20} },
 			SSHStatus:        func() (sshd.Status, error) { return sshd.Status{}, notHere },
 			OSUpdateSettings: func() (osupdate.Settings, error) { return osupdate.Settings{}, notHere },
 		}).Handler(),
@@ -218,6 +221,9 @@ func TestExportFromOneInstallRestoresIntoAFreshOne(t *testing.T) {
 		// And DNS: switched on, as the installer leaves it. Its settings are
 		// AdGuard Home's own file, which the export fetches from the device.
 		`INSERT INTO setting (key, value) VALUES ('adguard.enabled', 'true')`,
+		// And logs in memory: switched on, because the old gateway ran from
+		// an SD card.
+		`INSERT INTO setting (key, value) VALUES ('log2ram.enabled', 'true')`,
 	} {
 		if _, err := oldDB.ExecContext(context.Background(), statement); err != nil {
 			t.Fatal(err)
@@ -336,6 +342,12 @@ func TestExportFromOneInstallRestoresIntoAFreshOne(t *testing.T) {
 	}
 	if enabled, settings := fresh.root.state(); !dns.Enabled || !enabled || settings != dnsSettings {
 		t.Errorf("DNS after the restore: %+v, and AdGuard Home runs on %q", dns, settings)
+	}
+	// Logs in memory was on on the old device. Whether this one runs from an
+	// SD card is not something the export knows: shown, not switched on.
+	var memoryLogs struct{ Installed, Enabled, Wanted bool }
+	if fresh.getJSON("/api/log2ram", &memoryLogs) != http.StatusOK || !memoryLogs.Installed || memoryLogs.Enabled || !memoryLogs.Wanted {
+		t.Errorf("logs in memory after the restore: %+v", memoryLogs)
 	}
 	var history []struct{ Actor, Action, Detail string }
 	fresh.getJSON("/api/audit", &history)

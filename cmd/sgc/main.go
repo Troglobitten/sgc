@@ -55,6 +55,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return sshCommand(ctx, args[1:], stdout, stderr)
 	case "dns":
 		return dnsCommand(ctx, args[1:], stdout, stderr)
+	case "first-install":
+		// Run by the installer; not in the list of commands below.
+		return firstInstallCommand(ctx, args[1:], stdout, stderr)
 	case "doctor":
 		return doctorCommand(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":

@@ -81,6 +81,11 @@ const (
 	ActionDNSSwitchedOn  = "dns.switched_on"
 	ActionDNSSwitchedOff = "dns.switched_off"
 	ActionDNSRestored    = "dns.restored"
+
+	// Logs in memory (log2ram) was switched on or off. Either takes effect
+	// when the device restarts.
+	ActionLog2ramSwitchedOn  = "log2ram.switched_on"
+	ActionLog2ramSwitchedOff = "log2ram.switched_off"
 )
 
 // ActorConsole is recorded for actions taken with the command-line tool.

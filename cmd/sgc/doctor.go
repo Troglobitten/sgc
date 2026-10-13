@@ -55,6 +55,7 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		checkSSH,
 		checkOSUpdates,
 		checkDNS,
+		checkLog2ram,
 		checkPorts,
 	})
 	if doctor.Print(stdout, results) > 0 {

@@ -23,6 +23,9 @@
 #                  switched on), answers and blocks, its own page only behind
 #                  SGC's login, switched off and on, let in by the firewall
 #                  from the home network only
+#   log2ram        logs in memory: there since the installer ran and off;
+#                  refused when the logs do not fit; switched on, which waits
+#                  for a restart (after-restart looks at it in memory)
 #   update-setup   points the installed SGC at a local test update source
 #   update-refused a tampered update is refused and changes nothing
 #   update-good    a genuine update installs from the dashboard's API
@@ -342,6 +345,26 @@ is_blocked() { [ "$(dns_answer "$@")" = 0.0.0.0 ]; }
 gets_no_dns_answer() { ! dns_answer "$@" >/dev/null; }
 # shellcheck disable=SC2317  # called indirectly through check() and wait_for()
 dns_state_has() { [ "$(http GET /api/dns)" = 200 ] && grep -q "$1" /tmp/sgc-test-body; }
+# shellcheck disable=SC2317  # called indirectly through check() and wait_for()
+log2ram_state_has() { [ "$(http GET /api/log2ram)" = 200 ] && grep -q "$1" /tmp/sgc-test-body; }
+# shellcheck disable=SC2317  # called indirectly through check()
+logs_in_memory() { [ "$(findmnt -no FSTYPE /var/log)" = tmpfs ] && [ "$(findmnt -no SOURCE /var/log)" = log2ram ]; }
+# shellcheck disable=SC2317  # called indirectly through check()
+logs_on_disk() { ! findmnt /var/log >/dev/null; }
+# shellcheck disable=SC2317  # called indirectly through check()
+journal_takes_entries() {
+    local mark="sgc-test-mark-$RANDOM" found
+    logger -t sgc-test "$mark"
+    sleep 1
+    found="$(sudo journalctl -t sgc-test --no-pager -o cat)"
+    [[ "$found" == *"$mark"* ]]
+}
+# journal_at_most <megabytes>: the journal on the disk takes no more than that.
+# shellcheck disable=SC2317  # called indirectly through check()
+journal_at_most() { [ "$(sudo du -sm /var/log/journal | cut -f1)" -le "$1" ]; }
+# A file of the test's own in the log folder, of data that cannot be made
+# smaller, to take up room there.
+log_filler=/var/log/sgc-test-filler
 # A name of the test's own that the "owner" blocks in AdGuard Home's page.
 blocked_by_owner=sgc-test-blocked.domain.tld
 
@@ -386,6 +409,14 @@ accepted)
     check "it will start with the machine" systemctl is-enabled --quiet sgc-adguard.service
     if wait_for 60 resolves 127.0.0.1 debian.org; then pass "it answers a name lookup"; else fail "it does not answer a name lookup"; fi
     check "nothing of the download is left behind" sudo sh -c "[ -z \"\$(ls /var/lib/sgc/components 2>/dev/null)\" ]"
+
+    echo "log2ram came with it too, switched off"
+    check "the installer says that it installs log2ram" grep -q '^Installing log2ram from Debian' /tmp/install.log
+    check "and that it is switched off" grep -q '^log2ram is installed and switched off' /tmp/install.log
+    check "Debian's package is installed" test -x /usr/bin/log2ram
+    check "and the program it copies with" test -x /usr/bin/rsync
+    check "it is not part of start-up" sh -c '! systemctl is-enabled --quiet log2ram.service && ! systemctl is-enabled --quiet log2ram-daily.timer'
+    check "the logs are on the disk" logs_on_disk
 
     echo "The installer hands over a one-time setup link"
     link="$(grep -o 'https://[^ ]*/setup#[A-Za-z0-9_-]*' /tmp/install.log)"
@@ -455,6 +486,7 @@ accepted)
     check "it says SGC is already set up instead of a new link" grep -q 'already set up' /tmp/install2.log
     check "no new setup link was printed" sh -c "! grep -q '/setup#' /tmp/install2.log"
     check "and AdGuard Home is not installed a second time" sh -c "! grep -q 'Installing AdGuard Home' /tmp/install2.log"
+    check "nor log2ram" sh -c "! grep -q 'Installing log2ram' /tmp/install2.log"
     check "service is still running" systemctl is-active --quiet sgc
     sleep 1
     expect_status "the earlier sign-in still works" 200 GET /api/health
@@ -971,6 +1003,58 @@ dns)
     check "no unit of SGC's is marked as failed" sh -c "[ -z \"\$(systemctl list-units --failed --plain --no-legend 'sgc*')\" ]"
     ;;
 
+log2ram)
+    expect_status "the state is available" 200 GET /api/log2ram
+    if body_has '"installed":true'; then
+        echo "Logs in memory: installed with SGC, and off"
+    else
+        echo "Logs in memory on a machine updated from a version without it: installed when switched on"
+        check "log2ram is not on the machine" test ! -e /usr/bin/log2ram
+    fi
+    check "it is switched off" body_has '"enabled":false'
+    check "and the logs are on the disk" logs_on_disk
+
+    echo "Logs that do not fit are refused, and nothing is changed"
+    sudo dd if=/dev/urandom of="$log_filler" bs=1M count=100 status=none
+    expect_status "switching on is refused" 502 POST /api/log2ram/enabled '{"enabled":true}'
+    check "the refusal names what is in the way" body_has 'sgc-test-filler (100 MB)'
+    check "log2ram is not part of start-up" sh -c '! systemctl is-enabled --quiet log2ram.service'
+    check "the journal has no limit of SGC's" test ! -e /etc/systemd/journald.conf.d/60-sgc-log2ram.conf
+    check "the unit that refused is not marked as failed" sh -c '! systemctl is-failed --quiet sgc-log2ram-set.service'
+    sudo rm -f "$log_filler"
+
+    echo "Switched on: it waits for a restart"
+    expect_status "switching on" 200 POST /api/log2ram/enabled '{"enabled":true}'
+    check "the page shows it as on, waiting for a restart" sh -c "grep -q '\"enabled\":true' /tmp/sgc-test-body && grep -q '\"active\":false' /tmp/sgc-test-body && grep -q '\"restartNeeded\":true' /tmp/sgc-test-body"
+    check "Debian's package is installed" test -x /usr/bin/log2ram
+    check "log2ram is part of start-up" systemctl is-enabled --quiet log2ram.service
+    check "and so is its daily write to the disk" systemctl is-enabled --quiet log2ram-daily.timer
+    check "nothing was started on the running machine" sh -c '! systemctl is-active --quiet log2ram.service'
+    check "the logs are still on the disk" logs_on_disk
+    check "the journal has its limit" sudo grep -q '^SystemMaxUse=32M$' /etc/systemd/journald.conf.d/60-sgc-log2ram.conf
+    check "and keeps to it" journal_at_most 48
+    check "the journal still takes entries" journal_takes_entries
+    check "SGC is still running" systemctl is-active --quiet sgc
+    expect_status "and answering" 200 GET /api/health
+    expect_in_audit "switching on is in the history" '"action":"log2ram.switched_on"'
+    output="$(sudo sgc doctor 2>&1)"
+    if grep -q 'ok    Logs in memory is switched on, and takes effect when the device restarts' <<<"$output"; then pass "the doctor says that it waits for a restart"; else
+        fail "the doctor does not say that it waits for a restart"
+        indent <<<"$output"
+    fi
+
+    echo "Switched off again before any restart, and on once more"
+    expect_status "switching off" 200 POST /api/log2ram/enabled '{"enabled":false}'
+    check "the page shows it as off, with nothing waiting" sh -c "grep -q '\"enabled\":false' /tmp/sgc-test-body && grep -q '\"restartNeeded\":false' /tmp/sgc-test-body"
+    check "log2ram is not part of start-up" sh -c '! systemctl is-enabled --quiet log2ram.service && ! systemctl is-enabled --quiet log2ram-daily.timer'
+    check "the journal's limit is gone" test ! -e /etc/systemd/journald.conf.d/60-sgc-log2ram.conf
+    check "the journal still takes entries" journal_takes_entries
+    expect_in_audit "switching off is in the history" '"action":"log2ram.switched_off"'
+    expect_status "switching on once more" 200 POST /api/log2ram/enabled '{"enabled":true}'
+    check "log2ram is part of start-up again" systemctl is-enabled --quiet log2ram.service
+    check "no unit of SGC's is marked as failed" sh -c "[ -z \"\$(systemctl list-units --failed --plain --no-legend 'sgc*')\" ]"
+    ;;
+
 old-install)
     echo "The previous release, as it was published"
     if run_installer good >/tmp/install.log; then pass "its installer succeeded"; else
@@ -1246,6 +1330,13 @@ restore)
     expect_status "its settings can be read through SGC" 200 GET /adguard/control/dns_info
     check "it still asks Quad9" body_has 'https://dns.quad9.net/dns-query'
 
+    echo "Logs in memory was on on the old machine; here it waits for the owner"
+    expect_status "the state is available" 200 GET /api/log2ram
+    check "log2ram is installed here, by the installer" body_has '"installed":true'
+    check "the page knows it was on on the old machine" body_has '"wanted":true'
+    check "and did not switch it on unasked" body_has '"enabled":false'
+    check "log2ram is not part of start-up" sh -c '! systemctl is-enabled --quiet log2ram.service'
+
     echo "The maintenance window came back as it was set"
     expect_status "the window's state is available" 200 GET /api/maintenance
     check "it is on and hours away, as on the old machine" window_is true false
@@ -1373,6 +1464,41 @@ after-restart)
     check "and the device does so" body_has '"daily":true'
     check "nothing is wrong with that" body_has '"problem":""'
     check "no restart is needed right after one" body_has '"restartNeeded":false'
+
+    echo "Logs in memory, after the restart"
+    check "the logs are in memory" logs_in_memory
+    expect_status "the state is available" 200 GET /api/log2ram
+    check "the page says so, with nothing waiting" sh -c "grep -q '\"active\":true' /tmp/sgc-test-body && grep -q '\"restartNeeded\":false' /tmp/sgc-test-body && grep -q '\"startFailed\":false' /tmp/sgc-test-body"
+    check "log2ram's own unit did not fail" sh -c '! systemctl is-failed --quiet log2ram.service'
+    check "the daily write to the disk is scheduled" systemctl is-active --quiet log2ram-daily.timer
+    check "writing to the disk works" sudo systemctl reload log2ram.service
+    check "the journal takes entries" journal_takes_entries
+
+    echo "The space in memory nearly full"
+    sudo dd if=/dev/urandom of="$log_filler" bs=1M count=100 status=none
+    check "the page says that it is almost full" log2ram_state_has '"nearlyFull":true'
+    check "and what takes the room" body_has '"name":"sgc-test-filler"'
+    output="$(sudo sgc doctor 2>&1)"
+    if grep -q 'WARN  The logs are in memory, and the space for them is almost full' <<<"$output" && grep -q 'sgc-test-filler (100 MB)' <<<"$output"; then
+        pass "the doctor warns, and names what takes the room"
+    else
+        fail "the doctor does not warn about the nearly full space"
+        indent <<<"$output"
+    fi
+    check "DNS still answers" resolves 127.0.0.1 debian.org
+    expect_status "and so does SGC" 200 GET /api/health
+    check "the journal still takes entries" journal_takes_entries
+    sudo rm -f "$log_filler"
+    check "with room again, the page says so" log2ram_state_has '"nearlyFull":false'
+
+    echo "Switched off: in memory until the next restart. And on again"
+    expect_status "switching off" 200 POST /api/log2ram/enabled '{"enabled":false}'
+    check "off, and still in memory until a restart" sh -c "grep -q '\"enabled\":false' /tmp/sgc-test-body && grep -q '\"active\":true' /tmp/sgc-test-body && grep -q '\"restartNeeded\":true' /tmp/sgc-test-body"
+    check "the logs are still in memory" logs_in_memory
+    check "the daily write to the disk goes on meanwhile" systemctl is-active --quiet log2ram-daily.timer
+    expect_status "switching on again" 200 POST /api/log2ram/enabled '{"enabled":true}'
+    check "on and in memory, with nothing waiting" sh -c "grep -q '\"enabled\":true' /tmp/sgc-test-body && grep -q '\"active\":true' /tmp/sgc-test-body && grep -q '\"restartNeeded\":false' /tmp/sgc-test-body"
+    check "no unit of SGC's is marked as failed" sh -c "[ -z \"\$(systemctl list-units --failed --plain --no-legend 'sgc*')\" ]"
     ;;
 
 cli)
@@ -1394,7 +1520,7 @@ cli)
     for line in "The SGC service is running" "SGC's page answers on port 8443" "The root helper answers" \
         "The firewall is on, and its rules are loaded" "The firewall's rules load at every start-up" \
         "SSH accepts keys only, and nobody logs in as root" "The 1 key(s) added in SGC's page are in place for the account tester" \
-        "Updates for the device install by themselves" "AdGuard Home [0-9.]* runs and answers DNS questions" \
+        "Updates for the device install by themselves" "AdGuard Home [0-9.]* runs and answers DNS questions" "The logs are in memory ([0-9]* MB of 128 MB used)" \
         "The ports SGC needs, now or later, are free"; do
         if echo "$output" | grep -q "ok    $line"; then pass "it says: $line"; else
             fail "it does not say: $line"

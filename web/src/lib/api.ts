@@ -153,6 +153,30 @@ export interface DnsStatus {
   restorePending: boolean
 }
 
+/** Logs in memory (log2ram), as SGC reports it (internal/logcontrol). */
+export interface Log2ramStatus {
+  /** false when the device could not be asked */
+  available: boolean
+  installed: boolean
+  /** switched on: what the switch shows; in effect from the next restart */
+  enabled: boolean
+  /** the logs are in memory right now */
+  active: boolean
+  /** switched and in effect differ until the device restarts */
+  restartNeeded: boolean
+  /** switched on, but at the last start-up the logs did not fit and stayed on the disk */
+  startFailed: boolean
+  /** in memory, and more than four fifths of the space used */
+  nearlyFull: boolean
+  /** on on the device an export came from, not switched on here */
+  wanted: boolean
+  /** the space in memory, and what the logs take */
+  sizeBytes: number
+  usedBytes: number
+  /** what takes most in the log folder, largest first */
+  largest: { name: string; bytes: number }[]
+}
+
 /** The maintenance window, as SGC reports it (internal/maintenance). */
 export interface MaintenanceStatus {
   enabled: boolean
@@ -354,6 +378,10 @@ export const api = {
   /** replaces the installed AdGuard Home with the newer one this SGC brings */
   installDns: () => request<DnsStatus>('POST', '/api/dns/install', {}),
   finishDnsRestore: () => request<DnsStatus>('POST', '/api/dns/restore', {}),
+  log2ram: () => request<Log2ramStatus>('GET', '/api/log2ram'),
+  /** in effect from the next restart; switching on installs log2ram first where it is missing */
+  setLog2ramEnabled: (enabled: boolean) =>
+    request<Log2ramStatus>('POST', '/api/log2ram/enabled', { enabled }),
   confirmFirewall,
   undoFirewall: () => request<FirewallStatus>('POST', '/api/firewall/undo', {}),
   ssh: () => request<SshStatus>('GET', '/api/ssh'),

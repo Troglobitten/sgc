@@ -100,6 +100,11 @@ Invoke-Cases os-updates
 # firewall from inside only.
 Invoke-Cases dns
 
+# Logs in memory (log2ram), which the installer put there switched off:
+# refused when the logs do not fit, then switched on. It takes effect at the
+# restart further down, where after-restart looks at it in memory.
+Invoke-Cases log2ram
+
 # Updating: a tampered update, a genuine one, a signed-but-broken one that
 # must roll back, an older one, and the command-line way.
 Invoke-Cases update-setup

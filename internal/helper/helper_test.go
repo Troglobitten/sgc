@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Troglobitten/sgc/internal/firewall"
+	"github.com/Troglobitten/sgc/internal/log2ram"
 	"github.com/Troglobitten/sgc/internal/osupdate"
 	"github.com/Troglobitten/sgc/internal/sshd"
 	"github.com/Troglobitten/sgc/internal/sshkeys"
@@ -443,6 +444,42 @@ func TestSSHIsRefusedForOtherUsers(t *testing.T) {
 	}
 	if touched {
 		t.Error("an operation ran for a refused user")
+	}
+}
+
+func TestLog2ramOperations(t *testing.T) {
+	var asked []bool
+	var installed []string
+	client := startHelper(t, &Server{
+		AllowedUID:    uint32(os.Getuid()),
+		Log2ramStatus: func() log2ram.Status { return log2ram.Status{Installed: true, Enabled: true, SizeBytes: 128 << 20} },
+		Log2ramSetEnabled: func(enabled bool) error {
+			asked = append(asked, enabled)
+			if !enabled {
+				return errors.New("log2ram could not be taken out of start-up: it did not work")
+			}
+			return nil
+		},
+		InstallPackages: func(feature string) error { installed = append(installed, feature); return nil },
+	})
+	ctx := context.Background()
+	status, err := client.Log2ramStatus(ctx)
+	if err != nil || !status.Installed || !status.Enabled || status.Active || status.SizeBytes != 128<<20 {
+		t.Errorf("status: %+v, %v", status, err)
+	}
+	if err := client.Log2ramSetEnabled(ctx, true); err != nil {
+		t.Errorf("switching on: %v", err)
+	}
+	// The root side's reason reaches the caller in its own words.
+	if err := client.Log2ramSetEnabled(ctx, false); err == nil || !strings.Contains(err.Error(), "it did not work") {
+		t.Errorf("a refusal: %v", err)
+	}
+	if fmt.Sprint(asked) != "[true false]" {
+		t.Errorf("asked of the root side: %v", asked)
+	}
+	// Its packages are one of the features that can be installed, by name.
+	if err := client.InstallPackages(ctx, PackagesLog2ram); err != nil || fmt.Sprint(installed) != "[log2ram]" {
+		t.Errorf("installing its packages: %v, %v", err, installed)
 	}
 }
 

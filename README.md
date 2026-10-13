@@ -2,7 +2,7 @@
 
 A secure front door for your home network, running on a Raspberry Pi or any small Debian machine.
 
-> **Status: early development.** The installer, the admin account, a dashboard with system health, self-updating, export and restore, the device's firewall, SSH keys with "keys only", updates for the device, a maintenance window and DNS (AdGuard Home) work. VPN and the reverse proxy are not built yet.
+> **Status: early development.** The installer, the admin account, a dashboard with system health, self-updating, export and restore, the device's firewall, SSH keys with "keys only", updates for the device, a maintenance window, DNS (AdGuard Home) and logs in memory for SD cards work. VPN and the reverse proxy are not built yet.
 
 ## What it will do
 
@@ -35,7 +35,7 @@ less install.sh
 sudo bash install.sh
 ```
 
-It then has SGC install AdGuard Home, the DNS server, and start it (see [DNS](#dns-adguard-home) below). At the end the installer prints a one-time link. Open it in a browser on your network to create the admin account; you then land on the dashboard. Until SGC has a certificate from Let's Encrypt (a later milestone) it uses a self-signed one, so the browser shows a warning; the installer prints the certificate's fingerprint so you can check you are talking to your own device.
+It then has SGC install AdGuard Home, the DNS server, and start it (see [DNS](#dns-adguard-home) below), and log2ram, which stays switched off (see [Logs in memory](#logs-in-memory-for-a-device-on-an-sd-card)). At the end the installer prints a one-time link. Open it in a browser on your network to create the admin account; you then land on the dashboard. Until SGC has a certificate from Let's Encrypt (a later milestone) it uses a self-signed one, so the browser shows a warning; the installer prints the certificate's fingerprint so you can check you are talking to your own device.
 
 If the link has expired, `sudo sgc setup-link` prints a new one.
 
@@ -112,7 +112,7 @@ On the **System** page it is a switch. Off means that AdGuard Home does not run 
 
 - **A program of its own.** It runs as a service of its own under an account of its own (`sgc-adguard.service`), and keeps answering when SGC is stopped or being updated.
 - **Pinned.** SGC downloads the release from AdGuard's page on GitHub and installs it only if it is exactly the file this version of SGC expects (size and SHA-256, checked by the web process and again by the root side). A newer AdGuard Home comes with a newer SGC.
-- **Its settings are yours.** SGC writes AdGuard Home's settings once, at installation: Quad9 over HTTPS as the upstream, DNSSEC, a query log kept for 7 days, AdGuard's own blocklist. From then on you change them in AdGuard Home's own page and SGC leaves them alone.
+- **Its settings are yours.** SGC writes AdGuard Home's settings once, at installation: Quad9 over HTTPS as the upstream, DNSSEC, a query log kept for 7 days and written in batches of 5000 lookups (fewer writes, for the sake of an SD card), AdGuard's own blocklist. From then on you change them in AdGuard Home's own page and SGC leaves them alone.
 - **One login.** That page listens on the device only and has no login of its own. SGC serves it at `/adguard/` behind its own sign-in.
 - **Answers the home network only.** AdGuard Home runs from the moment SGC is installed, when the firewall is still off, so the settings SGC gives it name who gets answers: private addresses and the device itself (`allowed_clients`). Anyone else gets none. With the firewall on, DNS is let in from home-network addresses only, which is a second lock on the same door. A firewall switched on before AdGuard Home was there has to have its rules made afresh ("Let DNS in"), which you confirm like any firewall change.
 - **systemd-resolved.** On a Debian that runs it (the cloud images do; Raspberry Pi OS does not), it holds the DNS port. Installing AdGuard Home makes it give up its listener (`/etc/systemd/resolved.conf.d/60-sgc-adguard.conf`) and points `/etc/resolv.conf` at the real name servers, so the device's own lookups never depend on AdGuard Home. If the device could not look up names afterwards, both are undone and nothing is installed. Switching DNS off leaves this as it is: the device's own lookups do not go through AdGuard Home either way.
@@ -141,13 +141,29 @@ Inside the window SGC restarts the device only if an installed update asked for 
 
 On the dashboard, SGC's own updates can be set to install by themselves in the same window (off by default). A new version then waits until your device has known it for three days, counted from when the device first saw it, not from a date the release carries. That leaves time for a faulty release to be noticed and withdrawn. With this on, a release reaches the device without a click from you; the wait is what stands between a bad release and your gateway.
 
+### Logs in memory, for a device on an SD card
+
+An SD card wears out from being written to, and logs are written all the time. With **This device runs from an SD card** switched on (System page), [log2ram](https://github.com/azlux/log2ram) keeps the log folder (`/var/log`) in memory and writes it to the card once a day and at shutdown. The price: after a power cut, the log entries since the last write are gone.
+
+- **It comes with SGC, switched off.** The installer installs Debian's own `log2ram` package (and `rsync`, which it copies with). Whether your device runs from an SD card is for you to say; SGC does not try to detect it.
+- **It takes effect at a restart,** both ways. log2ram changes places with the logs at start-up and shutdown, when nothing has them open; SGC never does that on a running device. The page says which state the device is in.
+- **What happens when the logs outgrow the memory set aside for them** (128 MB, log2ram's own setting in `/etc/log2ram.conf`):
+  - Switching on is refused if the logs do not fit in two thirds of that space; the refusal names the largest things in the log folder.
+  - While it is switched on, SGC limits the system journal to a quarter of the space (`/etc/systemd/journald.conf.d/60-sgc-log2ram.conf`), because the journal is the one log that grows by itself. Switching on cuts the journal down to that.
+  - If the space fills up anyway, programs that write logs are told there is no room. The device keeps working: DNS, SGC's page, SSH, `apt` and the device's update tool were all tried with the space full, and updates still installed. (One corner: if Debian's update tool has never run on the device, its first run fails while the space is full, and the next one works.) Log entries are lost until there is room. From four fifths full, the page and `sudo sgc doctor` warn and name what takes the room.
+  - At start-up log2ram compares the logs on the card with its space. If they do not fit, it leaves them on the card for that run. Nothing is lost, the page and the doctor say so, and at the next restart with enough room the logs go into memory again.
+  - SGC does not switch it on where the space would be more than a quarter of the device's memory.
+- **On Raspberry Pi OS** the system journal is already kept in memory (Raspberry Pi ships that setting), so there this only moves the smaller logs in `/var/log`.
+- **AdGuard Home's query log** is not in `/var/log`. AdGuard Home has its own way of sparing the card, which SGC sets at installation: it collects lookups in memory and writes them in batches of 5000 (see [DNS](#dns-adguard-home)).
+- **In the export.** That it was switched on travels with an export. After a restore it is shown, not switched on: whether the new device runs from an SD card is not something the export knows.
+
 ### When something is wrong
 
 ```sh
 sudo sgc doctor
 ```
 
-checks every part of SGC on the machine (the service, its page, the root helper, storage, the clock, the firewall, SSH, the device's updates, AdGuard Home, the ports SGC needs) and says what to do about each problem it finds. It asks the machine directly, so it also works when SGC's page does not answer.
+checks every part of SGC on the machine (the service, its page, the root helper, storage, the clock, the firewall, SSH, the device's updates, AdGuard Home, logs in memory, the ports SGC needs) and says what to do about each problem it finds. It asks the machine directly, so it also works when SGC's page does not answer.
 
 ### How releases are verified
 
@@ -192,6 +208,7 @@ To work on the interface, run `sgc serve --dev-insecure-http --state-dir <folder
 | `sgc-helper ssh` | root without any capabilities, as one-off systemd units | Installs SSH keys and settings, keeps a restricting change only if a login with a key is seen, undoes it otherwise; puts the confirmed settings in place before the SSH server starts |
 | `sgc-helper packages` | root, as a one-off systemd unit | Installs the Debian packages one of SGC's features needs, from lists fixed in the program (nftables for the firewall, unattended-upgrades for the device's updates) |
 | `sgc-helper adguard` | root, as one-off systemd units | Installs the pinned release of AdGuard Home that the web process downloaded, after checking it again; puts the settings from a restored export in place; copies its settings for an export (that unit can read files and do nothing else). Switching it on and off is done by the helper itself, which asks systemd |
+| `sgc-helper log2ram` | root without any capabilities, as a one-off systemd unit | Switches log2ram on or off for the next restart; before switching on, checks that the logs fit in memory and limits the system journal |
 | AdGuard Home | its own unprivileged user, in a systemd sandbox | Answers DNS; may bind port 53 and write to its own folder, nothing else |
 | `sgc-helper os-updates` | root, as one-off systemd units | Writes SGC's one file among apt's settings; runs Debian's update tool to look for the device's updates or to install them |
 | `nft -f /etc/sgc/firewall.nft` | systemd, early at start-up | Loads the confirmed firewall rules; uses none of SGC's own programs |

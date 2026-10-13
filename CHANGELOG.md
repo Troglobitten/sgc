@@ -2,6 +2,20 @@
 
 What changed in each version of SGC, newest first. The section for a version is what SGC shows before you update to it, so it is written for the person running SGC, not for developers.
 
+## 0.13.0
+
+- Logs in memory, for a device that runs from an SD card: a new switch on the System page, under "This device". Switched on, the device's logs are kept in memory and written to the card once a day and at shutdown, instead of all the time, which spares the card. It uses log2ram, from Debian's own archive.
+- It comes with SGC, switched off: the installer installs it, and you switch it on if your device runs from an SD card. SGC does not try to detect that. A device that updates from an earlier version gets log2ram when you switch it on.
+- Switching it on or off takes effect when the device restarts; the page says so until then. After a power cut, the log entries since the last write to the card are gone.
+- It is made to stay stable when the logs get too big for the memory set aside for them (128 MB):
+  - Before switching on, SGC checks that the logs fit with room to spare. If they do not, it refuses, changes nothing, and names what is in the way.
+  - While it is switched on, the system journal, the one log that grows by itself, is limited to a quarter of that space. Switching on removes older journal entries beyond that.
+  - If the space fills up all the same, the device keeps working. This was tried with DNS, SGC's page, SSH and installing updates. Log entries get lost until there is room again. The page and `sudo sgc doctor` warn from four fifths full, and name what takes the room.
+  - If the logs do not fit at a restart, they stay on the card for that run and nothing is lost; the page says so. Once there is room, they go into memory again by themselves at the next restart.
+  - SGC does not switch it on where it would take more than a quarter of the device's memory.
+- AdGuard Home's query log is easier on an SD card as well. A newly installed AdGuard Home collects 5000 lookups in memory before writing them to its log in one go, instead of 1000. That is a fixed number of lookups, so it cannot outgrow the memory. After a power cut the lookups not yet written are missing from the log; a normal stop or restart writes them. An AdGuard Home that is already installed keeps its settings.
+- Good to know: on Raspberry Pi OS the system journal is already kept in memory, by a setting Raspberry Pi ships. There, "logs in memory" only moves the smaller logs.
+
 ## 0.12.0
 
 - DNS now comes with SGC. The installer installs AdGuard Home and starts it, so a new device answers the name lookups of your network from the start. The installer tells you so. To use it, enter the device's address as the DNS server in your router, or on single devices.

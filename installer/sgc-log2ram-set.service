@@ -1,0 +1,45 @@
+[Unit]
+Description=Server Gateway Control: switch "logs in memory" (log2ram) on or off
+Documentation=https://github.com/Troglobitten/sgc
+# Never refused for having been started often (see sgc-firewall-change.service).
+StartLimitIntervalSec=0
+
+[Service]
+# Switching on: checks that the device's logs fit in log2ram's space in
+# memory with room to spare, limits the system journal so that they keep
+# fitting, and makes log2ram part of start-up. Switching off takes it out of
+# start-up and lifts the limit. Either way log2ram itself is neither started
+# nor stopped: that happens at the next restart of the device. See
+# internal/log2ram. Started by the helper when the owner chooses in SGC's
+# page; the request says on or off and nothing else.
+Type=oneshot
+ExecStart=/opt/sgc/current/sgc-helper log2ram set
+TimeoutStartSec=180
+
+# --- Sandboxing ---------------------------------------------------------
+# Root, because the journal and its settings belong to root, but with no
+# capabilities at all. It can write to the log folder (to cut the journal
+# down) and to systemd's settings folder (its one file for the journal),
+# nowhere else, and it cannot open network connections. Units are switched
+# on and off, and the journal is restarted, by asking systemd.
+ReadWritePaths=/var/log /etc/systemd
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@resources
