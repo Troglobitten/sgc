@@ -12,6 +12,15 @@
 // and the real authority counts failures and locks a domain out for a while
 // after a handful of them. The test authority's certificate is thrown away.
 //
+// Both proofs are published under the same name, and that needs time. The
+// owner's first real attempt (2026-10-13) failed for the lack of it: the
+// test authority had issued, SGC removed its proof, published the real
+// authority's, saw it at Zone.eu's name servers and asked Let's Encrypt to
+// look, forty seconds later. Let's Encrypt, asking from other places in the
+// world, still got the old proof. So SGC now waits twice: a while after the
+// trial, until the old proof is forgotten everywhere; and, in every attempt,
+// a little after the name servers it can ask show the new one.
+//
 // The ACME protocol itself is the lego library's. This package tells it what
 // to ask for, hands it the Zone.eu records, and keeps the results: the
 // certificate with its private key, and the accounts at the authorities, are
@@ -31,6 +40,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -43,6 +53,7 @@ import (
 	"github.com/go-acme/lego/v4/lego"
 	legolog "github.com/go-acme/lego/v4/log"
 	"github.com/go-acme/lego/v4/registration"
+	"github.com/miekg/dns"
 
 	"github.com/Troglobitten/sgc/internal/audit"
 	"github.com/Troglobitten/sgc/internal/store"
@@ -114,10 +125,21 @@ type Config struct {
 	// DNSResolver, if set, is asked whether a record is visible, instead of
 	// the zone's own name servers. For tests, whose zones do not exist.
 	DNSResolver string
+	// ResolvConf is the system's list of DNS servers ("" for the usual
+	// place). It is read anew for every attempt.
+	ResolvConf string
 	// How long to wait for a record to show at the name servers, and how
 	// often to look.
 	PropagationTimeout  time.Duration
 	PropagationInterval time.Duration
+	// Settle is how much longer to wait once the name servers SGC can ask
+	// show the record: the authority asks from several places in the world,
+	// and name servers far away can be behind.
+	Settle time.Duration
+	// TrialGap is the wait between the trial and the real request. Both
+	// proofs go under the same name, and the trial's has to be forgotten by
+	// every name server and every cache before the real one is looked for.
+	TrialGap time.Duration
 	// The button is refused for this long after a failure, and after a
 	// certificate was issued. The authority counts both.
 	RetryAfterFailure time.Duration
@@ -162,7 +184,8 @@ type Certificate struct {
 // Progress is an attempt that is running.
 type Progress struct {
 	Kind string `json:"kind"`
-	// Phase is "trial" while the test authority is asked, then "real".
+	// Phase is "trial" while the test authority is asked, "pause" while SGC
+	// waits for the trial's proof to be forgotten, then "real".
 	Phase string    `json:"phase"`
 	Since time.Time `json:"since"`
 	Log   []string  `json:"log"`
@@ -485,9 +508,14 @@ func (s *Service) issue(ctx context.Context, kind string, account Account) (*x50
 			return nil, &phaseError{trial: true, err: err}
 		}
 		s.say("The test authority issued a certificate, which is thrown away: the set-up works.")
-		s.mu.Lock()
-		s.running.Phase = "real"
-		s.mu.Unlock()
+		if s.cfg.TrialGap > 0 {
+			s.phase("pause")
+			s.say("Waiting " + plainDuration(s.cfg.TrialGap) + " before asking for the real certificate. The trial's proof was under the same name, and every name server, also the ones far away, has to have forgotten it.")
+			if err := wait(ctx, s.cfg.TrialGap); err != nil {
+				return nil, err
+			}
+		}
+		s.phase("real")
 	}
 	s.say("Asking the certificate authority for the certificate.")
 	resource, err := s.obtain(ctx, s.cfg.Directory, account, zoneClient, names)
@@ -613,13 +641,20 @@ func (s *Service) obtainOnce(ctx context.Context, directory string, account Acco
 		return nil, err
 	}
 	options := []dns01.ChallengeOption{
-		// When the attempt is told to end, the wait for the record ends: what
-		// follows is a request to the authority, which then fails at once.
 		dns01.WrapPreCheck(func(_, fqdn, value string, check dns01.PreCheckFunc) (bool, error) {
+			// When the attempt is told to end, the wait for the record
+			// ends: what follows is a request to the authority, which then
+			// fails at once.
 			if ctx.Err() != nil {
 				return true, nil
 			}
-			return check(fqdn, value)
+			shown, err := check(fqdn, value)
+			if !shown || err != nil || s.cfg.Settle <= 0 {
+				return shown, err
+			}
+			s.say("The proof shows at the name servers. Waiting " + plainDuration(s.cfg.Settle) + " more, for name servers further away.")
+			wait(ctx, s.cfg.Settle)
+			return true, nil
 		}),
 	}
 	if s.cfg.DNSResolver != "" {
@@ -627,6 +662,14 @@ func (s *Service) obtainOnce(ctx context.Context, directory string, account Acco
 			dns01.AddRecursiveNameservers([]string{s.cfg.DNSResolver}),
 			dns01.DisableAuthoritativeNssPropagationRequirement(),
 			dns01.RecursiveNSsPropagationRequirement())
+	} else if servers := systemResolvers(s.cfg.ResolvConf); len(servers) > 0 {
+		// lego reads the system's list of DNS servers once, when the program
+		// starts, and that list changes: on a device with systemd-resolved
+		// it does on the day AdGuard Home takes over port 53, after which
+		// the old entry is AdGuard Home itself. So it is read for every
+		// attempt. Nothing SGC does to keep its certificate may depend on
+		// AdGuard Home running.
+		options = append(options, dns01.AddRecursiveNameservers(servers))
 	}
 	if err := client.Challenge.SetDNS01Provider(&records{ctx: ctx, service: s, zone: zoneClient, domain: account.Domain}, options...); err != nil {
 		return nil, err
@@ -639,6 +682,56 @@ func (s *Service) obtainOnce(ctx context.Context, directory string, account Acco
 		return nil, err
 	}
 	return resource, nil
+}
+
+// systemResolvers returns the DNS servers the device itself asks, as
+// "address:port", or nothing if the list cannot be read.
+func systemResolvers(path string) []string {
+	if path == "" {
+		path = "/etc/resolv.conf"
+	}
+	config, err := dns.ClientConfigFromFile(path)
+	if err != nil {
+		return nil
+	}
+	var servers []string
+	for _, server := range config.Servers {
+		servers = append(servers, net.JoinHostPort(server, config.Port))
+	}
+	return servers
+}
+
+// wait lets time pass, unless ctx ends first.
+func wait(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// plainDuration writes a wait the way it is said: "2 minutes", "45 seconds".
+func plainDuration(d time.Duration) string {
+	unit, count := "second", int(d.Round(time.Second)/time.Second)
+	if d >= time.Minute && d%time.Minute == 0 {
+		unit, count = "minute", int(d/time.Minute)
+	}
+	if count != 1 {
+		unit += "s"
+	}
+	return fmt.Sprintf("%d %s", count, unit)
+}
+
+// phase says which part of an attempt is under way.
+func (s *Service) phase(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.running != nil {
+		s.running.Phase = name
+	}
 }
 
 // acmeUser is SGC as an authority's account holder. No e-mail address: Let's
@@ -899,6 +992,11 @@ func words(err error) string {
 		return "Zone.eu could not be reached, so the proof could not be published. Does this device reach the internet?"
 	case errors.As(err, &problem) && strings.HasSuffix(problem.Type, ":rateLimited"):
 		return where + " has reached its limit of requests for this domain: " + oneLine(problem.Detail) + " Try again later; SGC does not retry by itself before then."
+	case errors.As(err, &problem) && strings.Contains(problem.Detail, "TXT record"):
+		// "Incorrect TXT record ... found at ..." or "No TXT record found
+		// at ...": the proof was published, and where the authority looked
+		// it was not there yet, or an older one still was.
+		return where + " did not find the proof in the domain's DNS: " + oneLine(problem.Detail) + " SGC had published it, and the name servers it could ask showed it; others had not caught up. Trying again later usually works."
 	case errors.As(err, &problem):
 		return where + " refused: " + oneLine(problem.Detail)
 	case strings.Contains(text, "propagation") || strings.Contains(text, "time limit exceeded"):

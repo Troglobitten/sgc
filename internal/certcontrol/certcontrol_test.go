@@ -11,10 +11,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-acme/lego/v4/acme"
 
 	"github.com/Troglobitten/sgc/internal/audit"
 	"github.com/Troglobitten/sgc/internal/certcontrol/acmetest"
@@ -45,26 +48,48 @@ type env struct {
 	offset time.Duration
 	// The account SGC is given; nil is "no domain set up".
 	account *Account
+	options options
+	// cancel stops the service; stopped is closed when it has stopped.
+	cancel  func()
+	stopped chan struct{}
 }
 
-func newEnv(t *testing.T) *env {
+// options are what differs from one small world to the next.
+type options struct {
+	// The authorities see the name servers as they were this long ago, as
+	// from the other side of the world. SGC sees them as they are.
+	authorityLag time.Duration
+	settle       time.Duration
+	trialGap     time.Duration
+}
+
+func newEnv(t *testing.T) *env { return newEnvWith(t, options{}) }
+
+func newEnvWith(t *testing.T, o options) *env {
 	t.Helper()
 	db, err := store.Open(context.Background(), filepath.Join(t.TempDir(), layout.DatabaseFile))
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &env{t: t, db: db, zone: zonetest.New(username, apiKey, domain), account: &Account{Domain: domain, Username: username, APIKey: apiKey}}
+	e := &env{t: t, db: db, zone: zonetest.New(username, apiKey, domain), account: &Account{Domain: domain, Username: username, APIKey: apiKey}, options: o}
 	e.zoneAPI = httptest.NewServer(e.zone)
 	dnsAddress, stopDNS, err := e.zone.ListenDNS("127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.trial, e.real = acmetest.New(dnsAddress), acmetest.New(dnsAddress)
+	authorityDNS, stopFarDNS := dnsAddress, func() {}
+	if o.authorityLag > 0 {
+		if authorityDNS, stopFarDNS, err = e.zone.ListenLaggingDNS("127.0.0.1:0", o.authorityLag); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.trial, e.real = acmetest.New(authorityDNS), acmetest.New(authorityDNS)
 	trialServer, realServer := httptest.NewTLSServer(e.trial), httptest.NewTLSServer(e.real)
 
 	e.service = New(e.config(trialServer, realServer, dnsAddress))
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := make(chan struct{})
+	e.cancel, e.stopped = cancel, stopped
 	go func() { e.service.Run(ctx); close(stopped) }()
 	// Run has to have started before anything is requested.
 	deadline := time.Now().Add(5 * time.Second)
@@ -87,6 +112,7 @@ func newEnv(t *testing.T) *env {
 		realServer.Close()
 		e.zoneAPI.Close()
 		stopDNS()
+		stopFarDNS()
 		db.Close()
 	})
 	return e
@@ -108,6 +134,7 @@ func (e *env) config(trialServer, realServer *httptest.Server, dnsAddress string
 		AuthorityHTTP:      realServer.Client(),
 		DNSResolver:        dnsAddress,
 		PropagationTimeout: 3 * time.Second, PropagationInterval: 100 * time.Millisecond,
+		Settle: e.options.settle, TrialGap: e.options.trialGap,
 		RetryAfterFailure: 5 * time.Minute, RenewAgainAfter: time.Hour,
 		Now: func() time.Time { return time.Now().Add(e.offset) },
 	}
@@ -453,6 +480,155 @@ func TestRenewingByItself(t *testing.T) {
 	e.service.Tick(ctx)
 	if s := e.finished(); !s.LastAttempt.OK || s.Certificate.Serial == second.Certificate.Serial {
 		t.Errorf("the next try: %+v", s.LastAttempt)
+	}
+}
+
+// What the owner's first real attempt ran into: the name servers nearby show
+// the proof, the authority asks from far away and does not see it yet.
+func TestNameServersFarAwayAreBehind(t *testing.T) {
+	// Asked at once, the authority finds nothing, and refuses.
+	hasty := newEnvWith(t, options{authorityLag: 800 * time.Millisecond})
+	if err := hasty.request(true); err != nil {
+		t.Fatal(err)
+	}
+	if s := hasty.finished(); s.LastAttempt.OK || s.Certificate != nil {
+		t.Fatalf("an authority that could not see the proof issued all the same: %+v", s.LastAttempt)
+	}
+	if hasty.zone.Records() != 0 {
+		t.Errorf("records left at Zone.eu after the failure: %d", hasty.zone.Records())
+	}
+
+	// With a wait after the proof shows nearby, it works: the trial and the
+	// real request, one after the other under the same name.
+	patient := newEnvWith(t, options{authorityLag: 800 * time.Millisecond, settle: 1500 * time.Millisecond})
+	if err := patient.request(true); err != nil {
+		t.Fatal(err)
+	}
+	s := patient.finished()
+	if !s.LastAttempt.OK || s.Certificate == nil {
+		t.Fatalf("with a wait for the name servers far away: %+v", s.LastAttempt)
+	}
+	if steps := strings.Join(s.LastAttempt.Log, "\n"); strings.Count(steps, "Waiting 2 seconds more, for name servers further away") != 2 {
+		t.Errorf("the wait is not in the steps of both requests:\n%s", steps)
+	}
+}
+
+func TestThePauseBetweenTheTrialAndTheRealRequest(t *testing.T) {
+	e := newEnvWith(t, options{trialGap: 1500 * time.Millisecond})
+	if err := e.request(true); err != nil {
+		t.Fatal(err)
+	}
+	paused := false
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		s := e.status()
+		if s.Running == nil {
+			break
+		}
+		if s.Running.Phase == "pause" {
+			paused = true
+			// The trial is over, and the real authority has not been asked.
+			if e.trial.Orders() != 1 || e.real.Orders() != 0 {
+				t.Fatalf("during the pause: %d asked of the test authority, %d of the real one", e.trial.Orders(), e.real.Orders())
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the attempt never ended")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	s := e.status()
+	if !paused || !s.LastAttempt.OK || s.Certificate == nil {
+		t.Fatalf("paused %v; the attempt: %+v", paused, s.LastAttempt)
+	}
+	if steps := strings.Join(s.LastAttempt.Log, "\n"); !strings.Contains(steps, "Waiting 2 seconds before asking for the real certificate") {
+		t.Errorf("the pause is not in the steps:\n%s", steps)
+	}
+
+	// A renewal has no trial and no pause.
+	e.offset = 2 * time.Hour
+	if err := e.request(false); err != nil {
+		t.Fatal(err)
+	}
+	if again := e.finished(); !again.LastAttempt.OK || strings.Contains(strings.Join(again.LastAttempt.Log, "\n"), "before asking for the real certificate") {
+		t.Errorf("the renewal: %+v", again.LastAttempt)
+	}
+}
+
+func TestStoppingSGCDuringThePause(t *testing.T) {
+	e := newEnvWith(t, options{trialGap: time.Minute})
+	if err := e.request(true); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		if s := e.status(); s.Running != nil && s.Running.Phase == "pause" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the pause never came")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	asked := time.Now()
+	e.cancel()
+	<-e.stopped
+	if took := time.Since(asked); took > 5*time.Second {
+		t.Errorf("stopping took %v", took)
+	}
+	var last Attempt
+	if found, err := e.service.readJSON(context.Background(), SettingAttempt, &last); err != nil || !found || last.OK || !strings.Contains(last.Message, "SGC was stopped") {
+		t.Errorf("how the attempt is remembered: %+v, %v", last, err)
+	}
+	if e.real.Orders() != 0 {
+		t.Error("the real authority was asked")
+	}
+}
+
+func TestTheDevicesOwnDNSServersAreReadForEveryAttempt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resolv.conf")
+	list := func(content string) string {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return strings.Join(systemResolvers(path), " ")
+	}
+	// As on a device with systemd-resolved before AdGuard Home was installed.
+	if got := list("nameserver 127.0.0.53\noptions edns0 trust-ad\nsearch home\n"); got != "127.0.0.53:53" {
+		t.Errorf("the first list: %s", got)
+	}
+	// And after: the servers the network hands out.
+	if got := list("# This is /run/systemd/resolve/resolv.conf\nnameserver 192.168.1.1\nnameserver 192.168.1.2\n"); got != "192.168.1.1:53 192.168.1.2:53" {
+		t.Errorf("the list after it changed: %s", got)
+	}
+	os.Remove(path)
+	if got := systemResolvers(path); got != nil {
+		t.Errorf("without a list: %v", got)
+	}
+}
+
+func TestWhatGoesWrongIsSaidInWords(t *testing.T) {
+	// What Let's Encrypt answered on 2026-10-13, with a made-up domain.
+	old := &acme.ProblemDetails{Type: "urn:ietf:params:acme:error:unauthorized", Detail: `Incorrect TXT record "the-trials-proof" found at _acme-challenge.domain.tld`}
+	got := words(&phaseError{err: old})
+	if !strings.HasPrefix(got, "Let's Encrypt did not find the proof in the domain's DNS: Incorrect TXT record") || !strings.Contains(got, "Trying again later usually works") {
+		t.Errorf("an older proof still being served: %s", got)
+	}
+	if got := words(&phaseError{trial: true, err: old}); !strings.HasPrefix(got, "Let's Encrypt's test authority did not find the proof") {
+		t.Errorf("the same from the test authority: %s", got)
+	}
+	limited := &acme.ProblemDetails{Type: "urn:ietf:params:acme:error:rateLimited", Detail: "too many failed authorizations (5) for \"domain.tld\" in the last 1h0m0s"}
+	if got := words(&phaseError{err: limited}); !strings.Contains(got, "has reached its limit") {
+		t.Errorf("a limit: %s", got)
+	}
+	if got := words(context.Canceled); !strings.Contains(got, "SGC was stopped") {
+		t.Errorf("stopped: %s", got)
+	}
+	for d, want := range map[time.Duration]string{2 * time.Minute: "2 minutes", time.Minute: "1 minute", 90 * time.Second: "90 seconds", 1500 * time.Millisecond: "2 seconds", time.Second: "1 second"} {
+		if got := plainDuration(d); got != want {
+			t.Errorf("%v is written as %q, want %q", d, got, want)
+		}
 	}
 }
 

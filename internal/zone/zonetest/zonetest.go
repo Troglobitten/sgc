@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/miekg/dns"
 )
@@ -40,6 +41,15 @@ type Server struct {
 	// The name servers do not show TXT records (as when a change has not
 	// reached them yet).
 	hideTXT bool
+	// What the TXT records were after each change, for name servers that
+	// are behind.
+	history []snapshot
+}
+
+// snapshot is the TXT records as they were from a moment on.
+type snapshot struct {
+	from time.Time
+	txt  map[string][]record
 }
 
 // New returns a stand-in for an account with the given DNS zones, all active.
@@ -197,6 +207,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.nextID++
 		created := record{ID: strconv.Itoa(s.nextID), Name: body.Name, Destination: body.Destination}
 		s.txt[domain] = append(s.txt[domain], created)
+		s.remember()
 		answer(http.StatusCreated, []record{created})
 
 	case len(parts) == 4 && parts[2] == "txt" && r.Method == http.MethodDelete:
@@ -204,6 +215,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for i, existing := range records {
 			if existing.ID == parts[3] {
 				s.txt[domain] = append(records[:i:i], records[i+1:]...)
+				s.remember()
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}
@@ -215,10 +227,43 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// remember notes what the TXT records are from now on. The caller holds the lock.
+func (s *Server) remember() {
+	copied := make(map[string][]record, len(s.txt))
+	for domain, records := range s.txt {
+		copied[domain] = append([]record(nil), records...)
+	}
+	s.history = append(s.history, snapshot{from: time.Now(), txt: copied})
+}
+
+// recordsAt returns the TXT records as they were at a moment. The caller
+// holds the lock.
+func (s *Server) recordsAt(moment time.Time) map[string][]record {
+	for i := len(s.history) - 1; i >= 0; i-- {
+		if !s.history[i].from.After(moment) {
+			return s.history[i].txt
+		}
+	}
+	return nil
+}
+
 // ServeDNS answers as the zones' name servers would: TXT questions from the
 // records made through the API, anything else about a name in a zone with
 // "nothing of that kind", and names outside the zones with "no such name".
-func (s *Server) ServeDNS(w dns.ResponseWriter, request *dns.Msg) {
+func (s *Server) ServeDNS(w dns.ResponseWriter, request *dns.Msg) { s.serveDNS(w, request, 0) }
+
+// behind is the name servers as seen from far away: they show what the
+// records were a while ago.
+type behind struct {
+	server *Server
+	lag    time.Duration
+}
+
+func (b behind) ServeDNS(w dns.ResponseWriter, request *dns.Msg) {
+	b.server.serveDNS(w, request, b.lag)
+}
+
+func (s *Server) serveDNS(w dns.ResponseWriter, request *dns.Msg, lag time.Duration) {
 	reply := new(dns.Msg)
 	reply.SetReply(request)
 	reply.Authoritative = true
@@ -237,8 +282,12 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, request *dns.Msg) {
 			inZone = true
 		}
 	}
+	shown := s.txt
+	if lag > 0 {
+		shown = s.recordsAt(time.Now().Add(-lag))
+	}
 	if inZone && question.Qtype == dns.TypeTXT && !s.hideTXT {
-		for _, records := range s.txt {
+		for _, records := range shown {
 			for _, r := range records {
 				if strings.EqualFold(r.Name, name) {
 					reply.Answer = append(reply.Answer, &dns.TXT{
@@ -261,18 +310,45 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, request *dns.Msg) {
 // port 0 picks a free one), over UDP and TCP. It returns the address in use
 // and a function that stops both.
 func (s *Server) ListenDNS(address string) (string, func(), error) {
-	packets, err := net.ListenPacket("udp", address)
-	if err != nil {
-		return "", nil, err
+	return listenDNS(address, s)
+}
+
+// ListenLaggingDNS serves name servers that are behind by the given time:
+// they show what the records were that long ago. This is how the name
+// servers can look to a certificate authority on the other side of the
+// world, while the ones nearby are up to date.
+func (s *Server) ListenLaggingDNS(address string, lag time.Duration) (string, func(), error) {
+	return listenDNS(address, behind{server: s, lag: lag})
+}
+
+func listenDNS(address string, handler dns.Handler) (string, func(), error) {
+	// The same port for UDP and for TCP, which is what a client falls back
+	// to. A port the system picks as free for UDP can be taken for TCP (by
+	// another test running at the same moment, for one), so when the choice
+	// is the system's, it is asked again until a port is free for both.
+	attempts := 1
+	if _, port, err := net.SplitHostPort(address); err == nil && port == "0" {
+		attempts = 50
 	}
-	// The same port for TCP, which is what a client falls back to.
-	listener, err := net.Listen("tcp", packets.LocalAddr().String())
-	if err != nil {
+	var (
+		packets  net.PacketConn
+		listener net.Listener
+		err      error
+	)
+	for ; attempts > 0; attempts-- {
+		if packets, err = net.ListenPacket("udp", address); err != nil {
+			return "", nil, err
+		}
+		if listener, err = net.Listen("tcp", packets.LocalAddr().String()); err == nil {
+			break
+		}
 		packets.Close()
+	}
+	if err != nil {
 		return "", nil, err
 	}
-	udp := &dns.Server{PacketConn: packets, Handler: s}
-	tcp := &dns.Server{Listener: listener, Handler: s}
+	udp := &dns.Server{PacketConn: packets, Handler: handler}
+	tcp := &dns.Server{Listener: listener, Handler: handler}
 	go udp.ActivateAndServe()
 	go tcp.ActivateAndServe()
 	stop := func() {

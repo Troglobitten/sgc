@@ -73,6 +73,18 @@ func newCertControl(db *sql.DB, auditLog *audit.Log, log *slog.Logger, domain *d
 		// Zone.eu's name servers show a change within minutes at most.
 		PropagationTimeout:  10 * time.Minute,
 		PropagationInterval: 10 * time.Second,
+		// Let's Encrypt asks from several places in the world, and name
+		// servers far away can be behind the ones nearby. How far is not
+		// known: a change took 40 to 50 seconds to show nearby, and without
+		// any wait the first real attempt failed (see internal/certcontrol).
+		// So SGC waits two minutes after it sees the proof itself, a few
+		// times what was measured, and two minutes between the trial and the
+		// real request, whose proofs go under the same name: Let's Encrypt's
+		// own resolvers remember an answer for up to a minute. A failure
+		// costs the owner a quarter of an hour and counts against Let's
+		// Encrypt's limit; waiting costs nothing but time nobody watches.
+		Settle:   2 * time.Minute,
+		TrialGap: 2 * time.Minute,
 		// Let's Encrypt allows five failed proofs an hour, and five
 		// certificates for the same names a week. The button stays well
 		// below both. (Renewals that SGC makes by itself are not held back
@@ -105,6 +117,7 @@ func newCertControl(db *sql.DB, auditLog *audit.Log, log *slog.Logger, domain *d
 	cfg.AuthorityHTTP = &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}}
 	// A stand-in answers at once and counts nothing.
 	cfg.PropagationTimeout, cfg.PropagationInterval = 30*time.Second, 500*time.Millisecond
+	cfg.Settle, cfg.TrialGap = time.Second, time.Second
 	cfg.RetryAfterFailure, cfg.RenewAgainAfter = 0, 0
 	return certcontrol.New(cfg)
 }
