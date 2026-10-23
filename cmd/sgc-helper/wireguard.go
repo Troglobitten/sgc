@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -54,7 +55,15 @@ func vpnStatus() (any, error) {
 
 // applyVPN hands a configuration to the VPN's program and waits for how it
 // went. The program checks it again.
+// vpnChanges keeps changes to the VPN one at a time: they share the request
+// file, and the VPN's program answers the one it finds there. Two at once
+// (seen on the test machine, switching on while SGC brought the VPN up to
+// date) left the first waiting for an answer that never came.
+var vpnChanges sync.Mutex
+
 func applyVPN(cfg wireguard.Config) error {
+	vpnChanges.Lock()
+	defer vpnChanges.Unlock()
 	paths := wireguard.DefaultPaths()
 	id := time.Now().UnixNano()
 	data, err := json.Marshal(wireguard.Request{ID: id, Config: cfg})

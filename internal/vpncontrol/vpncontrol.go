@@ -101,6 +101,9 @@ type Service struct {
 	applied   [32]byte
 	applying  bool
 	lastUsage time.Time
+	// changes keeps Apply one at a time, from building the configuration to
+	// the answer, so that what is sent last is what the database says last.
+	changes sync.Mutex
 }
 
 func New(cfg Config) *Service {
@@ -719,6 +722,8 @@ func (s *Service) Kick() {
 // Apply sends the configuration now (unless it is what was last sent and
 // the VPN is up).
 func (s *Service) Apply(ctx context.Context) error {
+	s.changes.Lock()
+	defer s.changes.Unlock()
 	cfg, err := s.Build(ctx)
 	if err != nil {
 		return err

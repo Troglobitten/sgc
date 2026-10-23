@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/user"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/Troglobitten/sgc/internal/components"
@@ -50,6 +51,9 @@ func proxyStatus() proxy.Status {
 }
 
 func installProxy() error {
+	// Installing writes the same folders and may restart Traefik.
+	proxyChanges.Lock()
+	defer proxyChanges.Unlock()
 	if err := runSystemctl("start", proxyInstallUnit); err != nil {
 		runSystemctl("reset-failed", proxyInstallUnit)
 		return errors.New(lastJournalLine(proxyInstallUnit))
@@ -60,7 +64,15 @@ func installProxy() error {
 // applyProxy hands a configuration to the job that puts it in place, and
 // waits for the job. The configuration was checked by internal/helper; the
 // job checks it again, as it does not trust this file either.
+// proxyChanges keeps changes to the proxy one at a time. Two at once would
+// share the request file, and a second `systemctl start` of the job while
+// it runs joins that job and reports success without doing its own work:
+// the second configuration would count as in place and never be.
+var proxyChanges sync.Mutex
+
 func applyProxy(cfg proxy.Config) error {
+	proxyChanges.Lock()
+	defer proxyChanges.Unlock()
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		return err
