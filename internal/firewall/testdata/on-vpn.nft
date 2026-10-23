@@ -1,0 +1,55 @@
+#!/usr/sbin/nft -f
+# Written by SGC. Do not edit: SGC replaces this file.
+# sgc-config: {"enabled":true,"sshPorts":[22],"webPort":8443,"dns":true,"proxy":true,"vpnPort":51820}
+
+destroy table inet sgc
+table inet sgc {
+	set inside4 {
+		type ipv4_addr
+		flags interval
+		elements = { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 }
+	}
+	set inside6 {
+		type ipv6_addr
+		flags interval
+		elements = { fc00::/7, fe80::/10 }
+	}
+	counter refused {
+	}
+	chain input {
+		type filter hook input priority filter; policy drop;
+		# Answers to what this machine itself asked for.
+		ct state established,related accept
+		ct state invalid drop
+		# The machine talking to itself.
+		iif "lo" accept
+		# IPv6 does not work without these; they never cross a router.
+		icmpv6 type { nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, mld-listener-query } accept
+		# Getting and keeping an address from the router (DHCP).
+		udp sport 67 udp dport 68 accept
+		ip6 saddr fe80::/10 udp sport 547 udp dport 546 accept
+		# The VPN, from anywhere: the one port that faces the internet.
+		udp dport 51820 accept
+		ip saddr @inside4 jump inside
+		ip6 saddr @inside6 jump inside
+		counter name refused drop
+	}
+	chain inside {
+		tcp dport { 22, 8443 } accept
+		# DNS, answered by AdGuard Home.
+		meta l4proto { tcp, udp } th dport 53 accept
+		# The proxy (Traefik): the names of the home network.
+		tcp dport { 80, 443 } accept
+		icmp type echo-request accept
+		icmpv6 type echo-request accept
+	}
+	# Only the VPN's traffic passes the gateway. Which device may reach what
+	# is decided in the VPN's own table (inet sgc_vpn), which also has to
+	# let it through.
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+		ct state invalid drop
+		iifname "sgc-wg" accept
+		oifname "sgc-wg" ct state established,related accept
+	}
+}

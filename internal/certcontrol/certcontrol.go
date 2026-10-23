@@ -33,6 +33,7 @@ package certcontrol
 import (
 	"context"
 	"crypto"
+	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
 	"encoding/json"
@@ -158,6 +159,13 @@ type Service struct {
 	// running is the attempt in progress, if any.
 	running *Progress
 	jobs    sync.WaitGroup
+
+	// What KeyPair handed out last, so that every TLS handshake does not
+	// read the database.
+	servingMu  sync.Mutex
+	servingRaw string
+	servingAt  time.Time
+	serving    *KeyPair
 }
 
 func New(cfg Config) *Service {
@@ -1017,4 +1025,64 @@ func oneLine(text string) string {
 		text += "."
 	}
 	return text
+}
+
+// KeyPair is the certificate in use, ready to serve.
+type KeyPair struct {
+	// Domain is the domain it is for (the certificate's name is "*." + Domain).
+	Domain         string
+	CertificatePEM string
+	PrivateKeyPEM  string
+	TLS            *tls.Certificate
+	NotAfter       time.Time
+}
+
+// Serving returns the certificate to serve for the domain that is set up
+// now, or nil if there is none that is valid for it. It reads the database
+// at most every ten seconds; a renewed certificate is therefore served from
+// then on, without a restart.
+func (s *Service) Serving(ctx context.Context) (*KeyPair, error) {
+	s.servingMu.Lock()
+	defer s.servingMu.Unlock()
+	now := time.Now()
+	if !s.servingAt.IsZero() && now.Sub(s.servingAt) < 10*time.Second {
+		return s.valid(s.serving, now), nil
+	}
+	raw, _, err := store.Setting(ctx, s.cfg.DB, SettingCurrent)
+	if err != nil {
+		return nil, err
+	}
+	account, configured, err := s.cfg.Account(ctx)
+	if err != nil {
+		return nil, err
+	}
+	key := raw + "\x00" + account.Domain
+	if key == s.servingRaw && !s.servingAt.IsZero() {
+		s.servingAt = now
+		return s.valid(s.serving, now), nil
+	}
+	s.servingRaw, s.servingAt, s.serving = key, now, nil
+	if raw == "" || !configured {
+		return nil, nil
+	}
+	var kept stored
+	if err := json.Unmarshal([]byte(raw), &kept); err != nil {
+		return nil, fmt.Errorf("the kept certificate cannot be read: %w", err)
+	}
+	if kept.Domain != account.Domain {
+		return nil, nil // a certificate for a domain that is no longer set up
+	}
+	pair, err := tls.X509KeyPair([]byte(kept.CertificatePEM), []byte(kept.PrivateKeyPEM))
+	if err != nil {
+		return nil, fmt.Errorf("the kept certificate and its key do not fit together: %w", err)
+	}
+	s.serving = &KeyPair{Domain: kept.Domain, CertificatePEM: kept.CertificatePEM, PrivateKeyPEM: kept.PrivateKeyPEM, TLS: &pair, NotAfter: pair.Leaf.NotAfter}
+	return s.valid(s.serving, now), nil
+}
+
+func (s *Service) valid(pair *KeyPair, now time.Time) *KeyPair {
+	if pair == nil || !now.Before(pair.NotAfter) {
+		return nil
+	}
+	return pair
 }

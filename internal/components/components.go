@@ -102,3 +102,22 @@ func Verify(path string, want File) error {
 	}
 	return nil
 }
+
+// Traefik is the reverse proxy. The checksums are those of the project's own
+// traefik_v3.7.16_checksums.txt.
+var Traefik = Component{
+	Name:    "traefik",
+	Version: "3.7.16",
+	Files: map[string]File{
+		"amd64": {
+			URL:    "https://github.com/traefik/traefik/releases/download/v3.7.16/traefik_v3.7.16_linux_amd64.tar.gz",
+			SHA256: "759a7bc0d66b74c588255ed9e41c7f9d4aba60bdb7bce9dde551b1268a55eb07",
+			Size:   51045831,
+		},
+		"arm64": {
+			URL:    "https://github.com/traefik/traefik/releases/download/v3.7.16/traefik_v3.7.16_linux_arm64.tar.gz",
+			SHA256: "8f9463a7dd3a618569aaa46e19500331d7374a2e6f6ee300a50df5bb49132e1a",
+			Size:   45507286,
+		},
+	},
+}

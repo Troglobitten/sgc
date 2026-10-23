@@ -1,0 +1,58 @@
+# Written by SGC from its database. Do not edit: SGC replaces this file.
+{
+  "accessLog": {
+    "fields": {
+      "defaultMode": "keep",
+      "headers": {
+        "defaultMode": "drop"
+      }
+    },
+    "format": "json"
+  },
+  "api": {
+    "dashboard": false,
+    "insecure": true
+  },
+  "entryPoints": {
+    "25565-tcp": {
+      "address": ":25565/tcp"
+    },
+    "27016-udp": {
+      "address": ":27016/udp"
+    },
+    "traefik": {
+      "address": "127.0.0.1:8082"
+    },
+    "web": {
+      "address": ":80",
+      "http": {
+        "redirections": {
+          "entryPoint": {
+            "permanent": true,
+            "scheme": "https",
+            "to": "websecure"
+          }
+        }
+      }
+    },
+    "websecure": {
+      "address": ":443"
+    }
+  },
+  "global": {
+    "checkNewVersion": false,
+    "sendAnonymousUsage": false
+  },
+  "log": {
+    "level": "WARN"
+  },
+  "ping": {
+    "entryPoint": "traefik"
+  },
+  "providers": {
+    "file": {
+      "directory": "/etc/sgc/traefik/dynamic",
+      "watch": true
+    }
+  }
+}

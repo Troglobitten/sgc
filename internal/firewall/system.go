@@ -55,9 +55,14 @@ type System struct {
 	// DNSInstalled reports whether a DNS server of SGC's is installed, in
 	// which case the rules let DNS in from inside.
 	DNSInstalled func() bool
-	Uptime       func() (float64, error)
-	Now          func() time.Time
-	Log          *slog.Logger
+	// Proxy reports whether the proxy is switched on, and the ports of its
+	// proxied services; the rules then let those in from inside.
+	Proxy func() (bool, []string)
+	// VPNPort reports the VPN's port while it is on, 0 otherwise.
+	VPNPort func() int
+	Uptime  func() (float64, error)
+	Now     func() time.Time
+	Log     *slog.Logger
 }
 
 // Change puts the requested rules into effect, calls ready, and then waits
@@ -126,6 +131,12 @@ func (s *System) begin(ctx context.Context) (*Pending, error) {
 		return fail(err)
 	}
 	cfg := Config{Enabled: request.Enabled, SSHPorts: ports, WebPort: s.WebPort, DNS: s.DNSInstalled != nil && s.DNSInstalled()}
+	if s.Proxy != nil {
+		cfg.Proxy, cfg.ProxyPorts = s.Proxy()
+	}
+	if s.VPNPort != nil {
+		cfg.VPNPort = s.VPNPort()
+	}
 	rules, err := Render(cfg)
 	if err != nil {
 		return fail(err)

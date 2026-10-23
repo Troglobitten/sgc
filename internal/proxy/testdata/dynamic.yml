@@ -1,0 +1,240 @@
+# Written by SGC from its database. Do not edit: SGC replaces this file.
+{
+  "http": {
+    "middlewares": {
+      "allow-media": {
+        "ipAllowList": {
+          "sourceRange": [
+            "192.168.0.0/16",
+            "10.86.0.5/32"
+          ]
+        }
+      },
+      "friendly-errors": {
+        "errors": {
+          "query": "/proxy-error/{status}",
+          "service": "sgc-internal",
+          "status": [
+            "502-504"
+          ]
+        }
+      },
+      "login-gate": {
+        "forwardAuth": {
+          "address": "http://127.0.0.1:8444/gate/check",
+          "authResponseHeaders": [
+            "X-SGC-User"
+          ],
+          "trustForwardHeader": false
+        }
+      },
+      "no-user-header": {
+        "headers": {
+          "customRequestHeaders": {
+            "X-SGC-User": ""
+          }
+        }
+      },
+      "to-adguard-page": {
+        "redirectRegex": {
+          "regex": "^https://[^/]+.*$",
+          "replacement": "https://sgc.domain.tld:8443/adguard/"
+        }
+      },
+      "to-sgc-page": {
+        "redirectRegex": {
+          "regex": "^https://[^/]+(/.*)?$",
+          "replacement": "https://sgc.domain.tld:8443${1}"
+        }
+      },
+      "unknown-name": {
+        "replacePath": {
+          "path": "/proxy-unknown"
+        }
+      }
+    },
+    "routers": {
+      "adguard": {
+        "entryPoints": [
+          "websecure"
+        ],
+        "middlewares": [
+          "to-adguard-page"
+        ],
+        "rule": "Host(`adguard.domain.tld`)",
+        "service": "noop@internal",
+        "tls": {}
+      },
+      "gate-media": {
+        "entryPoints": [
+          "websecure"
+        ],
+        "priority": 10000,
+        "rule": "Host(`media.domain.tld`) && PathPrefix(`/.sgc-gate/`)",
+        "service": "sgc-internal",
+        "tls": {}
+      },
+      "gateway": {
+        "entryPoints": [
+          "websecure"
+        ],
+        "middlewares": [
+          "to-sgc-page"
+        ],
+        "rule": "Host(`sgc.domain.tld`)",
+        "service": "noop@internal",
+        "tls": {}
+      },
+      "gateway-announce": {
+        "entryPoints": [
+          "websecure"
+        ],
+        "priority": 10000,
+        "rule": "Host(`sgc.domain.tld`) && Path(`/api/announce`)",
+        "service": "sgc-internal",
+        "tls": {}
+      },
+      "http-media": {
+        "entryPoints": [
+          "websecure"
+        ],
+        "middlewares": [
+          "allow-media",
+          "no-user-header",
+          "login-gate",
+          "friendly-errors"
+        ],
+        "priority": 100,
+        "rule": "Host(`media.domain.tld`)",
+        "service": "http-media",
+        "tls": {}
+      },
+      "http-nas": {
+        "entryPoints": [
+          "websecure"
+        ],
+        "middlewares": [
+          "no-user-header",
+          "friendly-errors"
+        ],
+        "priority": 100,
+        "rule": "Host(`nas.domain.tld`)",
+        "service": "http-nas",
+        "tls": {}
+      },
+      "unknown": {
+        "entryPoints": [
+          "websecure"
+        ],
+        "middlewares": [
+          "unknown-name"
+        ],
+        "priority": 1,
+        "rule": "HostRegexp(`^.+$`)",
+        "service": "sgc-internal",
+        "tls": {}
+      }
+    },
+    "serversTransports": {
+      "skip-verify": {
+        "insecureSkipVerify": true
+      }
+    },
+    "services": {
+      "http-media": {
+        "loadBalancer": {
+          "passHostHeader": true,
+          "servers": [
+            {
+              "url": "http://192.168.1.30:8096"
+            }
+          ]
+        }
+      },
+      "http-nas": {
+        "loadBalancer": {
+          "passHostHeader": true,
+          "servers": [
+            {
+              "url": "https://192.168.1.20:5001"
+            }
+          ],
+          "serversTransport": "skip-verify"
+        }
+      },
+      "sgc-internal": {
+        "loadBalancer": {
+          "servers": [
+            {
+              "url": "http://127.0.0.1:8444"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "tcp": {
+    "routers": {
+      "tcp-minecraft": {
+        "entryPoints": [
+          "25565-tcp"
+        ],
+        "rule": "HostSNI(`*`)",
+        "service": "tcp-minecraft"
+      }
+    },
+    "services": {
+      "tcp-minecraft": {
+        "loadBalancer": {
+          "servers": [
+            {
+              "address": "192.168.1.40:25565"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "tls": {
+    "certificates": [
+      {
+        "certFile": "/etc/sgc/traefik/certs/wildcard.crt",
+        "keyFile": "/etc/sgc/traefik/certs/wildcard.key"
+      }
+    ],
+    "options": {
+      "default": {
+        "minVersion": "VersionTLS12"
+      }
+    },
+    "stores": {
+      "default": {
+        "defaultCertificate": {
+          "certFile": "/etc/sgc/traefik/certs/wildcard.crt",
+          "keyFile": "/etc/sgc/traefik/certs/wildcard.key"
+        }
+      }
+    }
+  },
+  "udp": {
+    "routers": {
+      "udp-game": {
+        "entryPoints": [
+          "27016-udp"
+        ],
+        "service": "udp-game"
+      }
+    },
+    "services": {
+      "udp-game": {
+        "loadBalancer": {
+          "servers": [
+            {
+              "address": "192.168.1.40:27015"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

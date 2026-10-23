@@ -15,6 +15,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/adguard"
 	"github.com/Troglobitten/sgc/internal/firewall"
 	"github.com/Troglobitten/sgc/internal/layout"
+	"github.com/Troglobitten/sgc/internal/proxy"
 )
 
 // The units that change the firewall (installer/sgc-firewall-*.service).
@@ -87,12 +88,17 @@ func firewallSystem() *firewall.System {
 		WebPort: layout.WebPort,
 		// DNS is let in from inside once there is something to answer it.
 		DNSInstalled: func() bool { return adguard.Installed(adguard.DefaultPaths()) },
-		Window:       firewall.ConfirmWindow,
-		Run:          runProgram,
-		Exists:       programExists,
-		Uptime:       firewall.Uptime,
-		Now:          time.Now,
-		Log:          slog.New(slog.NewTextHandler(os.Stdout, nil)),
+		// The proxy's ports while it is on, as its last change left them.
+		Proxy: func() (bool, []string) {
+			applied := proxy.ReadApplied(proxy.DefaultPaths())
+			return applied.Enabled && proxy.Installed(proxy.DefaultPaths()), applied.ListenPorts
+		},
+		Window: firewall.ConfirmWindow,
+		Run:    runProgram,
+		Exists: programExists,
+		Uptime: firewall.Uptime,
+		Now:    time.Now,
+		Log:    slog.New(slog.NewTextHandler(os.Stdout, nil)),
 	}
 }
 
