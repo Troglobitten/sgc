@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"context"
 	"crypto/sha256"
+	"errors"
 	"sync"
 	"time"
 )
@@ -49,3 +51,26 @@ var DecoyHash = sync.OnceValue(func() string {
 	h, _ := hashPassword("decoy-password-never-matches", defaultParams)
 	return h
 })
+
+// ResetAdminPassword gives the admin a new password and ends every
+// sign-in: what `sudo sgc reset-admin` does. It returns the admin's name.
+func (s *Service) ResetAdminPassword(ctx context.Context, password string) (string, error) {
+	if err := validateCredentials("admin", password); err != nil {
+		return "", err
+	}
+	var username string
+	if err := s.db.QueryRowContext(ctx, "SELECT username FROM admin WHERE id = 1").Scan(&username); err != nil {
+		return "", errors.New("there is no admin account yet: open the setup link instead (sudo sgc setup-link)")
+	}
+	hash, err := hashPassword(password, s.params)
+	if err != nil {
+		return "", err
+	}
+	if _, err := s.db.ExecContext(ctx, "UPDATE admin SET password_hash = ? WHERE id = 1", hash); err != nil {
+		return "", err
+	}
+	if _, err := s.db.ExecContext(ctx, "DELETE FROM session"); err != nil {
+		return "", err
+	}
+	return username, nil
+}

@@ -62,6 +62,21 @@
 #                  from the connection (also through the proxy), pinned,
 #                  first claim wins, a removed token stops working
 #
+#   vpn            the VPN: off until switched on; on, it listens, has its
+#                  own firewall table and its public name at the stand-in
+#                  Zone.eu; a phone (the public neighbour with a WireGuard
+#                  interface of its own) reaches the service on its
+#                  person's list and nothing else, then everything, then
+#                  nothing once the guest's time ran out
+#   gate           SGC's login in front of a service: the way to the
+#                  sign-in and back, a pass for that name only, a way back
+#                  that works once, a person whose login lacks the service
+#   notify         ntfy (a stand-in), a service that stops answering in the
+#                  bell, as a banner and at ntfy, and gone when it answers
+#                  again; the logs of SGC's parts
+#   backups        backups to a stand-in WebDAV folder: the backup key, the
+#                  newest two kept, encrypted, the secret half not kept
+#
 # For Test-UpgradeFromPrevious.ps1, where /tmp/release holds the previous
 # published release and the current source as an update to it:
 #
@@ -410,6 +425,7 @@ standin_environment=(
     "SGC_ACME_TRIAL_DIRECTORY=https://$trial_address/dir"
     "SGC_ACME_ROOTS=$standin_state/authority-cert.pem"
     "SGC_ACME_DNS=$dns_address"
+    "SGC_PUBLIC_IP_URL=http://$zone_address/ip"
 )
 
 # install_standin: puts the program in place. Copied as a program: what the
@@ -607,6 +623,80 @@ announce_from() {
     shift 3
     sudo ip netns exec "$ns" curl -sk -H "Authorization: Bearer $tok" "$@" "$base/api/announce"
 }
+
+# --- The VPN, the gate, notifications, backups --------------------------------------
+
+# json_get <python expression on d>: a value from the last answer's body.
+json_get() {
+    python3 -c 'import json, sys; d = json.load(open("/tmp/sgc-test-body")); print(eval(sys.argv[1], {"d": d}))' "$1"
+}
+
+# service_id <name>: the service's number, as the page knows it.
+service_id() {
+    http GET /api/services >/dev/null && json_get "[s['id'] for s in d['services'] if s['name'] == '$1'][0]"
+}
+
+# A phone on the internet: the public neighbour, with a WireGuard interface
+# of its own made from the settings SGC hands out.
+phone_net="$outside_net"
+phone_up() { # phone_up <settings file>
+    local conf="$1" stripped
+    stripped="$(mktemp)"
+    # Not the public name: the phone reaches this machine at its address on
+    # the stand-in internet.
+    sed -i "s|^Endpoint = .*|Endpoint = $outside_gateway:51820|" "$conf"
+    wg-quick strip "$conf" >"$stripped" || return 1
+    sudo ip netns exec "$phone_net" ip link del wg-phone 2>/dev/null || true
+    sudo ip netns exec "$phone_net" ip link add wg-phone type wireguard &&
+        sudo ip netns exec "$phone_net" wg setconf wg-phone "$stripped" &&
+        sudo ip netns exec "$phone_net" ip addr add "$(sed -n 's|^Address = ||p' "$conf")" dev wg-phone &&
+        sudo ip netns exec "$phone_net" ip link set wg-phone up &&
+        sudo ip netns exec "$phone_net" ip route replace 10.86.0.0/24 dev wg-phone &&
+        sudo ip netns exec "$phone_net" ip route replace "$lan_address/32" dev wg-phone
+    local code=$?
+    rm -f "$stripped"
+    return $code
+}
+phone_down() { sudo ip netns exec "$phone_net" ip link del wg-phone 2>/dev/null || true; }
+
+# phone_gets <url> <text>: the phone opens a name through the tunnel.
+# shellcheck disable=SC2317  # called indirectly through check() and wait_for()
+phone_gets() {
+    local host page
+    host="$(echo "$1" | sed -E 's|https://([^/]+).*|\1|')"
+    page="$(sudo ip netns exec "$phone_net" curl -sk --max-time 8 --resolve "$host:443:$lan_address" "$1")"
+    [[ "$page" == *"$2"* ]]
+}
+
+# device_config <device id>: the device's settings, as its QR code holds them.
+device_config() {
+    local password
+    password="$(cat "$password_file")"
+    [ "$(http POST "/api/vpn/devices/$1/config" "{\"password\":\"$password\"}")" = 200 ] && json_get "d['config']"
+}
+
+# ntfy_got <text>: the stand-in ntfy server was sent the text.
+# shellcheck disable=SC2317  # called indirectly through wait_for()
+ntfy_got() { sudo grep -q "$1" "$standin_state/ntfy.log" 2>/dev/null; }
+
+# device_connected: the page shows a VPN device as connected.
+# shellcheck disable=SC2317  # called indirectly through wait_for()
+device_connected() { [ "$(http GET /api/vpn)" = 200 ] && grep -q '"connected":true' /tmp/sgc-test-body; }
+
+# answers_at <server> <name> <namespace> <address>: asked from inside the
+# namespace, the server answers the name with the address.
+# shellcheck disable=SC2317  # called indirectly through check()
+answers_at() { [ "$(dns_answer "$1" "$2" "$3")" = "$4" ]; }
+
+# banner_has <text> / banner_gone <text>: a banner with the text is shown, or not.
+# shellcheck disable=SC2317  # called indirectly through check() and wait_for()
+banner_has() { [ "$(http GET /api/notifications/summary)" = 200 ] && grep -q "$1" /tmp/sgc-test-body; }
+# shellcheck disable=SC2317  # called indirectly through wait_for()
+banner_gone() { [ "$(http GET /api/notifications/summary)" = 200 ] && ! grep -q "$1" /tmp/sgc-test-body; }
+
+# notified <text>: the bell has a notification with the text.
+# shellcheck disable=SC2317  # called indirectly through wait_for()
+notified() { [ "$(http GET /api/notifications)" = 200 ] && grep -q "$1" /tmp/sgc-test-body; }
 
 case "$mode" in
 refused)
@@ -1752,6 +1842,23 @@ restore)
     expect_in_audit "the restore itself was recorded" '"action":"restore.completed"'
     expect_status "the fresh install's setup link is closed" 409 POST /api/setup \
         "{\"token\":\"$token\",\"username\":\"mallory\",\"password\":\"$password\"}"
+
+    echo "Services, people, the VPN, the proxy, notifications and backups came back"
+    expect_status "the services are available" 200 GET /api/services
+    check "the web service is there" body_has '"name":"web"'
+    check "and the game server" body_has '"name":"game"'
+    expect_status "the people are available" 200 GET /api/people
+    check "the person with a login is there" body_has '"name":"Lee"'
+    if wait_for 180 systemctl is-active --quiet sgc-wireguard.service; then pass "the VPN runs again (its tools were installed for it)"; else
+        fail "the VPN does not run on the restored machine"
+    fi
+    check "with the server's key from the old machine" sh -c "[ -n \"\$(sudo wg show sgc-wg public-key 2>/dev/null)\" ]"
+    if wait_for 120 sh -c "ss -Hltn sport = :443 | grep -q ."; then pass "the proxy runs again"; else fail "the proxy does not run on the restored machine"; fi
+    expect_status "the backups are available" 200 GET /api/backups
+    check "with the backup key's public half" body_has '"hasKey":true'
+    check "and switched on" body_has '"enabled":true'
+    expect_status "the notifications are available" 200 GET /api/notifications/settings
+    check "with ntfy as it was set up" body_has '"topic":"sgc-test-made-up-topic"'
     check "service is running" systemctl is-active --quiet sgc
     check "the database is still private to sgc" sudo sh -c "[ \"\$(stat -c %U:%a /var/lib/sgc/sgc.db)\" = sgc:600 ]"
     check "nothing is left waiting to be restored" sudo sh -c "[ ! -e /var/lib/sgc/restore ]"
@@ -2222,6 +2329,170 @@ announce)
     check "the service is off" service_has media '"enabled":false'
     answer="$(announce_from "$inside_net" "https://$inside_gateway:8443" "$token" -d service=media:8080)"
     if [[ "$answer" == *"does not know this token"* ]]; then pass "the removed token no longer works"; else fail "a removed token: $answer"; fi
+    ;;
+
+vpn)
+    echo "The VPN: off until switched on"
+    if ! neighbour "$outside_net" "$outside_gateway" "$outside_peer" || ! neighbour "$inside_net" "$inside_gateway" "$inside_peer"; then
+        fail "the stand-in neighbours could not be set up"
+    fi
+    start_web_neighbour
+    expect_status "the VPN's state is available" 200 GET /api/vpn
+    check "it is off" body_has '"enabled":false'
+    check "nothing listens on its port" sh -c "! ss -Hlun sport = :51820 | grep -q ."
+    expect_status "switching it on (WireGuard's tools come from Debian)" 200 POST /api/vpn/settings \
+        '{"enabled":true,"port":51820,"network":"10.86.0.0/24","name":"vpn","endpointMode":"dynamic","staticIp":""}'
+    check "its program runs" systemctl is-active --quiet sgc-wireguard.service
+    check "WireGuard listens on UDP port 51820" sh -c "ss -Hlun sport = :51820 | grep -q ."
+    check "the VPN's own firewall table is loaded" sudo /usr/sbin/nft list table inet sgc_vpn
+    check "the kernel passes packets on" sh -c "[ \"\$(cat /proc/sys/net/ipv4/ip_forward)\" = 1 ]"
+    if wait_for 90 sh -c "curl -s -u '$zone_user:$zone_key' http://$zone_address/v2/dns/domain.tld/a | grep -q 203.0.113.7"; then
+        pass "the public name points at the home's public address, at (the stand-in for) Zone.eu"
+    else fail "no A record for vpn.domain.tld at the stand-in"; fi
+    if wait_for 90 answers_with vpn.domain.tld "$lan_address"; then pass "inside the home network the name points at this device"; else
+        fail "vpn.domain.tld does not point at $lan_address in AdGuard Home"
+    fi
+    if firewall_is on; then
+        expect_status "the firewall's state is available" 200 GET /api/firewall
+        check "it says the VPN's port is not let in yet" body_has 'the VPN (port 51820/udp'
+        expect_status "bringing the rules up to date" 202 POST /api/firewall/change '{"enabled":true,"again":true}'
+        expect_status "confirmed" 200 POST /api/firewall/confirm '{}'
+        check "the rules let the VPN's port in from anywhere" sh -c "sudo /usr/sbin/nft list table inet sgc | grep -q 'udp dport 51820 accept'"
+    fi
+
+    echo "A person who reaches one service, with a phone"
+    web_id="$(service_id web)"
+    expect_status "a second web service that is not on the person's list" 200 POST /api/services \
+        "{\"name\":\"other\",\"title\":\"\",\"kind\":\"http\",\"mode\":\"proxied\",\"upstreamIp\":\"$inside_peer\",\"upstreamPort\":8080,\"scheme\":\"http\",\"verifyTls\":false,\"listenPort\":0,\"category\":\"\",\"protected\":false,\"enabled\":true}"
+    expect_status "the person is added" 200 POST /api/people \
+        "{\"name\":\"Kim\",\"network\":\"services\",\"allServices\":false,\"serviceIds\":[$web_id],\"loginEnabled\":false,\"username\":\"\",\"password\":\"\",\"expiresAt\":null,\"disabled\":false}"
+    person_id="$(json_get "d['id']")"
+    expect_status "a phone is added" 200 POST /api/vpn/devices "{\"personId\":$person_id,\"name\":\"phone\",\"allTraffic\":false,\"enabled\":true}"
+    device_id="$(json_get "d['id']")"
+    expect_status "its QR code needs the admin's password" 403 POST "/api/vpn/devices/$device_id/config" '{"password":"not the password"}'
+    device_config "$device_id" >/tmp/sgc-phone.conf || fail "the phone's settings were not handed out"
+    check "the settings name the public name" grep -q '^Endpoint = vpn.domain.tld:51820' /tmp/sgc-phone.conf
+    check "and the gateway for DNS" grep -q '^DNS = 10.86.0.1' /tmp/sgc-phone.conf
+    expect_in_audit "showing them is in the history" '"action":"device.revealed"'
+    if phone_up /tmp/sgc-phone.conf; then pass "the phone sets up its tunnel"; else fail "the phone's tunnel could not be set up"; fi
+    if wait_for 30 phone_gets "https://web.domain.tld/" 'served by the test neighbour'; then pass "through the tunnel the phone opens the service on its list"; else
+        fail "the phone does not get web.domain.tld through the tunnel"
+    fi
+    if wait_for 30 device_connected; then pass "the page shows the phone as connected"; else fail "the phone is not shown as connected"; fi
+    check "the gateway answers its DNS questions through the tunnel" answers_at 10.86.0.1 web.domain.tld "$phone_net" "$lan_address"
+    check "a service not on the list is refused" sh -c "! sudo ip netns exec $phone_net curl -sk --max-time 8 --resolve other.domain.tld:443:$lan_address https://other.domain.tld/ | grep -q 'served by the test neighbour'"
+    check "SGC's page is not reachable through the tunnel" does_not_reach "$phone_net" "$lan_address" 8443
+    check "nor SSH" does_not_reach "$phone_net" "$lan_address" 22
+    echo "Changed to the whole home network"
+    expect_status "the person is changed" 200 POST "/api/people/$person_id" \
+        "{\"name\":\"Kim\",\"network\":\"full\",\"allServices\":true,\"serviceIds\":[],\"loginEnabled\":false,\"username\":\"\",\"password\":\"\",\"expiresAt\":null,\"disabled\":false}"
+    if wait_for 30 reaches "$phone_net" "$lan_address" 8443; then pass "now SGC's page is reachable through the tunnel"; else fail "SGC's page is still out of reach"; fi
+    check "and the other service" phone_gets "https://other.domain.tld/" 'served by the test neighbour'
+    echo "A guest whose time ran out"
+    expect_status "the person gets an end date in the past" 200 POST "/api/people/$person_id" \
+        "{\"name\":\"Kim\",\"network\":\"full\",\"allServices\":true,\"serviceIds\":[],\"loginEnabled\":false,\"username\":\"\",\"password\":\"\",\"expiresAt\":\"2020-01-01T00:00:00Z\",\"disabled\":false}"
+    if wait_for 30 sh -c "! sudo wg show sgc-wg peers | grep -q ."; then pass "the phone's key is no longer in WireGuard"; else fail "the expired guest's phone is still in"; fi
+    check "and the phone gets nothing any more" sh -c "! sudo ip netns exec $phone_net curl -sk --max-time 5 --resolve web.domain.tld:443:$lan_address https://web.domain.tld/ | grep -q served"
+    phone_down
+    expect_status "the person is removed, with the phone" 200 POST "/api/people/$person_id/remove" '{}'
+    output="$(sudo sgc doctor 2>&1)"
+    if echo "$output" | grep -q 'The VPN runs and listens on UDP port 51820'; then pass "the doctor sees the VPN"; else
+        fail "the doctor does not see the VPN"
+        indent <<<"$output"
+    fi
+    ;;
+
+gate)
+    echo "SGC's login in front of a service"
+    start_web_neighbour
+    web_id="$(service_id web)"
+    expect_status "the web service is put behind SGC's login" 200 POST "/api/services/$web_id" \
+        "{\"name\":\"web\",\"title\":\"Web\",\"kind\":\"http\",\"mode\":\"proxied\",\"upstreamIp\":\"$inside_peer\",\"upstreamPort\":8080,\"scheme\":\"http\",\"verifyTls\":false,\"listenPort\":0,\"category\":\"Test\",\"protected\":true,\"enabled\":true}"
+    gate_jar="$HOME/sgc-test-gate-cookies"
+    rm -f "$gate_jar"
+    gcurl() { curl -sk --max-time 10 -b "$gate_jar" -c "$gate_jar" --resolve web.domain.tld:443:127.0.0.1 --resolve sgc.domain.tld:8443:127.0.0.1 "$@"; }
+    if wait_for 30 sh -c "curl -sk -o /dev/null -w '%{http_code}' --resolve web.domain.tld:443:127.0.0.1 https://web.domain.tld/ | grep -q 302"; then
+        pass "without a pass the service sends you to SGC's sign-in"
+    else fail "the protected service did not send to the sign-in"; fi
+    check "to SGC's own name, with the way back" sh -c "curl -sk -o /dev/null -w '%{redirect_url}' --resolve web.domain.tld:443:127.0.0.1 'https://web.domain.tld/a?b=1' | grep -q '^https://sgc.domain.tld:8443/gate?rd=https%3A%2F%2Fweb.domain.tld%2Fa%3Fb%3D1'"
+    expect_status "a person with a login that has the service" 200 POST /api/people \
+        "{\"name\":\"Sam\",\"network\":\"services\",\"allServices\":false,\"serviceIds\":[$web_id],\"loginEnabled\":true,\"username\":\"sam\",\"password\":\"a-made-up-password\",\"expiresAt\":null,\"disabled\":false}"
+    sam_id="$(json_get "d['id']")"
+    expect_status "and one whose login does not" 200 POST /api/people \
+        '{"name":"Lee","network":"services","allServices":false,"serviceIds":[],"loginEnabled":true,"username":"lee","password":"another-made-up-password","expiresAt":null,"disabled":false}'
+    gcurl -o /dev/null -X POST -H 'Content-Type: application/json' -d '{"username":"sam","password":"wrong-password-here"}' https://sgc.domain.tld:8443/api/gate/login
+    check "a wrong password is refused" sh -c "! grep -q sgc_person '$gate_jar' 2>/dev/null"
+    gcurl -o /dev/null -X POST -H 'Content-Type: application/json' -d '{"username":"sam","password":"a-made-up-password"}' https://sgc.domain.tld:8443/api/gate/login
+    check "the right one signs Sam in" grep -q sgc_person "$gate_jar"
+    back="$(gcurl -X POST -H 'Content-Type: application/json' -d '{"rd":"https://web.domain.tld/"}' https://sgc.domain.tld:8443/api/gate/ticket | python3 -c 'import json,sys; print(json.load(sys.stdin).get("redirect",""))')"
+    check "SGC hands out the way back to the service" sh -c "echo '$back' | grep -q '^https://web.domain.tld/.sgc-gate/return?ticket='"
+    gcurl -o /dev/null "$back"
+    check "the service's name gets its own pass" grep -q 'web.domain.tld.*sgc_gate' "$gate_jar"
+    check "with it Sam gets in" sh -c "curl -sk --max-time 10 -b '$gate_jar' --resolve web.domain.tld:443:127.0.0.1 https://web.domain.tld/ | grep -q 'served by the test neighbour'"
+    check "the way back works once" sh -c "[ \"\$(curl -sk -o /dev/null -w '%{http_code}' --resolve web.domain.tld:443:127.0.0.1 '$back')\" = 403 ]"
+    check "a way back to another site is refused" sh -c "curl -sk -b '$gate_jar' --resolve sgc.domain.tld:8443:127.0.0.1 -X POST -H 'Content-Type: application/json' -d '{\"rd\":\"https://evil.example.com/\"}' https://sgc.domain.tld:8443/api/gate/ticket | grep -q 'not a service behind'"
+    rm -f "$gate_jar"
+    gcurl -o /dev/null -X POST -H 'Content-Type: application/json' -d '{"username":"lee","password":"another-made-up-password"}' https://sgc.domain.tld:8443/api/gate/login
+    check "Lee, whose login does not have the service, gets no way back" sh -c "curl -sk -b '$gate_jar' --resolve sgc.domain.tld:8443:127.0.0.1 -X POST -H 'Content-Type: application/json' -d '{\"rd\":\"https://web.domain.tld/\"}' https://sgc.domain.tld:8443/api/gate/ticket | grep -q 'does not include'"
+    check "and a person's sign-in does not open SGC's own page" sh -c "[ \"\$(curl -sk -o /dev/null -w '%{http_code}' -b '$gate_jar' --resolve sgc.domain.tld:8443:127.0.0.1 https://sgc.domain.tld:8443/api/health)\" = 401 ]"
+    expect_in_audit "the history has Sam passing" '"action":"gate.login"'
+    expect_status "the service comes out from behind the login again" 200 POST "/api/services/$web_id" \
+        "{\"name\":\"web\",\"title\":\"Web\",\"kind\":\"http\",\"mode\":\"proxied\",\"upstreamIp\":\"$inside_peer\",\"upstreamPort\":8080,\"scheme\":\"http\",\"verifyTls\":false,\"listenPort\":0,\"category\":\"Test\",\"protected\":false,\"enabled\":true}"
+    http POST "/api/people/$sam_id/remove" '{}' >/dev/null
+    ;;
+
+notify)
+    echo "Notifications and the logs"
+    expect_status "the bell is available" 200 GET /api/notifications/summary
+    expect_status "ntfy is set up (a stand-in on this machine)" 200 POST /api/notifications/settings \
+        '{"email":{"enabled":false,"host":"","port":587,"security":"starttls","username":"","from":"","to":""},"ntfy":{"enabled":true,"server":"http://127.0.0.1:9400","topic":"sgc-test-made-up-topic","token":"tk_madeup"},"routes":{}}'
+    check "the token is not shown again" sh -c "! grep -q tk_madeup /tmp/sgc-test-body"
+    expect_status "a test message" 200 POST /api/notifications/test '{"channel":"ntfy"}'
+    if wait_for 10 ntfy_got 'A test from SGC'; then pass "it reached ntfy, with the token"; else fail "ntfy got no test message"; fi
+    check "with the topic and the token" sh -c "sudo grep -q 'Bearer tk_madeup.*sgc-test-made-up-topic' $standin_state/ntfy.log"
+    echo "        (stopping a service and waiting for the notification: a few minutes)"
+    sudo systemctl stop sgc-test-web.service
+    if wait_for 300 notified 'does not answer'; then pass "a service that stops answering is in the bell"; else fail "no notification about the stopped service"; fi
+    if wait_for 60 ntfy_got 'does not answer'; then pass "and was sent to ntfy"; else fail "it did not reach ntfy"; fi
+    check "and shows as a banner" banner_has 'does not answer'
+    start_web_neighbour
+    if wait_for 300 banner_gone 'does not answer'; then pass "once it answers again the banner goes"; else fail "the banner stayed"; fi
+    expect_status "the logs of SGC" 200 POST /api/logs '{"part":"sgc","priority":6,"sinceSeconds":3600,"text":"","limit":50,"after":""}'
+    check "have entries" test "$(json_get 'len(d["entries"])')" -gt 0
+    through_proxy web '/' 'served' || true
+    expect_status "the proxy's log, for one service" 200 POST /api/logs '{"part":"proxy","priority":6,"sinceSeconds":3600,"text":"http-web","limit":50,"after":""}'
+    check "has its requests" body_has 'http-web@file'
+    expect_status "a part SGC does not know is refused" 400 POST /api/logs '{"part":"../../etc","priority":6,"sinceSeconds":3600,"text":"","limit":50,"after":""}'
+    ;;
+
+backups)
+    echo "Backups to another device (a stand-in WebDAV folder)"
+    expect_status "the state of backups is available" 200 GET /api/backups
+    check "nothing is set up" body_has '"hasKey":false'
+    expect_status "switching on without a backup key is refused" 400 POST /api/backups/settings \
+        '{"enabled":true,"target":{"kind":"webdav","host":"","port":0,"share":"","path":"","url":"http://127.0.0.1:9300/","username":"","hostKey":"","skipVerify":false},"time":"03:30","keep":2,"publicKey":"","since":"0001-01-01T00:00:00Z"}'
+    password="$(cat "$password_file")"
+    expect_status "the backup key is made, after the admin's password" 200 POST /api/backups/key "{\"password\":\"$password\"}"
+    check "its secret half is shown" body_has 'AGE-SECRET-KEY-1'
+    json_get "d['secret']" >"$HOME/sgc-test-backup-key"
+    expect_status "the target is tested" 200 POST /api/backups/test \
+        '{"kind":"webdav","host":"","port":0,"share":"","path":"","url":"http://127.0.0.1:9300/","username":"","hostKey":"","skipVerify":false}'
+    check "and reached" body_has '"ok":true'
+    expect_status "backups are switched on" 200 POST /api/backups/settings \
+        '{"enabled":true,"target":{"kind":"webdav","host":"","port":0,"share":"","path":"","url":"http://127.0.0.1:9300/","username":"","hostKey":"","skipVerify":false},"time":"03:30","keep":2,"publicKey":"","since":"0001-01-01T00:00:00Z"}'
+    for i in 1 2 3; do
+        expect_status "a backup is made now ($i)" 200 POST /api/backups/run '{}'
+        sleep 1
+    done
+    check "the newest two are on the target" sh -c "[ \"\$(sudo ls $standin_state/webdav | grep -c '^sgc-backup-.*\.age$')\" = 2 ]"
+    check "they are encrypted" sh -c "sudo head -c 22 \"$standin_state/webdav/\$(sudo ls $standin_state/webdav | tail -1)\" | grep -q 'age-encryption.org/v1'"
+    check "SGC does not keep the secret half" sh -c "! sudo grep -rq \"\$(cut -c1-40 $HOME/sgc-test-backup-key)\" /var/lib/sgc"
+    output="$(sudo sgc doctor 2>&1)"
+    if echo "$output" | grep -q 'The last backup to another device was made'; then pass "the doctor sees the backup"; else
+        fail "the doctor does not see the backup"
+        indent <<<"$output"
+    fi
+    expect_in_audit "the history has it" '"action":"backup.made"'
     ;;
 
 *)

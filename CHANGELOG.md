@@ -2,6 +2,40 @@
 
 What changed in each version of SGC, newest first. The section for a version is what SGC shows before you update to it, so it is written for the person running SGC, not for developers.
 
+## 0.16.0
+
+Everything SGC was meant to do is now there: names for your devices, the proxy, the VPN, people, the login gate, notifications, logs and backups. This is a large release; take a fresh export before you update (System page, Export).
+
+**Names and the proxy**
+- This device has a name under your domain (`sgc.your-domain`, changeable on the System page, Names), and its page opens there with the real certificate. By address it still opens with its own certificate, so there is always a way in.
+- The proxy (Traefik) opens your services at `https://name.your-domain`, with the certificate. Switch it on on the new Services page; it is installed with SGC on new devices, and on updated ones when you switch it on.
+- Add services by hand (a router, a printer, a NAS), or give a server running Docker a token and let it announce its own services when it starts (the Services page shows the block for its compose file). Game servers and other non-web services work too, by name (direct) or through a port of this device.
+- The dashboard shows your services with their icons, grouped by category, with whether each answers. A friendly page says so when one does not.
+- When the proxy or the VPN is on and the firewall's rules are older, the firewall card offers to bring them up to date (the usual confirmation).
+
+**VPN and people**
+- WireGuard: on the new People page, switch the VPN on, add people and their devices, and scan each device's QR code with the WireGuard app. Forward UDP port 51820 on your router to this device.
+- Per person: the whole home network, all services, or only the services you pick. Guests get an end date, after which their devices and login stop.
+- SGC keeps the VPN's public name (`vpn.your-domain`) pointing at your home's address at Zone.eu, also when that address changes, and says so when your provider shares one address between customers (then a VPN from outside cannot work).
+- Usage per device: what it used, by the minute, hour and day.
+
+**Login gate**
+- Put a service behind SGC's login (Services page). You get in as yourself; people get in with the login you give them, and only to services on their list. People never get into SGC's own page.
+
+**Notifications and logs**
+- A bell at the top of every page, and a banner while a problem lasts. Optionally by email and to ntfy, per kind of event (System page, Notifications).
+- The new Logs page: the notifications, the logs of each part of SGC (with a live view), and the full history.
+
+**Backups and end of life**
+- Daily backups to a share (SMB), an SFTP server or a WebDAV folder, the newest ten kept (System page, Backups). They are encrypted to a backup key that SGC shows you once and does not keep: keep it somewhere safe. To restore one, enter that key where the passphrase goes.
+- SGC tells you when Debian or Traefik is about to stop getting security fixes.
+
+**Also**
+- `sudo sgc reset-admin` gives the admin a new password if it is lost.
+- `sudo sgc doctor` checks the names, the proxy, the VPN, backups and end-of-life dates too.
+
+What only you can check, because no test of SGC can: a phone on mobile data connecting to the VPN through your router, email through your provider, ntfy on your phone, and backups to your own NAS.
+
 ## 0.15.1
 
 - Fixed: the first real certificate could fail with "Let's Encrypt refused: Incorrect TXT record … found". SGC tries with Let's Encrypt's test authority first, and both proofs are published under the same name in your domain's DNS. SGC asked Let's Encrypt to look as soon as the name servers it could reach showed the new proof; Let's Encrypt, asking from other parts of the world, still got the old one.

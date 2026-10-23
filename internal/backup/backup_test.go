@@ -58,6 +58,31 @@ func newSourceDB(t *testing.T) (*sql.DB, string) {
 		`INSERT INTO ssh_key (label, key_type, key_blob, fingerprint, added_at, added_by) VALUES ('laptop', 'ssh-ed25519', 'AAAAC3NzaC1lZDI1NTE5AAAAID25i1+d/VGOmeRQ2ZPpnryBGMe/B28pdc623ONJVCV1', 'SHA256:ZcQJrTJFZ1DO2xgEpCKluYro6G3ehPZvDrs/oGfuJG4', 103, 'alex')`,
 		`INSERT INTO setup_token (id, token_hash, expires_at) VALUES (1, x'00', 999)`,
 		`UPDATE update_check SET latest_version = '9.9.9', notes = 'cached notes', checked_at = 500`,
+		// The parts of 0.16.0: names, services, tokens, people, devices,
+		// notifications, backups. Made up, like everything here.
+		`INSERT INTO setting (key, value) VALUES ('gateway.name', 'gw'), ('proxy.enabled', 'true'), ('vpn.enabled', 'true'),
+			('vpn.port', '51820'), ('vpn.network', '10.86.0.0/24'), ('vpn.server_key', 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE='),
+			('dns.names', '[{"domain":"gw.domain.tld","answer":"192.168.1.50"}]'),
+			('notify.channels', '{"email":{"enabled":true,"host":"smtp.example.com","port":587,"security":"starttls","username":"alex","password":"a-made-up-password","from":"sgc@example.com","to":"alex@example.com"}}'),
+			('backups.settings', '{"enabled":true,"target":{"kind":"webdav","url":"https://nas.home/dav"},"time":"03:30","keep":10,"publicKey":"age1madeup"}'),
+			('proxy.last_apply', '{"ok":true}'), ('vpn.last_apply', '{"ok":true}'), ('backups.last', '{}'), ('eol.state', '{}'),
+			('vpn.endpoint_state', '{}')`,
+		`INSERT INTO announce_token (id, label, token_hash, hint, pinned_ip, created_at) VALUES (1, 'media server', x'01', 'sgc_abcdef', '192.168.1.30', 104)`,
+		`INSERT INTO service (id, name, title, kind, upstream_ip, upstream_port, token_id, protected, created_at, updated_at) VALUES
+			(1, 'media', 'Media', 'http', '192.168.1.30', 8096, 1, 1, 105, 105),
+			(2, 'game', '', 'tcp', '192.168.1.40', 25565, NULL, 0, 106, 106)`,
+		`INSERT INTO service_icon (service_id, png, source, fetched_at) VALUES (1, x'89504e47', 'page', 107)`,
+		`INSERT INTO service_health (service_id, up, failures, since, checked_at) VALUES (1, 1, 0, 108, 108)`,
+		`INSERT INTO person (id, name, network, all_services, login_enabled, username, password_hash, created_at, updated_at) VALUES
+			(1, 'Kim', 'services', 0, 1, 'kim', 'a-person-hash', 109, 109)`,
+		`INSERT INTO person_service (person_id, service_id) VALUES (1, 1)`,
+		`INSERT INTO vpn_device (id, person_id, name, address, private_key, public_key, preshared_key, created_at) VALUES
+			(1, 1, 'phone', '10.86.0.2', 'AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=', 'AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=', 'BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=', 110)`,
+		`INSERT INTO vpn_usage (device_id, resolution, at, rx, tx) VALUES (1, 'day', 111, 1000, 2000)`,
+		`INSERT INTO vpn_peer_state (device_id, rx, tx, seen_at) VALUES (1, 1000, 2000, 111)`,
+		`INSERT INTO notification (at, event, severity, title, body) VALUES (112, 'announce', 'warning', 'A new service', '')`,
+		`INSERT INTO person_session (token_hash, person_id, created_at, last_seen_at, expires_at, remote_addr, user_agent) VALUES (x'02', 1, 1, 1, 9999999999, '192.168.1.10', 'phone')`,
+		`INSERT INTO gate_pass (token_hash, host, person_id, created_at, expires_at) VALUES (x'03', 'media.domain.tld', 1, 1, 9999999999)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.ExecContext(ctx, statement); err != nil {

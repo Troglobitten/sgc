@@ -53,7 +53,8 @@ type Query struct {
 	After string `json:"after"`
 }
 
-var cursorPattern = regexp.MustCompile(`^[A-Za-z0-9=;_-]{1,400}$`)
+// cursorPattern is what a journal cursor looks like (s=…;i=…;b=…;m=…;t=…;x=…).
+var cursorPattern = regexp.MustCompile(`^s=[0-9a-f]{1,64}(;[a-z]=[0-9a-f]{1,64}){1,8}$`)
 
 func (q Query) Validate() error {
 	if _, ok := Parts[q.Part]; !ok {

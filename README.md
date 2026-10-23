@@ -2,9 +2,9 @@
 
 A secure front door for your home network, running on a Raspberry Pi or any small Debian machine.
 
-> **Status: early development.** The installer, the admin account, a dashboard with system health, self-updating, export and restore, the device's firewall, SSH keys with "keys only", updates for the device, a maintenance window, DNS (AdGuard Home), logs in memory for SD cards, the connection to Zone.eu and the certificate from Let's Encrypt work. VPN and the reverse proxy are not built yet.
+> **Status: beta.** Everything SGC is meant to do is built: the installer, the dashboard, self-updating, export and restore, the firewall, SSH keys, updates for the device, a maintenance window, DNS (AdGuard Home), the domain at Zone.eu with a certificate from Let's Encrypt, names for your devices, the proxy (Traefik), servers that announce their services, the VPN (WireGuard) with people and their devices, a login in front of services, notifications, logs and daily backups. It has been tested on a test machine, not yet for weeks on a real home network.
 
-## What it will do
+## What it does
 
 - **VPN** — WireGuard access to your network, with per-person access rules and QR codes for phones.
 - **DNS** — AdGuard Home for the whole network and for VPN devices.
@@ -14,10 +14,11 @@ A secure front door for your home network, running on a Raspberry Pi or any smal
 
 SGC does not implement VPN, DNS or proxying itself. It installs and configures WireGuard, AdGuard Home, Traefik and nftables, and keeps their configuration in one place.
 
-## Requirements (planned)
+## Requirements
 
 - Debian 13 or Raspberry Pi OS based on it, 64-bit (arm64 or amd64)
-- A domain whose DNS is hosted at Zone.eu
+- A domain whose DNS is hosted at Zone.eu (for names, the certificate and the VPN's public name)
+- For the VPN from outside: a router that can forward a UDP port, and a public IPv4 address from your provider (not one shared between customers)
 
 ## Installation
 
@@ -179,13 +180,75 @@ An SD card wears out from being written to, and logs are written all the time. W
 - **AdGuard Home's query log** is not in `/var/log`. AdGuard Home has its own way of sparing the card, which SGC sets at installation: it collects lookups in memory and writes them in batches of 5000 (see [DNS](#dns-adguard-home)).
 - **In the export.** That it was switched on travels with an export. After a restore it is shown, not switched on: whether the new device runs from an SD card is not something the export knows.
 
+### Names
+
+Once the domain is set up, this device has a name under it: `sgc.domain.tld` (change it on the System page, Names). SGC puts its names into AdGuard Home, pointing at this device's address in the home network; give the device a fixed address in your router so they stay right. SGC's page opens at `https://sgc.domain.tld:8443` with the real certificate. By address it keeps its own certificate, so there is always a way in. SGC removes only names it made itself: rewrites you add in AdGuard Home are left alone.
+
+The names work on devices that use this device for DNS: set the router to hand it out, or set a device to it by hand.
+
+### The proxy and your services
+
+On the Services page, switch the proxy on (Traefik; it needs the domain and the certificate first). Every web service then opens at `https://name.domain.tld`, and plain http is sent on to https. Add services by hand for devices that cannot announce themselves (a router, a printer, a NAS), with their address in the home network and their port; devices with a self-signed certificate are fine.
+
+Game servers and other services that are not web pages work too, in one of two ways: **direct** (the name points at the device itself; the default) or **through the gateway** (a port of this device passes the connection on; switching one on restarts the proxy for a few seconds).
+
+The dashboard shows the services with their icons, grouped by category, and whether each answers (SGC tries every 30 seconds). A service that has not answered for 14 days looks abandoned and can be removed. Icons come from the service itself, or, if it has none, from the public dashboard-icons catalogue by name; that tells the catalogue's CDN the names of your services, which you can switch off.
+
+While the firewall is on, it lets the proxy's ports in from the home network once you bring its rules up to date (the firewall card offers it).
+
+### Servers that announce their services
+
+A server running Docker can register its services itself. Make a token for it on the Services page (it is shown once), put it in the server's `.env` file as `SGC_TOKEN`, and add this to its compose file:
+
+```yaml
+services:
+  announce:
+    image: curlimages/curl
+    restart: "no"
+    command: >-
+      --fail-with-body -sS --retry 10 --retry-delay 6 --retry-connrefused
+      -H "Authorization: Bearer ${SGC_TOKEN}"
+      -d service=jellyfin:8096
+      https://sgc.domain.tld/api/announce
+```
+
+It runs once when the compose file comes up. Several services go in one call (`-d service=name:port` again). Optional: `-d category=…`, `-d scheme=https`, `-d type=tcp` or `udp`, `-d mode=proxied`. The address of a service is always the server's own address, never one the request names; the token only works from the address it was first used from ("Server moved" lets it move); a name already taken by another server or by you is refused. An announcement can never put a service behind or out from behind the login. With "approve new services" on, announced services wait for you.
+
+### VPN and people
+
+On the People page, switch the VPN on (WireGuard), and **forward UDP port 51820 on your router to this device**: that is the only port of your home that faces the internet. SGC publishes one public name, `vpn.domain.tld`, at Zone.eu and keeps it pointing at your home's address, also when that changes. Inside the home it points at this device, so a phone that is always connected works at home too.
+
+Add people, and per person choose what their devices reach: the whole home network (for you), all services, or only the services you pick. A guest gets an end date, after which their devices and login stop. Add a device for a person, and scan its QR code with the WireGuard app (the code holds the device's secret key, so showing it needs your admin password and is recorded). "All traffic through home" sends a device's internet traffic through home too.
+
+What a device used is kept per minute for two days, per hour for 90 days and per day after that. If your provider shares one public address between customers (carrier-grade NAT), SGC says so: a VPN from outside cannot reach your home then.
+
+### SGC's login in front of a service
+
+Put a web service behind SGC's login (on the Services page). Opening it then asks to sign in first: as you, or as a person with a login you gave them whose list has that service. People sign in on a page of their own and never get into SGC's page; they can change their own password there. Each service gets its own pass, so one service cannot use the pass of another. A device that reaches the service by its address instead of its name skips the login.
+
+### Notifications and logs
+
+The bell at the top of every page has SGC's notifications, and a banner stays while a problem lasts. On the System page, Notifications, they can also go out by email (STARTTLS or TLS) and to ntfy, per kind of event; problems and warnings by default, information only in the bell. On ntfy.sh, anyone who knows a topic can read it: make it long and random, or use a token.
+
+The Logs page has the notifications, the logs of each part of SGC (with a live view), and the full history of who did what.
+
+### Backups to another device
+
+On the System page, Backups, SGC makes an export every day at your time and puts it on a share (SMB), an SFTP server or a WebDAV folder, keeping the newest ten. Make the backup key first: SGC shows its secret half once and keeps only the half that locks, so the backups are no use to anyone without what you kept. To restore one, install SGC on a fresh device, open the setup link, choose the backup file and enter the backup key where the passphrase goes. SGC warns after three days without a good backup. For SFTP, SGC shows the server's key the first time; compare it with the server's own before confirming.
+
+### End of life
+
+SGC looks once a day when Debian and Traefik stop getting security fixes, and warns half a year before. The way to a newer Debian: an export, a fresh install of the new Debian and SGC, and a restore.
+
 ### When something is wrong
 
 ```sh
 sudo sgc doctor
 ```
 
-checks every part of SGC on the machine (the service, its page, the root helper, storage, the clock, the firewall, SSH, the device's updates, AdGuard Home, logs in memory, the domain's connection to Zone.eu, the certificate, the ports SGC needs) and says what to do about each problem it finds. It asks the machine directly, so it also works when SGC's page does not answer.
+checks every part of SGC on the machine (the service, its page, the root helper, storage, the clock, the firewall, SSH, the device's updates, AdGuard Home, logs in memory, the domain's connection to Zone.eu, the certificate, the names, the proxy and the services, the VPN, backups, end-of-life dates, the ports SGC needs) and says what to do about each problem it finds. It asks the machine directly, so it also works when SGC's page does not answer.
+
+If the admin password is lost, `sudo sgc reset-admin` at the device gives the admin a new one and ends every sign-in.
 
 ### How releases are verified
 

@@ -121,6 +121,14 @@ Invoke-Cases names
 Invoke-Cases proxy
 Invoke-Cases announce
 
+# The VPN with a phone in a stand-in neighbour on the "internet", SGC's login
+# gate in front of a service, notifications (to a stand-in ntfy) and the logs,
+# and backups to a stand-in WebDAV folder.
+Invoke-Cases vpn
+Invoke-Cases gate
+Invoke-Cases notify
+Invoke-Cases backups
+
 # Updating: a tampered update, a genuine one, a signed-but-broken one that
 # must roll back, an older one, and the command-line way.
 Invoke-Cases update-setup

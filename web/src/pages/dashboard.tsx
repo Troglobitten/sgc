@@ -641,9 +641,56 @@ function describeActivity(entry: AuditEntry): string {
     }
     case 'os_updates.install_failed':
       return 'Installing updates for the device did not finish'
-    default:
-      return entry.action
+    default: {
+      // The later parts: what happened, then the detail as SGC wrote it.
+      const what = laterActions[entry.action]
+      if (!what) return entry.action
+      const who = entry.actor === 'system' ? 'SGC' : entry.actor
+      return `${what.replace('{who}', who)}${entry.detail ? `: ${entry.detail}` : ''}`
+    }
   }
+}
+
+const laterActions: Record<string, string> = {
+  'gateway.renamed': '{who} renamed this device',
+  'proxy.switched_on': '{who} switched the proxy on',
+  'proxy.switched_off': '{who} switched the proxy off',
+  'proxy.apply_failed': 'The proxy’s configuration was not put in place',
+  'service.added': '{who} added a service',
+  'service.changed': '{who} changed a service',
+  'service.removed': '{who} removed a service',
+  'service.announced': 'A server announced a service',
+  'service.announce_refused': 'An announcement was refused',
+  'service.approved': '{who} approved a service',
+  'service.settings_changed': '{who} changed how services are handled',
+  'token.created': '{who} made a token for a server',
+  'token.removed': '{who} removed a server’s token',
+  'token.repinned': '{who} let a server’s token move',
+  'token.refused': 'A token was refused',
+  'vpn.switched_on': '{who} switched the VPN on',
+  'vpn.switched_off': '{who} switched the VPN off',
+  'vpn.settings_changed': '{who} changed the VPN',
+  'vpn.endpoint_updated': 'The VPN’s public name was updated',
+  'vpn.endpoint_failed': 'The VPN’s public name could not be updated',
+  'vpn.apply_failed': 'The VPN could not be changed',
+  'person.added': '{who} added a person',
+  'person.changed': '{who} changed a person',
+  'person.removed': '{who} removed a person',
+  'person.expired': 'A guest’s time ran out',
+  'person.password_changed': '{who} changed their password',
+  'device.added': '{who} added a device',
+  'device.changed': '{who} changed a device',
+  'device.removed': '{who} removed a device',
+  'device.revealed': '{who} showed a device’s QR code',
+  'gate.login': '{who} passed SGC’s login',
+  'gate.login_failed': 'A sign-in at SGC’s login failed',
+  'notify.settings_changed': '{who} changed the notifications',
+  'notify.test_sent': '{who} sent a test notification',
+  'backup.settings_changed': '{who} changed the backups',
+  'backup.key_created': '{who} made a backup key',
+  'backup.made': 'A backup was made',
+  'backup.failed': 'A backup failed',
+  'admin.reset': 'The admin’s password was set anew from the command line',
 }
 
 // "laptop (ED25519 SHA256:...) for the account alex" -> "laptop"

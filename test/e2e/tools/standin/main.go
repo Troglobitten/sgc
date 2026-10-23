@@ -5,7 +5,11 @@
 //     and API key) and its name servers, which show the TXT records made
 //     through that API;
 //   - Let's Encrypt: its certificate authority and its test authority, both
-//     played by Pebble, which look for proofs at those name servers.
+//     played by Pebble, which look for proofs at those name servers;
+//   - the service that tells the home's public address (/ip on the API's
+//     address: a made-up address of the documentation range);
+//   - a WebDAV folder for backups, and an ntfy server that keeps what it
+//     was sent (both plain http, this machine only).
 //
 // It is built by the test-release scripts, copied to the test machine and
 // started there by cases.sh. It is not part of any release.
@@ -21,12 +25,15 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"time"
+
+	"golang.org/x/net/webdav"
 
 	"github.com/Troglobitten/sgc/internal/certcontrol/acmetest"
 	"github.com/Troglobitten/sgc/internal/zone/zonetest"
@@ -42,6 +49,9 @@ func main() {
 	username := flag.String("username", "", "the ZoneID username the account accepts")
 	apiKey := flag.String("api-key", "", "the API key the account accepts")
 	domain := flag.String("domain", "domain.tld", "the domain whose DNS zone is in the account")
+	publicIP := flag.String("public-ip", "203.0.113.7", "the address /ip answers with")
+	dav := flag.String("webdav", "127.0.0.1:9300", "address of the WebDAV folder")
+	ntfy := flag.String("ntfy", "127.0.0.1:9400", "address of the ntfy server")
 	flag.Parse()
 
 	fail := func(err error) {
@@ -68,7 +78,7 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
-	failed := make(chan error, 3)
+	failed := make(chan error, 5)
 	serve := func(address string, handler http.Handler, tls bool) {
 		server := &http.Server{Addr: address, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 		if tls {
@@ -77,7 +87,23 @@ func main() {
 			failed <- server.ListenAndServe()
 		}
 	}
-	go serve(*listen, zone, false)
+	api := http.NewServeMux()
+	api.Handle("/v2/", zone)
+	api.HandleFunc("GET /ip", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprintln(w, *publicIP) })
+	go serve(*listen, api, false)
+	// The WebDAV folder and what ntfy was sent live under the state folder.
+	davDir := filepath.Join(*state, "webdav")
+	os.MkdirAll(davDir, 0o755)
+	go serve(*dav, &webdav.Handler{FileSystem: webdav.Dir(davDir), LockSystem: webdav.NewMemLS()}, false)
+	go serve(*ntfy, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 64*1024))
+		f, err := os.OpenFile(filepath.Join(*state, "ntfy.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err == nil {
+			fmt.Fprintf(f, "%s %s\n", r.Header.Get("Authorization"), body)
+			f.Close()
+		}
+		w.Write([]byte(`{"id":"standin"}`))
+	}), false)
 	// Two authorities, as with Let's Encrypt: what SGC tries with the first
 	// it then asks of the second.
 	go serve(*trial, acmetest.New(dnsInUse), true)

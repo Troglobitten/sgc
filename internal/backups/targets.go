@@ -79,7 +79,7 @@ func open(ctx context.Context, t Target) (folder, error) {
 
 // --- WebDAV --------------------------------------------------------------------------
 
-type webdav struct {
+type webdavFolder struct {
 	base   *url.URL
 	t      Target
 	client *http.Client
@@ -91,11 +91,11 @@ func openWebDAV(t Target) (folder, error) {
 		return nil, err
 	}
 	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: t.SkipVerify}} //nolint:gosec // the owner's choice for a home device
-	return &webdav{base: base, t: t, client: &http.Client{Timeout: 5 * time.Minute, Transport: transport,
+	return &webdavFolder{base: base, t: t, client: &http.Client{Timeout: 5 * time.Minute, Transport: transport,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
 }
 
-func (w *webdav) do(ctx context.Context, method, name string, body io.Reader, headers map[string]string) (*http.Response, error) {
+func (w *webdavFolder) do(ctx context.Context, method, name string, body io.Reader, headers map[string]string) (*http.Response, error) {
 	target := w.base.ResolveReference(&url.URL{Path: url.PathEscape(name)})
 	req, err := http.NewRequestWithContext(ctx, method, target.String(), body)
 	if err != nil {
@@ -118,7 +118,7 @@ func (w *webdav) do(ctx context.Context, method, name string, body io.Reader, he
 	return resp, nil
 }
 
-func (w *webdav) Put(ctx context.Context, name string, data []byte) error {
+func (w *webdavFolder) Put(ctx context.Context, name string, data []byte) error {
 	resp, err := w.do(ctx, http.MethodPut, name, bytes.NewReader(data), map[string]string{"Content-Type": "application/octet-stream"})
 	if err != nil {
 		return err
@@ -136,7 +136,7 @@ type multistatus struct {
 	} `xml:"response"`
 }
 
-func (w *webdav) List(ctx context.Context) ([]string, error) {
+func (w *webdavFolder) List(ctx context.Context) ([]string, error) {
 	resp, err := w.do(ctx, "PROPFIND", "", strings.NewReader(`<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>`),
 		map[string]string{"Depth": "1", "Content-Type": "application/xml"})
 	if err != nil {
@@ -163,7 +163,7 @@ func (w *webdav) List(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
-func (w *webdav) Delete(ctx context.Context, name string) error {
+func (w *webdavFolder) Delete(ctx context.Context, name string) error {
 	resp, err := w.do(ctx, http.MethodDelete, name, nil, nil)
 	if err != nil {
 		return err
@@ -175,7 +175,7 @@ func (w *webdav) Delete(ctx context.Context, name string) error {
 	return nil
 }
 
-func (w *webdav) Close() error { return nil }
+func (w *webdavFolder) Close() error { return nil }
 
 // --- SFTP ----------------------------------------------------------------------------
 
