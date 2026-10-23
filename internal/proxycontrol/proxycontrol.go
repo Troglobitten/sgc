@@ -89,6 +89,11 @@ type Service struct {
 	mu          sync.Mutex
 	applying    bool
 	appliedHash [32]byte
+	// changes keeps switching and bringing up to date one at a time, from
+	// deciding what to send to the answer. Otherwise a look that began
+	// before the owner switched the proxy off could send its "on" after the
+	// "off", or an older configuration after a newer one.
+	changes sync.Mutex
 }
 
 func New(cfg Config) *Service {
@@ -143,6 +148,8 @@ func (s *Service) Status(ctx context.Context) (Status, error) {
 // first where it is missing) or off. Switching on fails, and stays off, if
 // Traefik does not take the configuration.
 func (s *Service) SetEnabled(ctx context.Context, actor, remote string, enabled bool) error {
+	s.changes.Lock()
+	defer s.changes.Unlock()
 	if !enabled {
 		if err := store.SetSetting(ctx, s.cfg.DB, SettingEnabled, "false"); err != nil {
 			return err
@@ -223,6 +230,8 @@ func (s *Service) Run(ctx context.Context) {
 
 // Sync sends the configuration if it differs from what was last sent.
 func (s *Service) Sync(ctx context.Context) {
+	s.changes.Lock()
+	defer s.changes.Unlock()
 	wanted, err := s.wanted(ctx)
 	if err != nil || !wanted {
 		return

@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,18 +27,37 @@ import (
 )
 
 type fakeHelper struct {
+	mu      sync.Mutex
 	applied []wireguard.Config
 	refuse  bool
+	// slow makes a change take a while; overlapped counts changes that
+	// arrived while another one was still being put in place.
+	slow       time.Duration
+	busy       bool
+	overlapped int
 }
 
 func (f *fakeHelper) VPNStatus(context.Context) (helper.VPNStatus, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return helper.VPNStatus{Installed: true, On: len(f.applied) > 0 && f.applied[len(f.applied)-1].Enabled}, nil
 }
 func (f *fakeHelper) VPNApply(_ context.Context, cfg wireguard.Config) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	if f.refuse {
+	f.mu.Lock()
+	if f.busy {
+		f.overlapped++
+	}
+	f.busy = true
+	slow, refuse := f.slow, f.refuse
+	f.mu.Unlock()
+	time.Sleep(slow)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.busy = false
+	if refuse {
 		return errors.New("refused on purpose")
 	}
 	f.applied = append(f.applied, cfg)
@@ -86,6 +106,39 @@ func (w *world) on(t *testing.T) {
 		func(context.Context, string) (string, error) { return "", nil })
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Switching on while SGC brings the VPN up to date sent two changes at
+// once on the test machine; the root side hands them over through one file
+// and answered only one. Changes reach it one at a time, and a change that
+// is what was just put in place is not sent again.
+func TestChangesReachTheRootSideOneAtATime(t *testing.T) {
+	w := newWorld(t)
+	w.on(t)
+	w.helper.mu.Lock()
+	w.helper.slow, w.helper.applied = 20*time.Millisecond, nil
+	w.helper.mu.Unlock()
+	// Every call then has something to send, as when two changes come in.
+	w.vpn.mu.Lock()
+	w.vpn.applied = [32]byte{}
+	w.vpn.mu.Unlock()
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w.vpn.Apply(context.Background())
+		}()
+	}
+	wg.Wait()
+	w.helper.mu.Lock()
+	defer w.helper.mu.Unlock()
+	if w.helper.overlapped != 0 {
+		t.Errorf("%d changes reached the root side while another was being put in place", w.helper.overlapped)
+	}
+	if len(w.helper.applied) > 1 {
+		t.Errorf("the same change was sent %d times", len(w.helper.applied))
 	}
 }
 
