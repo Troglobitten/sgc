@@ -2072,8 +2072,9 @@ cli)
 
     echo "The doctor again, with things broken on purpose"
     sudo systemctl stop sgc-adguard
-    # Something else on a port a later part of SGC will need.
-    sudo python3 -m http.server 80 --bind 127.0.0.1 >/dev/null 2>&1 &
+    # Something else on a port SGC needs. DNS's is free while AdGuard Home is
+    # stopped; the proxy's and the VPN's are SGC's own by now.
+    sudo python3 -m http.server 53 --bind 127.0.0.1 >/dev/null 2>&1 &
     sleep 1
     output="$(sudo sgc doctor 2>&1)"
     code=$?
@@ -2084,11 +2085,17 @@ cli)
         indent <<<"$output"
     fi
     if echo "$output" | grep -q 'sudo systemctl start sgc-adguard'; then pass "it says how to start it"; else fail "it does not say how to start it"; fi
-    if echo "$output" | grep -q 'WARN  In use by another program: port 80 (the proxy) by python3'; then pass "a program on a port SGC will need is pointed out"; else
+    if echo "$output" | grep -q 'WARN  In use by another program: port 53 (DNS (AdGuard Home)) by python3'; then pass "a program on a port SGC needs is pointed out"; else
         fail "the taken port was not pointed out"
         indent <<<"$output"
     fi
-    sudo pkill -x -f 'python3 -m http.server 80 --bind 127.0.0.1' || true
+    if echo "$output" | grep -qE 'In use by another program.*(by traefik|51820)'; then
+        fail "SGC's own proxy or VPN is reported as another program"
+        indent <<<"$output"
+    else
+        pass "SGC's own proxy and VPN are not reported as other programs"
+    fi
+    sudo pkill -x -f 'python3 -m http.server 53 --bind 127.0.0.1' || true
     sudo systemctl start sgc-adguard
     if wait_for 30 resolves 127.0.0.1 debian.org; then pass "following that advice: AdGuard Home answers again"; else fail "AdGuard Home does not answer after being started"; fi
     printf 'APT::Periodic::Unattended-Upgrade "0";\n' | sudo tee "$overruling_file" >/dev/null
