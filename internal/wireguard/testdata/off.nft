@@ -1,0 +1,4 @@
+#!/usr/sbin/nft -f
+# Written by SGC. Do not edit: SGC replaces this file.
+
+destroy table inet sgc_vpn

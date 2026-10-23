@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 
 import { AppShell, type ShellProps } from '@/components/app-shell'
+import { HealthDot, ServiceIcon } from '@/components/service-icon'
 import { Logo } from '@/components/logo'
 import { UpdateCard } from '@/components/update-card'
 import { Card, CardContent } from '@/components/ui/card'
@@ -25,6 +26,8 @@ import {
   type FirewallStatus,
   type Health,
   type OsUpdatesStatus,
+  type ProxyStatus,
+  type Service,
 } from '@/lib/api'
 import { daysUntil, formatDuration, formatGigabytes, formatTimeAgo, percentOf } from '@/lib/format'
 
@@ -39,6 +42,8 @@ export function DashboardPage({ shell }: { shell: ShellProps }) {
   const [dns, setDns] = useState<DnsStatus | null>(null)
   const [domain, setDomain] = useState<DomainStatus | null>(null)
   const [certificate, setCertificate] = useState<CertificateStatus | null>(null)
+  const [services, setServices] = useState<Service[] | null>(null)
+  const [proxyStatus, setProxyStatus] = useState<ProxyStatus | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
   // While an update runs: the number of the attempt before it (or null).
   const [updating, setUpdating] = useState<{ previousAttempt: number | null } | null>(null)
@@ -104,6 +109,14 @@ export function DashboardPage({ shell }: { shell: ShellProps }) {
       )
       api.certificate().then(
         (status) => !stopped && setCertificate(status),
+        (e) => !stopped && handleError(e),
+      )
+      api.services().then(
+        (data) => !stopped && setServices(data.services),
+        (e) => !stopped && handleError(e),
+      )
+      api.proxy().then(
+        (status) => !stopped && setProxyStatus(status),
         (e) => !stopped && handleError(e),
       )
     }
@@ -196,10 +209,16 @@ export function DashboardPage({ shell }: { shell: ShellProps }) {
           <OsUpdatesTile status={osUpdates} onOpen={() => onNavigate('system')} />
           <ServiceTile icon={<ShieldCheck />} name="VPN" />
           <DnsTile status={dns} onOpen={() => onNavigate('system')} />
-          <ServiceTile icon={<Route />} name="Proxy" />
+          <ProxyTile status={proxyStatus} onOpen={() => onNavigate('services')} />
           <CertificateTile status={certificate} onOpen={() => onNavigate('system')} />
         </div>
       </Section>
+
+      {services && services.length > 0 && (
+        <Section title="Your services">
+          <ServiceGrid services={services} onManage={() => onNavigate('services')} />
+        </Section>
+      )}
 
       <div className="grid gap-3 md:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
         <Card>
@@ -256,6 +275,87 @@ function ServiceTile({ icon, name }: { icon: ReactNode; name: string }) {
         {name}
       </p>
       <p className="mt-1 text-xs text-muted-foreground">Not set up yet</p>
+    </div>
+  )
+}
+
+/** The proxy in a word; the Services page has the switch. */
+function ProxyTile({ status, onOpen }: { status: ProxyStatus | null; onOpen: () => void }) {
+  let text = '…'
+  let tone = 'text-muted-foreground'
+  if (status && !status.wanted) text = 'Off'
+  else if (status?.running && status.lastApply?.ok !== false)
+    [text, tone] = ['On', 'text-emerald-700 dark:text-emerald-400']
+  else if (status?.running) [text, tone] = ['Last change failed', 'text-amber-700 dark:text-amber-400']
+  else if (status) [text, tone] = ['Not running', 'text-amber-700 dark:text-amber-400']
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="rounded-xl bg-card p-3 text-left ring-1 ring-foreground/10 outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
+    >
+      <span className="flex items-center gap-2 text-sm font-medium">
+        <Route className="size-4" aria-hidden="true" />
+        Proxy
+      </span>
+      <span className={`mt-1 block text-xs ${tone}`}>{text}</span>
+    </button>
+  )
+}
+
+/** The services in use, grouped by category, each opening at its name. */
+function ServiceGrid({ services, onManage }: { services: Service[]; onManage: () => void }) {
+  const live = services.filter((s) => s.enabled && !s.pending)
+  const waiting = services.length - live.length
+  const categories = [...new Set(live.map((s) => s.category))]
+  return (
+    <div className="flex flex-col gap-3">
+      {categories.map((category) => (
+        <div key={category || '-'} className="flex flex-col gap-2">
+          {categories.length > 1 && (
+            <h3 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+              {category || 'Other'}
+            </h3>
+          )}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+            {live
+              .filter((s) => s.category === category)
+              .map((s) => {
+                const inner = (
+                  <>
+                    <ServiceIcon service={s} />
+                    <span className="flex min-w-0 flex-col">
+                      <span className="flex items-center gap-1.5 truncate text-sm font-medium">
+                        <HealthDot service={s} />
+                        {s.title || s.name}
+                      </span>
+                      <span className="truncate text-xs text-muted-foreground">
+                        {s.kind === 'http' ? s.url.replace('https://', '') : s.url}
+                      </span>
+                    </span>
+                  </>
+                )
+                const className =
+                  'flex items-center gap-3 rounded-xl bg-card p-3 ring-1 ring-foreground/10 outline-none'
+                return s.kind === 'http' && s.url ? (
+                  <a key={s.id} href={s.url} target="_blank" rel="noreferrer"
+                    className={`${className} hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50`}>
+                    {inner}
+                  </a>
+                ) : (
+                  <div key={s.id} className={className}>
+                    {inner}
+                  </div>
+                )
+              })}
+          </div>
+        </div>
+      ))}
+      {waiting > 0 && (
+        <button type="button" onClick={onManage} className="self-start text-sm text-muted-foreground hover:underline">
+          {waiting} more switched off or waiting for approval
+        </button>
+      )}
     </div>
   )
 }

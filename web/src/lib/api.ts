@@ -85,6 +85,13 @@ export interface FirewallStatus {
   sshPorts: number[]
   /** DNS is let in from inside (once AdGuard Home is installed) */
   dns: boolean
+  /** the proxy's ports are let in from inside, and these of proxied services */
+  proxy: boolean
+  proxyPorts: string[]
+  /** the VPN's port, let in from anywhere; 0 if not */
+  vpnPort: number
+  /** what is switched on but not let in by the rules in effect, in words */
+  behind: string[]
   webPort: number
   /** how long a change waits for its confirmation */
   confirmSeconds: number
@@ -386,6 +393,179 @@ async function confirmFirewall(): Promise<FirewallStatus> {
   }
 }
 
+/** A name SGC keeps in AdGuard Home, and how it stands (internal/dnsnames). */
+export interface DnsName {
+  domain: string
+  answer: string
+  for: string
+  inPlace: boolean
+  conflict?: string
+}
+
+/** The gateway's own name and the names SGC hands out (internal/gateway). */
+export interface NamesStatus {
+  name: string
+  domain: string
+  fqdn: string
+  url: string
+  lan: { interface: string; address: string; network: string; gateway: string } | null
+  lanProblem: string
+  dns: { names: DnsName[]; problem: string; rewritesOff: boolean; syncedAt: string | null }
+}
+
+export type ServiceKind = 'http' | 'tcp' | 'udp'
+
+/** What the owner sets for a service (internal/services). */
+export interface ServiceInput {
+  name: string
+  title: string
+  kind: ServiceKind
+  mode: 'proxied' | 'direct'
+  upstreamIp: string
+  upstreamPort: number
+  scheme: 'http' | 'https'
+  verifyTls: boolean
+  listenPort: number
+  category: string
+  protected: boolean
+  enabled: boolean
+}
+
+export interface Service extends ServiceInput {
+  id: number
+  pending: boolean
+  tokenId: number | null
+  tokenLabel: string
+  createdAt: string
+  updatedAt: string
+  announcedAt: string | null
+  hasIcon: boolean
+  health: {
+    state: 'up' | 'down' | 'unknown'
+    since: string
+    checkedAt: string
+    lastUpAt: string | null
+    abandoned: boolean
+  }
+  /** how to open it, "" until a domain is set up */
+  url: string
+}
+
+export interface ServicesSettings {
+  approveNew: boolean
+  iconCatalogue: boolean
+  abandonedDays: number
+}
+
+export interface ServicesResponse {
+  services: Service[]
+  settings: ServicesSettings
+}
+
+/** The proxy, Traefik (internal/proxycontrol). */
+export interface ProxyStatus {
+  installed: boolean
+  version: string
+  running: boolean
+  wanted: boolean
+  /** what is missing before it can be on, "" if nothing */
+  notReady: string
+  lastApply: { at: string; ok: boolean; message: string } | null
+  listenPorts: string[]
+  applying: boolean
+  pinnedVersion: string
+}
+
+/** A server's token for announcing its services; never the token itself. */
+export interface AnnounceToken {
+  id: number
+  label: string
+  hint: string
+  pinnedIp: string
+  createdAt: string
+  lastUsedAt: string | null
+  services: string[]
+}
+
+/** A person the owner lets in (internal/people). */
+export interface PersonInput {
+  name: string
+  network: 'full' | 'services'
+  allServices: boolean
+  serviceIds: number[]
+  loginEnabled: boolean
+  username: string
+  /** empty keeps the password there is */
+  password: string
+  expiresAt: string | null
+  disabled: boolean
+}
+
+export interface Person extends Omit<PersonInput, 'password'> {
+  id: number
+  hasPassword: boolean
+  active: boolean
+  createdAt: string
+}
+
+/** A device in the VPN; never its private key (internal/vpncontrol). */
+export interface VpnDevice {
+  id: number
+  personId: number
+  personName: string
+  name: string
+  address: string
+  publicKey: string
+  allTraffic: boolean
+  enabled: boolean
+  createdAt: string
+  connected: boolean
+  lastSeen: string | null
+  endpoint: string
+  rx: number
+  tx: number
+}
+
+export interface VpnSettings {
+  enabled: boolean
+  port: number
+  network: string
+  name: string
+  endpointMode: 'dynamic' | 'static'
+  staticIp: string
+}
+
+export interface VpnEndpointState {
+  publicIp: string
+  checkedAt: string | null
+  recordIp: string
+  updatedAt: string | null
+  problem: string
+  foreign: boolean
+}
+
+export interface VpnStatus extends VpnSettings {
+  installed: boolean
+  running: boolean
+  up: boolean
+  problem: string
+  serverKey: string
+  endpoint: string
+  lastApply: { at: string; ok: boolean; message: string } | null
+  applying: boolean
+  publicName: string
+  publicState: VpnEndpointState | null
+  devices: VpnDevice[]
+  /** by device id: what it used in all */
+  totals: Record<string, { rx: number; tx: number }>
+}
+
+export interface UsagePoint {
+  at: string
+  rx: number
+  tx: number
+}
+
 export const api = {
   state: () => request<State>('GET', '/api/state'),
   setup: (token: string, username: string, password: string) =>
@@ -459,6 +639,47 @@ export const api = {
     request<OsUpdatesStatus>('POST', '/api/os-updates/mode', { automatic }),
   checkOsUpdates: () => request<OsUpdatesStatus>('POST', '/api/os-updates/check', {}),
   installOsUpdates: () => request<OsUpdatesStatus>('POST', '/api/os-updates/install', {}),
+  names: () => request<NamesStatus>('GET', '/api/names'),
+  setGatewayName: (name: string) => request<NamesStatus>('POST', '/api/names/gateway', { name }),
+  services: () => request<ServicesResponse>('GET', '/api/services'),
+  addService: (input: ServiceInput) => request<Service>('POST', '/api/services', input),
+  updateService: (id: number, input: ServiceInput) =>
+    request<Service>('POST', `/api/services/${id}`, input),
+  removeService: (id: number) => request<void>('POST', `/api/services/${id}/remove`, {}),
+  approveService: (id: number) => request<void>('POST', `/api/services/${id}/approve`, {}),
+  refreshServiceIcon: (id: number) => request<void>('POST', `/api/services/${id}/icon`, {}),
+  setServicesSettings: (settings: ServicesSettings) =>
+    request<ServicesResponse>('POST', '/api/services/settings', settings),
+  proxy: () => request<ProxyStatus>('GET', '/api/proxy'),
+  /** switching on downloads and installs Traefik first where it is missing */
+  setProxyEnabled: (enabled: boolean) =>
+    request<ProxyStatus>('POST', '/api/proxy/enabled', { enabled }),
+  tokens: () => request<AnnounceToken[]>('GET', '/api/tokens'),
+  /** the secret is in this answer only */
+  createToken: (label: string) =>
+    request<{ token: AnnounceToken; secret: string }>('POST', '/api/tokens', { label }),
+  /** keep: its services stay, as services of the page's own */
+  removeToken: (id: number, keep: boolean) =>
+    request<AnnounceToken[]>('POST', `/api/tokens/${id}/remove`, { keep }),
+  repinToken: (id: number) => request<AnnounceToken[]>('POST', `/api/tokens/${id}/repin`, {}),
+  people: () => request<Person[]>('GET', '/api/people'),
+  addPerson: (input: PersonInput) => request<Person>('POST', '/api/people', input),
+  updatePerson: (id: number, input: PersonInput) => request<Person>('POST', `/api/people/${id}`, input),
+  removePerson: (id: number) => request<void>('POST', `/api/people/${id}/remove`, {}),
+  vpn: () => request<VpnStatus>('GET', '/api/vpn'),
+  setVpnSettings: (settings: VpnSettings) => request<VpnStatus>('POST', '/api/vpn/settings', settings),
+  addDevice: (personId: number, name: string, allTraffic: boolean) =>
+    request<VpnDevice>('POST', '/api/vpn/devices', { personId, name, allTraffic, enabled: true }),
+  updateDevice: (id: number, name: string, allTraffic: boolean, enabled: boolean) =>
+    request<VpnDevice>('POST', `/api/vpn/devices/${id}`, { personId: 0, name, allTraffic, enabled }),
+  removeDevice: (id: number) => request<void>('POST', `/api/vpn/devices/${id}/remove`, {}),
+  /** the device's settings with its private key: asks for the admin's password */
+  deviceConfig: (id: number, password: string) =>
+    request<{ config: string; filename: string }>('POST', `/api/vpn/devices/${id}/config`, { password }),
+  vpnUsage: (device: number, resolution: 'minute' | 'hour' | 'day') =>
+    request<UsagePoint[]>('GET', `/api/vpn/usage?device=${device}&resolution=${resolution}`),
+  checkVpnEndpoint: () => request<VpnEndpointState>('POST', '/api/vpn/endpoint/check', {}),
+  takeOverVpnRecord: () => request<VpnEndpointState>('POST', '/api/vpn/endpoint/take-over', {}),
 }
 
 /** The message to show for any thrown value. */

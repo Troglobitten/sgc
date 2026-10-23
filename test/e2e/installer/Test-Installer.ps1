@@ -114,6 +114,13 @@ Invoke-Cases domain
 # to Let's Encrypt.
 Invoke-Cases certificate
 
+# The gateway's own name in AdGuard Home, the proxy (Traefik) with a web
+# service and a game server in a stand-in neighbour, and a server announcing
+# its services with a token.
+Invoke-Cases names
+Invoke-Cases proxy
+Invoke-Cases announce
+
 # Updating: a tampered update, a genuine one, a signed-but-broken one that
 # must roll back, an older one, and the command-line way.
 Invoke-Cases update-setup

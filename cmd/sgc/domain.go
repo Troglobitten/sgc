@@ -102,6 +102,8 @@ func doctorWorker(ctx context.Context, task, stateDir string, stdout, stderr io.
 		status, err = domainControl.Status(ctx)
 	case "certificate":
 		status, err = newCertControl(db, audit.New(db), quiet, domainControl).Status(ctx)
+	case "parts":
+		status, err = readPartsReport(ctx, db, domainControl, quiet)
 	default:
 		return fail(fmt.Errorf("unknown task %q", task))
 	}

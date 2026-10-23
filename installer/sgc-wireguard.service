@@ -1,0 +1,61 @@
+[Unit]
+Description=Server Gateway Control: the VPN (WireGuard)
+Documentation=https://github.com/Troglobitten/sgc
+After=network-online.target
+Wants=network-online.target
+# Only while the owner has the VPN on, or when SGC hands it a first
+# configuration. The installer and the updater make every unit with an
+# [Install] section part of start-up; the file "on" is what the VPN's own
+# switch sets, so a VPN that was never switched on does not start.
+ConditionPathExists=|/var/lib/sgc-wireguard/on
+ConditionPathExists=|/run/sgc-requests/wireguard.json
+StartLimitIntervalSec=0
+
+[Service]
+# Sets up the WireGuard interface, its devices and the VPN's own firewall
+# table from the last state that worked, takes up a new configuration when
+# the helper hands one over (reload), and writes the counters for the page
+# every 30 seconds. Stopping it leaves the tunnel as it is: the tunnel lives
+# in the kernel, so the VPN keeps working when SGC does not. See
+# internal/wireguard.
+Type=simple
+# The kernel's WireGuard is loaded first (it is a module on Debian).
+ExecStartPre=-+/usr/sbin/modprobe wireguard
+ExecStart=/opt/sgc/current/sgc-helper wireguard run
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=3
+StateDirectory=sgc-wireguard
+StateDirectoryMode=0700
+RuntimeDirectory=sgc-wireguard
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+
+# --- Sandboxing ---------------------------------------------------------
+# Root with one privilege: changing the network (the interface, its keys,
+# the VPN's nftables table, passing packets on). It writes to its own two
+# folders and to the one switch in /proc that passes packets on.
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@resources
+
+[Install]
+WantedBy=multi-user.target

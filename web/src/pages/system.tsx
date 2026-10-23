@@ -9,6 +9,7 @@ import { ExportCard } from '@/components/export-card'
 import { FirewallCard } from '@/components/firewall-card'
 import { Log2ramCard } from '@/components/log2ram-card'
 import { MaintenanceCard } from '@/components/maintenance-card'
+import { NamesCard } from '@/components/names-card'
 import { OsUpdatesCard } from '@/components/os-updates-card'
 import { SshCard } from '@/components/ssh-card'
 import { Logo } from '@/components/logo'
@@ -76,6 +77,7 @@ export function SystemPage({
           <DnsCard onError={handleError} />
           <DomainCard onError={handleError} />
           <CertificateCard onError={handleError} />
+          <NamesCard onError={handleError} />
         </div>
       </Section>
 

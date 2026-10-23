@@ -38,3 +38,15 @@ export function formatTimeAgo(iso: string, now: Date = new Date()): string {
   if (hours < 24) return `${hours} h ago`
   return then.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
 }
+
+/** "1.2 GB", "340 MB", "12 kB". */
+export function formatBytes(bytes: number): string {
+  const units = ['B', 'kB', 'MB', 'GB', 'TB']
+  let value = bytes
+  let unit = 0
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000
+    unit++
+  }
+  return `${value < 10 && unit > 0 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`
+}

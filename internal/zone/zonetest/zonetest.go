@@ -34,6 +34,7 @@ type Server struct {
 	apiKey   string
 	domains  map[string]bool     // name -> active
 	txt      map[string][]record // zone -> TXT records
+	a        map[string][]record // zone -> A records
 	nextID   int
 	requests int
 	// Answer every request with this status instead (0: answer normally).
@@ -54,7 +55,7 @@ type snapshot struct {
 
 // New returns a stand-in for an account with the given DNS zones, all active.
 func New(username, apiKey string, domains ...string) *Server {
-	s := &Server{username: username, apiKey: apiKey, domains: map[string]bool{}, txt: map[string][]record{}, nextID: 100}
+	s := &Server{username: username, apiKey: apiKey, domains: map[string]bool{}, txt: map[string][]record{}, a: map[string][]record{}, nextID: 100}
 	for _, domain := range domains {
 		s.domains[domain] = true
 	}
@@ -114,6 +115,29 @@ func (s *Server) TXT(name string) []string {
 		}
 	}
 	return values
+}
+
+// A returns the addresses of the A records with the given name.
+func (s *Server) A(name string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var values []string
+	for _, records := range s.a {
+		for _, r := range records {
+			if strings.EqualFold(r.Name, name) {
+				values = append(values, r.Destination)
+			}
+		}
+	}
+	return values
+}
+
+// AddA makes an A record as the owner would in Zone.eu's own page.
+func (s *Server) AddA(domain, name, address string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextID++
+	s.a[domain] = append(s.a[domain], record{ID: strconv.Itoa(s.nextID), Name: name, Destination: address})
 }
 
 // Records is how many TXT records the account's zones hold.
@@ -189,6 +213,52 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case len(parts) == 3 && parts[2] == "txt" && r.Method == http.MethodGet:
 		answer(http.StatusOK, s.txt[domain])
+
+	case len(parts) == 3 && parts[2] == "a" && r.Method == http.MethodGet:
+		answer(http.StatusOK, s.a[domain])
+
+	case len(parts) == 3 && parts[2] == "a" && r.Method == http.MethodPost:
+		var body struct {
+			Name        string `json:"name"`
+			Destination string `json:"destination"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
+			refuse(http.StatusBadRequest, "invalid request")
+			return
+		}
+		if addr := net.ParseIP(body.Destination); addr == nil || addr.To4() == nil || (body.Name != domain && !strings.HasSuffix(body.Name, "."+domain)) {
+			refuse(http.StatusUnprocessableEntity, "invalid input")
+			return
+		}
+		s.nextID++
+		created := record{ID: strconv.Itoa(s.nextID), Name: body.Name, Destination: body.Destination}
+		s.a[domain] = append(s.a[domain], created)
+		answer(http.StatusCreated, []record{created})
+
+	case len(parts) == 4 && parts[2] == "a" && (r.Method == http.MethodPut || r.Method == http.MethodDelete):
+		records := s.a[domain]
+		for i, existing := range records {
+			if existing.ID != parts[3] {
+				continue
+			}
+			if r.Method == http.MethodDelete {
+				s.a[domain] = append(records[:i:i], records[i+1:]...)
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			var body struct {
+				Name        string `json:"name"`
+				Destination string `json:"destination"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil || net.ParseIP(body.Destination).To4() == nil {
+				refuse(http.StatusUnprocessableEntity, "invalid input")
+				return
+			}
+			records[i].Name, records[i].Destination = body.Name, body.Destination
+			answer(http.StatusOK, []record{records[i]})
+			return
+		}
+		refuse(http.StatusNotFound, "Not found")
 
 	case len(parts) == 3 && parts[2] == "txt" && r.Method == http.MethodPost:
 		var body struct {

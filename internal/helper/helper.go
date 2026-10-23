@@ -33,6 +33,8 @@
 //	GET  /v1/proxy/status         is Traefik installed, switched on, running?
 //	POST /v1/proxy/install        install the pinned release of Traefik the web process downloaded
 //	POST /v1/proxy/apply          put a configuration for Traefik in place (typed, checked again by the job)
+//	GET  /v1/vpn/status           is the VPN on, and what do its devices' counters say?
+//	POST /v1/vpn/apply            put a configuration for the VPN in place (typed, checked again by its program)
 package helper
 
 import (
@@ -53,6 +55,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/proxy"
 	"github.com/Troglobitten/sgc/internal/release"
 	"github.com/Troglobitten/sgc/internal/sshd"
+	"github.com/Troglobitten/sgc/internal/wireguard"
 )
 
 // How long each kind of request may take. Most are answered at once; a few
@@ -83,6 +86,9 @@ const (
 	// The largest configuration for the proxy: a few hundred services and
 	// a certificate.
 	maxProxyRequest = 1 << 20
+	// Putting the VPN's configuration in place, and the largest one.
+	vpnTimeout    = 60 * time.Second
+	maxVPNRequest = 1 << 20
 )
 
 type log2ramEnabledRequest struct {
@@ -105,6 +111,7 @@ const (
 	PackagesFirewall = "firewall"
 	PackagesUpdates  = "updates"
 	PackagesLog2ram  = "log2ram"
+	PackagesVPN      = "vpn"
 )
 
 type installPackagesRequest struct {
@@ -301,6 +308,25 @@ func (c *Client) ProxyApply(ctx context.Context, cfg proxy.Config) error {
 	return c.call(ctx, proxyTimeout, http.MethodPost, "/v1/proxy/apply", cfg, nil)
 }
 
+// VPNStatus is what the helper reports about the VPN (cmd/sgc-helper).
+type VPNStatus struct {
+	Installed bool            `json:"installed"`
+	On        bool            `json:"on"`
+	Running   bool            `json:"running"`
+	Port      int             `json:"port"`
+	Stats     wireguard.Stats `json:"stats"`
+}
+
+func (c *Client) VPNStatus(ctx context.Context) (VPNStatus, error) {
+	var status VPNStatus
+	err := c.call(ctx, defaultTimeout, http.MethodGet, "/v1/vpn/status", nil, &status)
+	return status, err
+}
+
+func (c *Client) VPNApply(ctx context.Context, cfg wireguard.Config) error {
+	return c.call(ctx, vpnTimeout, http.MethodPost, "/v1/vpn/apply", cfg, nil)
+}
+
 func (c *Client) AdguardSettings(ctx context.Context) (string, error) {
 	var resp adguardSettingsResponse
 	err := c.call(ctx, firewallTimeout, http.MethodGet, "/v1/adguard/settings", nil, &resp)
@@ -391,6 +417,10 @@ type Server struct {
 	ProxyStatus  func() proxy.Status
 	ProxyInstall func() error
 	ProxyApply   func(cfg proxy.Config) error
+	// The VPN; see internal/wireguard. VPNApply is only ever called with a
+	// configuration that passed wireguard.Config.Validate.
+	VPNStatus func() (any, error)
+	VPNApply  func(cfg wireguard.Config) error
 }
 
 type peerUIDKey struct{}
@@ -470,7 +500,7 @@ func (s *Server) Handler() http.Handler {
 		var req installPackagesRequest
 		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
 		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&req); err != nil || (req.For != PackagesFirewall && req.For != PackagesUpdates && req.For != PackagesLog2ram) {
+		if err := decoder.Decode(&req); err != nil || (req.For != PackagesFirewall && req.For != PackagesUpdates && req.For != PackagesLog2ram && req.For != PackagesVPN) {
 			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "the request could not be read"})
 			return
 		}
@@ -673,6 +703,33 @@ func (s *Server) Handler() http.Handler {
 		}
 		allow(w, proxyTimeout)
 		if err := s.ProxyApply(cfg); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, struct{}{})
+	})
+	mux.HandleFunc("GET /v1/vpn/status", func(w http.ResponseWriter, _ *http.Request) {
+		status, err := s.VPNStatus()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, status)
+	})
+	mux.HandleFunc("POST /v1/vpn/apply", func(w http.ResponseWriter, r *http.Request) {
+		var cfg wireguard.Config
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxVPNRequest))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&cfg); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "the request could not be read"})
+			return
+		}
+		if err := cfg.Validate(); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "the configuration was refused: " + err.Error()})
+			return
+		}
+		allow(w, vpnTimeout)
+		if err := s.VPNApply(cfg); err != nil {
 			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error()})
 			return
 		}

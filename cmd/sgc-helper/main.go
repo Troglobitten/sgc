@@ -33,6 +33,10 @@
 //   - "sgc-helper proxy install|apply" installs the pinned Traefik, or puts
 //     a configuration for it in place (sgc-traefik-install.service,
 //     sgc-proxy-apply.service, see proxy.go).
+//
+//   - "sgc-helper wireguard run" is the VPN's own program: it keeps the
+//     WireGuard interface and the VPN's firewall table as configured, and
+//     writes the counters (sgc-wireguard.service, see wireguard.go).
 package main
 
 import (
@@ -82,6 +86,8 @@ func main() {
 		err = runLog2ram(os.Args[2:])
 	case "proxy":
 		err = runProxy(os.Args[2:])
+	case "wireguard":
+		err = runWireGuard(os.Args[2:])
 	default:
 		err = runService()
 	}
@@ -130,6 +136,8 @@ func runService() error {
 			ProxyStatus:          proxyStatus,
 			ProxyInstall:         installProxy,
 			ProxyApply:           applyProxy,
+			VPNStatus:            vpnStatus,
+			VPNApply:             applyVPN,
 		}).Handler(),
 		ConnContext:       helper.ConnContext,
 		ReadHeaderTimeout: 5 * time.Second,

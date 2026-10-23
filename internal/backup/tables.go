@@ -59,6 +59,8 @@ var transientSettings = []string{
 	"certificate.open_records",    // DNS records an attempt at a certificate has made and not yet removed
 	"certificate.renewal",         // when this device means to renew, and whether that failed
 	"proxy.last_apply",            // how this device's last change to Traefik's configuration went
+	"vpn.last_apply",              // how this device's last change to the VPN went
+	"vpn.endpoint_state",          // what this device last saw of the home's public address
 }
 
 func cleanupStatements() []string {

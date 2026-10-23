@@ -51,6 +51,17 @@
 #   restore        on a freshly wiped machine: installs, then restores the
 #                  export made earlier and checks that SGC is what it was
 #
+#   names          the gateway's own name: in AdGuard Home with this
+#                  machine's address, the certificate for it on SGC's page,
+#                  renamed and back, the owner's own rewrites left alone
+#   proxy          Traefik: there since the installer ran and off; a web
+#                  service and a game server through it, the friendly page
+#                  when one is down, the key readable by Traefik only, the
+#                  firewall's rules brought up to date
+#   announce       a server announces with its token: taken up, the address
+#                  from the connection (also through the proxy), pinned,
+#                  first claim wins, a removed token stops working
+#
 # For Test-UpgradeFromPrevious.ps1, where /tmp/release holds the previous
 # published release and the current source as an update to it:
 #
@@ -514,6 +525,88 @@ hour() { date -d "$1" +%H:00; }
 window_is() { grep -q "\"enabled\":$1" /tmp/sgc-test-body && grep -q "\"inWindow\":$2" /tmp/sgc-test-body; }
 # A settings file that apt reads after SGC's and that says otherwise.
 overruling_file=/etc/apt/apt.conf.d/99zz-sgc-test
+
+# --- Names, the proxy, services ----------------------------------------------------
+
+# answers_with <name> <address>: AdGuard Home on this machine answers the name
+# with that address.
+# shellcheck disable=SC2317  # called indirectly through check() and wait_for()
+answers_with() { [ "$(dns_answer 127.0.0.1 "$1")" = "$2" ]; }
+
+# serves_names <port> <name> <pattern>: asked for the name, the TLS server on
+# this machine shows a certificate with a name matching the pattern.
+# shellcheck disable=SC2317  # called indirectly through check()
+serves_names() {
+    echo | openssl s_client -connect "127.0.0.1:$1" -servername "$2" 2>/dev/null |
+        openssl x509 -noout -ext subjectAltName 2>/dev/null | grep -q "$3"
+}
+
+# through_proxy <label> <path> <text>: label.domain.tld, opened through the
+# proxy on this machine, shows the text.
+# shellcheck disable=SC2317  # called indirectly through check() and wait_for()
+through_proxy() {
+    local page
+    page="$(curl -sk --max-time 10 --resolve "$1.domain.tld:443:127.0.0.1" "https://$1.domain.tld$2")"
+    [[ "$page" == *"$3"* ]]
+}
+
+# A small web server in the home neighbour, standing in for a device behind a name.
+web_root=/tmp/sgc-test-www
+start_web_neighbour() {
+    sudo mkdir -p "$web_root" &&
+        echo '<html><body>served by the test neighbour</body></html>' | sudo tee "$web_root/index.html" >/dev/null
+    sudo systemctl stop sgc-test-web.service 2>/dev/null || true
+    sudo systemctl reset-failed sgc-test-web.service 2>/dev/null || true
+    sudo systemd-run --quiet --unit sgc-test-web ip netns exec "$inside_net" \
+        python3 -m http.server 8080 --bind "$inside_peer" --directory "$web_root"
+    wait_for 10 sudo ip netns exec "$inside_net" curl -s -o /dev/null "http://$inside_peer:8080/"
+}
+
+# start_tcp_neighbour <port>: a "game server" in the home neighbour that
+# greets whoever connects.
+start_tcp_neighbour() {
+    sudo systemctl stop sgc-test-game.service 2>/dev/null || true
+    sudo systemctl reset-failed sgc-test-game.service 2>/dev/null || true
+    sudo systemd-run --quiet --unit sgc-test-game ip netns exec "$inside_net" python3 -c '
+import socket, sys
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind((sys.argv[1], int(sys.argv[2])))
+s.listen(5)
+while True:
+    c, _ = s.accept()
+    c.sendall(b"hello-from-the-game\n")
+    c.close()
+' "$inside_peer" "$1"
+}
+
+# service_state_is <name> <up|down|unknown>: as the page shows it.
+# shellcheck disable=SC2317  # called indirectly through wait_for()
+service_state_is() {
+    [ "$(http GET /api/services)" = 200 ] && python3 -c '
+import json, sys
+services = [s for s in json.load(open("/tmp/sgc-test-body"))["services"] if s["name"] == sys.argv[1]]
+sys.exit(0 if services and services[0]["health"]["state"] == sys.argv[2] else 1)
+' "$1" "$2"
+}
+
+# service_has <name> <json text>: the service, as the page gets it, contains the text.
+# shellcheck disable=SC2317  # called indirectly through check()
+service_has() {
+    [ "$(http GET /api/services)" = 200 ] && python3 -c '
+import json, sys
+services = [s for s in json.load(open("/tmp/sgc-test-body"))["services"] if s["name"] == sys.argv[1]]
+sys.exit(0 if services and sys.argv[2] in json.dumps(services[0], separators=(",", ":")) else 1)
+' "$1" "$2"
+}
+
+# announce_from <namespace> <base url> <token> <curl arguments...>: what a
+# server's announce container does.
+announce_from() {
+    local ns="$1" base="$2" tok="$3"
+    shift 3
+    sudo ip netns exec "$ns" curl -sk -H "Authorization: Bearer $tok" "$@" "$base/api/announce"
+}
 
 case "$mode" in
 refused)
@@ -1992,6 +2085,143 @@ cli)
     check "and no longer as wanted" body_has '"wanted":false'
     check "SGC's own files still belong to its user" sudo sh -c "[ -z \"\$(find /var/lib/sgc ! -user sgc)\" ]"
     expect_in_audit "the history says it was done at the machine" '"actor":"console","action":"ssh.keys_only_off"'
+    ;;
+
+names)
+    echo "The gateway's own name, in AdGuard Home and on its page"
+    expect_status "the names are available" 200 GET /api/names
+    check "the gateway is called sgc under the domain" body_has '"fqdn":"sgc.domain.tld"'
+    check "SGC knows this device's address in the home network" body_has "\"address\":\"$lan_address\""
+    if wait_for 90 answers_with sgc.domain.tld "$lan_address"; then pass "AdGuard Home answers sgc.domain.tld with this device's address"; else
+        fail "AdGuard Home does not answer sgc.domain.tld with $lan_address (it says: $(dns_answer 127.0.0.1 sgc.domain.tld))"
+    fi
+    check "asked for by that name, SGC's page shows the certificate for *.domain.tld" serves_names 8443 sgc.domain.tld '\*\.domain\.tld'
+    check "asked for by address, it shows its own certificate" sh -c "! echo | openssl s_client -connect 127.0.0.1:8443 -noservername 2>/dev/null | openssl x509 -noout -ext subjectAltName 2>/dev/null | grep -q domain.tld"
+    # A rewrite of the owner's own in AdGuard Home is never touched.
+    curl -s -o /dev/null -X POST -H 'Content-Type: application/json' -d '{"domain":"printer.home","answer":"192.168.77.9"}' http://127.0.0.1:3000/control/rewrite/add
+    expect_status "a name SGC uses for AdGuard Home's page is refused" 400 POST /api/names/gateway '{"name":"adguard"}'
+    expect_status "and one that is not a name" 400 POST /api/names/gateway '{"name":"Not A Name"}'
+    expect_status "the gateway can be renamed" 200 POST /api/names/gateway '{"name":"gw"}'
+    if wait_for 30 answers_with gw.domain.tld "$lan_address"; then pass "the new name is in AdGuard Home"; else fail "the new name is not in AdGuard Home"; fi
+    if wait_for 30 sh -c "! curl -s http://127.0.0.1:3000/control/rewrite/list | grep -q sgc.domain.tld"; then pass "and the old one is gone"; else fail "the old name is still there"; fi
+    check "the owner's own rewrite is still there" sh -c "curl -s http://127.0.0.1:3000/control/rewrite/list | grep -q printer.home"
+    expect_status "renamed back" 200 POST /api/names/gateway '{"name":"sgc"}'
+    wait_for 30 answers_with sgc.domain.tld "$lan_address" || fail "sgc.domain.tld did not come back"
+    expect_in_audit "the history has the renaming" '"action":"gateway.renamed"'
+    output="$(sudo sgc doctor 2>&1)"
+    if echo "$output" | grep -q 'sgc.domain.tld points at this device'; then pass "the doctor sees the name in place"; else
+        fail "the doctor does not see the name"
+        indent <<<"$output"
+    fi
+    ;;
+
+proxy)
+    echo "The proxy: installed with SGC and off until switched on"
+    expect_status "the proxy's state is available" 200 GET /api/proxy
+    if [ -e /opt/sgc/components/traefik/current/traefik ]; then
+        check "it is off" body_has '"wanted":false'
+        check "nothing listens on port 443 yet" sh -c "! ss -Hltn sport = :443 | grep -q ."
+        traefik_from_start=true
+    else
+        # A machine updated from a version that did not install it.
+        traefik_from_start=false
+    fi
+    neighbour "$inside_net" "$inside_gateway" "$inside_peer" || fail "the home neighbour could not be set up"
+    start_web_neighbour
+    expect_status "a web service is added by hand" 200 POST /api/services \
+        "{\"name\":\"web\",\"title\":\"Web\",\"kind\":\"http\",\"mode\":\"proxied\",\"upstreamIp\":\"$inside_peer\",\"upstreamPort\":8080,\"scheme\":\"http\",\"verifyTls\":false,\"listenPort\":0,\"category\":\"Test\",\"protected\":false,\"enabled\":true}"
+    expect_status "one pointing outside the home network is refused" 400 POST /api/services \
+        '{"name":"outside","title":"","kind":"http","mode":"proxied","upstreamIp":"203.0.113.2","upstreamPort":80,"scheme":"http","verifyTls":false,"listenPort":0,"category":"","protected":false,"enabled":true}'
+    expect_status "switching the proxy on" 200 POST /api/proxy/enabled '{"enabled":true}'
+    check "it is on and running" sh -c "grep -q '\"wanted\":true' /tmp/sgc-test-body && grep -q '\"running\":true' /tmp/sgc-test-body"
+    if [ "$traefik_from_start" = false ]; then check "switching on installed Traefik" test -x /opt/sgc/components/traefik/current/traefik; fi
+    check "Traefik runs under its own account" sh -c "[ \"\$(ps -o user= -C traefik | head -1)\" = sgc-traefik ]"
+    check "the key of the certificate is Traefik's and root's only" sh -c "[ \"\$(sudo stat -c '%U:%G %a' /etc/sgc/traefik/certs/wildcard.key)\" = 'root:sgc-traefik 640' ]"
+    check "SGC's own account cannot read it" sh -c "! sudo -u sgc cat /etc/sgc/traefik/certs/wildcard.key >/dev/null 2>&1"
+    check "web.domain.tld opens the service through the proxy" through_proxy web '/' 'served by the test neighbour'
+    check "the proxy shows the certificate for *.domain.tld" serves_names 443 web.domain.tld '\*\.domain\.tld'
+    check "plain http is sent on to https" sh -c "curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --resolve web.domain.tld:80:127.0.0.1 http://web.domain.tld/x | grep -qE '^30[18] https://web.domain.tld/x'"
+    check "the gateway's own name sends you to SGC's page" sh -c "curl -sk -o /dev/null -w '%{http_code} %{redirect_url}' --resolve sgc.domain.tld:443:127.0.0.1 https://sgc.domain.tld/system | grep -q '^302 https://sgc.domain.tld:8443/system'"
+    check "a name SGC does not know gets SGC's page saying so" through_proxy nothing '/' 'No service by this name'
+    if wait_for 90 answers_with web.domain.tld "$lan_address"; then pass "AdGuard Home answers web.domain.tld with this device's address"; else fail "web.domain.tld is not in AdGuard Home"; fi
+    check "AdGuard Home's page has a name too" answers_with adguard.domain.tld "$lan_address"
+    echo "A service that stops answering"
+    sudo systemctl stop sgc-test-web.service
+    check "the proxy answers with SGC's friendly page" through_proxy web '/' 'Not reachable right now'
+    if wait_for 90 service_state_is web down; then pass "the page shows it as down"; else fail "the service is not shown as down"; fi
+    start_web_neighbour
+    if wait_for 90 service_state_is web up; then pass "and as up again once it answers"; else fail "the service is not shown as up again"; fi
+    echo "What the root side refuses, whatever the web process sends"
+    if [ "$(helper_status /v1/proxy/apply '{"enabled":true,"domain":"domain.tld","gatewayName":"sgc","webPort":8443,"certificatePem":"x","privateKeyPem":"y","services":[]}')" = 400 ]; then
+        pass "a configuration without a valid certificate"
+    else fail "the helper took a configuration without a valid certificate"; fi
+    echo "A game server, through a port of the gateway"
+    start_tcp_neighbour 25565
+    expect_status "a proxied TCP service is added" 200 POST /api/services \
+        "{\"name\":\"game\",\"title\":\"\",\"kind\":\"tcp\",\"mode\":\"proxied\",\"upstreamIp\":\"$inside_peer\",\"upstreamPort\":25565,\"scheme\":\"http\",\"verifyTls\":false,\"listenPort\":25565,\"category\":\"Test\",\"protected\":false,\"enabled\":true}"
+    if wait_for 60 sh -c "ss -Hltn sport = :25565 | grep -q ."; then pass "the gateway listens on port 25565"; else fail "the gateway does not listen on 25565"; fi
+    check "a connection there reaches the game server" sh -c "timeout 5 bash -c 'exec 3<>/dev/tcp/127.0.0.1/25565; read -r line <&3; [ \"\$line\" = hello-from-the-game ]'"
+    expect_status "a second service on the same port is refused" 400 POST /api/services \
+        "{\"name\":\"game2\",\"title\":\"\",\"kind\":\"tcp\",\"mode\":\"proxied\",\"upstreamIp\":\"$inside_peer\",\"upstreamPort\":25566,\"scheme\":\"http\",\"verifyTls\":false,\"listenPort\":25565,\"category\":\"\",\"protected\":false,\"enabled\":true}"
+    expect_status "a direct one is added" 200 POST /api/services \
+        "{\"name\":\"voice\",\"title\":\"\",\"kind\":\"udp\",\"mode\":\"direct\",\"upstreamIp\":\"$inside_peer\",\"upstreamPort\":9987,\"scheme\":\"http\",\"verifyTls\":false,\"listenPort\":0,\"category\":\"\",\"protected\":false,\"enabled\":true}"
+    if wait_for 90 answers_with voice.domain.tld "$inside_peer"; then pass "its name points at the device itself"; else fail "voice.domain.tld does not point at $inside_peer"; fi
+    if firewall_is on; then
+        echo "The firewall's rules follow"
+        expect_status "the firewall's state is available" 200 GET /api/firewall
+        check "it says its rules lag behind the proxy" body_has 'the proxy (ports 80 and 443)'
+        check "and the game's port" body_has 'port 25565/tcp'
+        check "the home neighbour does not get through to the proxy yet" does_not_reach "$inside_net" "$inside_gateway" 443
+        expect_status "bringing the rules up to date" 202 POST /api/firewall/change '{"enabled":true,"again":true}'
+        expect_status "confirmed" 200 POST /api/firewall/confirm '{}'
+        check "the home neighbour reaches the proxy" reaches "$inside_net" "$inside_gateway" 443
+        check "and the game" reaches "$inside_net" "$inside_gateway" 25565
+        expect_status "the firewall's state is available" 200 GET /api/firewall
+        check "nothing lags behind any more" body_has '"behind":\[\]'
+    fi
+    output="$(sudo sgc doctor 2>&1)"
+    if echo "$output" | grep -q 'The proxy runs: Traefik'; then pass "the doctor sees the proxy running"; else
+        fail "the doctor does not see the proxy"
+        indent <<<"$output"
+    fi
+    expect_in_audit "the history has the proxy switched on" '"action":"proxy.switched_on"'
+    ;;
+
+announce)
+    echo "A server announces its services with a token"
+    neighbour "$inside_net" "$inside_gateway" "$inside_peer" || fail "the home neighbour could not be set up"
+    start_web_neighbour
+    expect_status "a token is made" 200 POST /api/tokens '{"label":"media server"}'
+    token="$(grep -o '"secret":"[^"]*"' /tmp/sgc-test-body | cut -d'"' -f4)"
+    check "the token is in that answer" test -n "$token"
+    expect_status "the list of tokens is available" 200 GET /api/tokens
+    check "but not the token itself" sh -c "! grep -q '$token' /tmp/sgc-test-body"
+    answer="$(announce_from "$inside_net" "https://$inside_gateway:8443" "$token" -d service=media:8080 -d category=Media)"
+    if [[ "$answer" == *"media: https://media.domain.tld"* ]]; then pass "the announcement is taken up"; else fail "the announcement: $answer"; fi
+    check "the service has the server's address, taken from the connection" service_has media "\"upstreamIp\":\"$inside_peer\""
+    check "and the token's name" service_has media '"tokenLabel":"media server"'
+    if wait_for 60 through_proxy media '/' 'served by the test neighbour'; then pass "it opens by its name at once"; else fail "media.domain.tld does not open"; fi
+    answer="$(announce_from "$inside_net" "https://$inside_gateway:8443" "$token" -d service=web:8080)"
+    if [[ "$answer" == *"web: refused"* ]]; then pass "a name added in the page is not taken over"; else fail "a taken name: $answer"; fi
+    answer="$(announce_from "$inside_net" "https://$inside_gateway:8443" "sgc_made-up" -d service=x:80)"
+    if [[ "$answer" == *"does not know this token"* ]]; then pass "a made-up token is refused"; else fail "a made-up token: $answer"; fi
+    answer="$(curl -sk -H "Authorization: Bearer $token" -d service=media:8080 "$api/api/announce")"
+    if [[ "$answer" == *"belongs to the server at $inside_peer"* ]]; then pass "the token is refused from another address"; else fail "from another address: $answer"; fi
+    echo "Through the proxy, the address comes from the connection, not from the request"
+    if firewall_is on || true; then
+        answer="$(sudo ip netns exec "$inside_net" curl -sk --resolve "sgc.domain.tld:443:$inside_gateway" -H "Authorization: Bearer $token" \
+            -H 'X-Forwarded-For: 192.168.77.99' -d service=media:8081 https://sgc.domain.tld/api/announce)"
+        if [[ "$answer" == *"media: https://media.domain.tld"* ]]; then pass "an announcement through the proxy is taken up"; else fail "through the proxy: $answer"; fi
+        check "the address that pretended otherwise was not used" service_has media "\"upstreamIp\":\"$inside_peer\""
+        check "the new port was" service_has media '"upstreamPort":8081'
+    fi
+    expect_in_audit "the history has the announcement" '"action":"service.announced"'
+    expect_in_audit "and the refused one" '"action":"token.refused"'
+    tokens_id="$(http GET /api/tokens >/dev/null; grep -o '"id":[0-9]*' /tmp/sgc-test-body | head -1 | cut -d: -f2)"
+    expect_status "the token is removed, its services switched off" 200 POST "/api/tokens/$tokens_id/remove" '{"keep":false}'
+    check "the service is off" service_has media '"enabled":false'
+    answer="$(announce_from "$inside_net" "https://$inside_gateway:8443" "$token" -d service=media:8080)"
+    if [[ "$answer" == *"does not know this token"* ]]; then pass "the removed token no longer works"; else fail "a removed token: $answer"; fi
     ;;
 
 *)

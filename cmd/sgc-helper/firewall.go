@@ -16,6 +16,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/firewall"
 	"github.com/Troglobitten/sgc/internal/layout"
 	"github.com/Troglobitten/sgc/internal/proxy"
+	"github.com/Troglobitten/sgc/internal/wireguard"
 )
 
 // The units that change the firewall (installer/sgc-firewall-*.service).
@@ -92,6 +93,13 @@ func firewallSystem() *firewall.System {
 		Proxy: func() (bool, []string) {
 			applied := proxy.ReadApplied(proxy.DefaultPaths())
 			return applied.Enabled && proxy.Installed(proxy.DefaultPaths()), applied.ListenPorts
+		},
+		// The VPN's port while it is on: the one port that faces the internet.
+		VPNPort: func() int {
+			if state := wireguard.ReadState(wireguard.DefaultPaths()); state.Enabled {
+				return state.Port
+			}
+			return 0
 		},
 		Window: firewall.ConfirmWindow,
 		Run:    runProgram,
