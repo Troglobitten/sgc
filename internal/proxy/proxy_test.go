@@ -96,6 +96,41 @@ func TestRender(t *testing.T) {
 	}
 }
 
+// Without this setting a visitor's "X_SGC_User" reaches PHP and CGI services
+// as the gate's user header (seen with Traefik 3.7.16 on 2026-10-23), so it
+// is checked here and not only through the expected file, which -update
+// would rewrite without it.
+func TestEveryHTTPEntryPointDropsLookAlikeHeaders(t *testing.T) {
+	static, err := RenderStatic(sample(t), "/etc/sgc/traefik/dynamic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		EntryPoints map[string]struct {
+			Address string `json:"address"`
+			HTTP    struct {
+				AliasHeadersStrategy string `json:"aliasHeadersStrategy"`
+			} `json:"http"`
+		} `json:"entryPoints"`
+	}
+	if err := json.Unmarshal(static[strings.IndexByte(string(static), '\n')+1:], &parsed); err != nil {
+		t.Fatal(err)
+	}
+	checked := 0
+	for name, entryPoint := range parsed.EntryPoints {
+		if strings.HasSuffix(entryPoint.Address, "/udp") {
+			continue
+		}
+		checked++
+		if entryPoint.HTTP.AliasHeadersStrategy != "delete" {
+			t.Errorf("entry point %s does not drop look-alike headers", name)
+		}
+	}
+	if checked < 4 {
+		t.Errorf("only %d entry points checked; the sample should have web, websecure, traefik and a TCP one", checked)
+	}
+}
+
 func TestWhatIsRefused(t *testing.T) {
 	otherCert, otherKey := certificate(t, "*.elsewhere.tld")
 	cases := map[string]func(*Config){

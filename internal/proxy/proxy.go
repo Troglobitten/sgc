@@ -42,6 +42,9 @@ const (
 	maxServices  = 500
 	maxAllowList = 256
 	maxPEM       = 64 * 1024
+	// gateAnswerLimit is the most Traefik reads of SGC's answer to "may
+	// this visitor in?" (a redirect or a one-line refusal).
+	gateAnswerLimit = 64 * 1024
 )
 
 // Kinds of service.
@@ -268,15 +271,22 @@ func entryPointName(port string) string { return strings.ReplaceAll(port, "/", "
 func RenderStatic(cfg Config, dynamicDir string) ([]byte, error) {
 	entryPoints := map[string]any{
 		// Plain http only ever redirects to https.
-		"web": map[string]any{"address": ":80", "http": map[string]any{"redirections": map[string]any{
-			"entryPoint": map[string]any{"to": "websecure", "scheme": "https", "permanent": true}}}},
-		"websecure": map[string]any{"address": ":443"},
+		"web": map[string]any{"address": ":80", "http": map[string]any{
+			"aliasHeadersStrategy": "delete",
+			"redirections": map[string]any{
+				"entryPoint": map[string]any{"to": "websecure", "scheme": "https", "permanent": true}}}},
+		"websecure": map[string]any{"address": ":443", "http": noAliasHeaders()},
 		// Traefik's own API and health answer, on this device only.
-		"traefik": map[string]any{"address": TraefikAPI},
+		"traefik": map[string]any{"address": TraefikAPI, "http": noAliasHeaders()},
 	}
 	for _, port := range cfg.ListenPorts() {
 		number, protocol, _ := strings.Cut(port, "/")
-		entryPoints[entryPointName(port)] = map[string]any{"address": ":" + number + "/" + protocol}
+		entryPoint := map[string]any{"address": ":" + number + "/" + protocol}
+		if protocol == "tcp" {
+			// Traefik can serve HTTP on any TCP entry point, so the same rule.
+			entryPoint["http"] = noAliasHeaders()
+		}
+		entryPoints[entryPointName(port)] = entryPoint
 	}
 	static := map[string]any{
 		"global":      map[string]any{"checkNewVersion": false, "sendAnonymousUsage": false},
@@ -292,6 +302,14 @@ func RenderStatic(cfg Config, dynamicDir string) ([]byte, error) {
 			"defaultMode": "keep", "headers": map[string]any{"defaultMode": "drop"}}},
 	}
 	return marshal(static)
+}
+
+// noAliasHeaders makes Traefik drop request headers whose names stand for
+// another header: PHP, CGI and the like read "X_SGC_User" as "X-SGC-User",
+// so without this a visitor could pass a name of their choosing to a
+// service behind the login gate, which empties only the real header.
+func noAliasHeaders() map[string]any {
+	return map[string]any{"aliasHeadersStrategy": "delete"}
 }
 
 // Names Traefik's routers and services get. Labels contain only letters,
@@ -318,7 +336,10 @@ func RenderDynamic(cfg Config, certFile, keyFile string) ([]byte, error) {
 			"status": []string{"502-504"}, "service": "sgc-internal", "query": "/proxy-error/{status}"}},
 		"login-gate": map[string]any{"forwardAuth": map[string]any{
 			"address": internal + "/gate/check", "trustForwardHeader": false,
-			"authResponseHeaders": []string{"X-SGC-User"}}},
+			"authResponseHeaders": []string{"X-SGC-User"},
+			// SGC's answers here are a few hundred bytes; Traefik reads any
+			// size unless told.
+			"maxResponseBodySize": gateAnswerLimit}},
 		// Visitors cannot pretend to be someone through this header.
 		"no-user-header": map[string]any{"headers": map[string]any{"customRequestHeaders": map[string]any{"X-SGC-User": ""}}},
 		"unknown-name":   map[string]any{"replacePath": map[string]any{"path": "/proxy-unknown"}},
