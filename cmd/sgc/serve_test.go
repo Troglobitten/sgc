@@ -42,7 +42,7 @@ func startServe(t *testing.T, extraArgs ...string) (address string, out *syncBuf
 	ctx, cancel := context.WithCancel(context.Background())
 	out = &syncBuffer{}
 	done := make(chan int, 1)
-	args := append([]string{"serve", "--listen", "127.0.0.1:0", "--state-dir", t.TempDir()}, extraArgs...)
+	args := append([]string{"serve", "--listen", "127.0.0.1:0", "--internal-listen", "127.0.0.1:0", "--state-dir", t.TempDir()}, extraArgs...)
 	go func() { done <- run(ctx, args, out, out) }()
 
 	// Safe to call more than once: tests stop the server themselves to look

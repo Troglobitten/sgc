@@ -104,6 +104,74 @@ const (
 	ActionCertificateIssued      = "certificate.issued"
 	ActionCertificateRenewed     = "certificate.renewed"
 	ActionCertificateFailed      = "certificate.failed"
+
+	// The gateway's own name under the domain was changed.
+	ActionGatewayRenamed = "gateway.renamed"
+
+	// The proxy (Traefik) was switched on or off; its configuration could
+	// not be put in place (the detail says why; the previous one stayed).
+	ActionProxySwitchedOn  = "proxy.switched_on"
+	ActionProxySwitchedOff = "proxy.switched_off"
+	ActionProxyApplyFailed = "proxy.apply_failed"
+
+	// A service was added, changed or removed in the page; a server
+	// announced one (new, or with a new port); an announcement was refused
+	// (the detail says which and why); a service waiting for approval was
+	// approved.
+	ActionServiceAdded           = "service.added"
+	ActionServiceChanged         = "service.changed"
+	ActionServiceRemoved         = "service.removed"
+	ActionServiceAnnounced       = "service.announced"
+	ActionServiceAnnounceRefused = "service.announce_refused"
+	ActionServiceApproved        = "service.approved"
+	ActionServiceSettingsChanged = "service.settings_changed"
+
+	// A server's token for announcing was made, removed, or pinned to a new
+	// address; an announcement came with a token SGC does not know.
+	ActionTokenCreated  = "token.created"
+	ActionTokenRemoved  = "token.removed"
+	ActionTokenRepinned = "token.repinned"
+	ActionTokenRefused  = "token.refused"
+
+	// The VPN was switched on or off, or its settings changed; its public
+	// address was written to Zone.eu, or that failed.
+	ActionVPNSwitchedOn      = "vpn.switched_on"
+	ActionVPNSwitchedOff     = "vpn.switched_off"
+	ActionVPNSettingsChanged = "vpn.settings_changed"
+	ActionVPNEndpointUpdated = "vpn.endpoint_updated"
+	ActionVPNEndpointFailed  = "vpn.endpoint_failed"
+	ActionVPNApplyFailed     = "vpn.apply_failed"
+
+	// People and their devices. A device's QR code or settings file was
+	// shown (it contains the device's private key). A guest's time ran out.
+	ActionPersonAdded           = "person.added"
+	ActionPersonChanged         = "person.changed"
+	ActionPersonRemoved         = "person.removed"
+	ActionPersonExpired         = "person.expired"
+	ActionPersonPasswordChanged = "person.password_changed"
+	ActionDeviceAdded           = "device.added"
+	ActionDeviceChanged         = "device.changed"
+	ActionDeviceRemoved         = "device.removed"
+	ActionDeviceRevealed        = "device.revealed"
+
+	// Someone passed SGC's login gate in front of a protected service, or
+	// failed to.
+	ActionGateLogin       = "gate.login"
+	ActionGateLoginFailed = "gate.login_failed"
+
+	// The settings for notifications were changed; a test message was sent.
+	ActionNotifySettingsChanged = "notify.settings_changed"
+	ActionNotifyTestSent        = "notify.test_sent"
+
+	// Scheduled backups: settings changed, a backup key made, a backup
+	// written to the target or failed.
+	ActionBackupSettingsChanged = "backup.settings_changed"
+	ActionBackupKeyCreated      = "backup.key_created"
+	ActionBackupMade            = "backup.made"
+	ActionBackupFailed          = "backup.failed"
+
+	// The admin's password was set anew from the command line.
+	ActionAdminReset = "admin.reset"
 )
 
 // ActorConsole is recorded for actions taken with the command-line tool.

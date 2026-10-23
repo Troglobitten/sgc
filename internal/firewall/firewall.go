@@ -34,6 +34,14 @@ import (
 // The table SGC owns in nftables. "inet" covers IPv4 and IPv6 together.
 const tableName = "sgc"
 
+// VPNInterface is the WireGuard interface SGC's VPN uses (internal/wireguard).
+// Traffic through it is let past this table; which device may reach what is
+// decided in the VPN's own table.
+const VPNInterface = "sgc-wg"
+
+// maxProxyPorts bounds the ports proxied services can have.
+const maxProxyPorts = 500
+
 // maxSSHPorts bounds a list that comes from this machine's SSH configuration.
 const maxSSHPorts = 8
 
@@ -93,19 +101,45 @@ type Config struct {
 	// AdGuard Home is installed: without something to answer, the port
 	// stays shut.
 	DNS bool `json:"dns,omitempty"`
+	// Proxy lets the proxy's web ports (80, 443) in from inside, and the
+	// ports of proxied services ("25565/tcp"). Set by the root side while
+	// the proxy is switched on.
+	Proxy      bool     `json:"proxy,omitempty"`
+	ProxyPorts []string `json:"proxyPorts,omitempty"`
+	// VPNPort is the VPN's UDP port, let in from anywhere: the one port that
+	// faces the internet. 0 while the VPN is off.
+	VPNPort int `json:"vpnPort,omitempty"`
 }
 
 // Equal reports whether two configurations lead to the same rules.
 func (c Config) Equal(other Config) bool {
-	return c.Enabled == other.Enabled && c.WebPort == other.WebPort && c.DNS == other.DNS &&
-		slices.Equal(c.normalised().SSHPorts, other.normalised().SSHPorts)
+	a, b := c.normalised(), other.normalised()
+	return a.Enabled == b.Enabled && a.WebPort == b.WebPort && a.DNS == b.DNS &&
+		a.Proxy == b.Proxy && a.VPNPort == b.VPNPort &&
+		slices.Equal(a.SSHPorts, b.SSHPorts) && slices.Equal(a.ProxyPorts, b.ProxyPorts)
 }
 
 func (c Config) normalised() Config {
 	ports := slices.Clone(c.SSHPorts)
 	slices.Sort(ports)
 	c.SSHPorts = slices.Compact(ports)
+	proxied := slices.Clone(c.ProxyPorts)
+	slices.Sort(proxied)
+	c.ProxyPorts = slices.Compact(proxied)
+	if len(c.ProxyPorts) == 0 {
+		c.ProxyPorts = nil
+	}
 	return c
+}
+
+// splitProxyPort reads "25565/tcp".
+func splitProxyPort(s string) (int, string, bool) {
+	number, protocol, found := strings.Cut(s, "/")
+	port, err := strconv.Atoi(number)
+	if !found || err != nil || !validPort(port) || (protocol != "tcp" && protocol != "udp") {
+		return 0, "", false
+	}
+	return port, protocol, true
 }
 
 func (c Config) validate() error {
@@ -119,6 +153,17 @@ func (c Config) validate() error {
 		if !validPort(port) {
 			return fmt.Errorf("SSH port %d is not a valid port", port)
 		}
+	}
+	if len(c.ProxyPorts) > maxProxyPorts {
+		return fmt.Errorf("more than %d ports for proxied services", maxProxyPorts)
+	}
+	for _, p := range c.ProxyPorts {
+		if _, _, ok := splitProxyPort(p); !ok {
+			return fmt.Errorf("%q is not a port for a proxied service", p)
+		}
+	}
+	if c.VPNPort != 0 && !validPort(c.VPNPort) {
+		return fmt.Errorf("port %d for the VPN is not a valid port", c.VPNPort)
 	}
 	return nil
 }
@@ -179,7 +224,11 @@ func Render(cfg Config) (string, error) {
 		# Getting and keeping an address from the router (DHCP).
 		udp sport 67 udp dport 68 accept
 		ip6 saddr fe80::/10 udp sport 547 udp dport 546 accept
-		ip saddr @inside4 jump inside
+`)
+	if cfg.VPNPort != 0 {
+		fmt.Fprintf(&b, "\t\t# The VPN, from anywhere: the one port that faces the internet.\n\t\tudp dport %d accept\n", cfg.VPNPort)
+	}
+	b.WriteString(`		ip saddr @inside4 jump inside
 		ip6 saddr @inside6 jump inside
 		counter name refused drop
 	}
@@ -189,15 +238,53 @@ func Render(cfg Config) (string, error) {
 	if cfg.DNS {
 		b.WriteString("\t\t# DNS, answered by AdGuard Home.\n\t\tmeta l4proto { tcp, udp } th dport 53 accept\n")
 	}
+	if cfg.Proxy {
+		b.WriteString("\t\t# The proxy (Traefik): the names of the home network.\n\t\ttcp dport { 80, 443 } accept\n")
+		var tcpPorts, udpPorts []int
+		for _, p := range cfg.ProxyPorts {
+			port, protocol, _ := splitProxyPort(p)
+			if protocol == "tcp" {
+				tcpPorts = append(tcpPorts, port)
+			} else {
+				udpPorts = append(udpPorts, port)
+			}
+		}
+		if len(tcpPorts) > 0 || len(udpPorts) > 0 {
+			b.WriteString("\t\t# Services passed on by the proxy at a port of their own.\n")
+		}
+		if len(tcpPorts) > 0 {
+			slices.Sort(tcpPorts)
+			fmt.Fprintf(&b, "\t\ttcp dport { %s } accept\n", joinPorts(slices.Compact(tcpPorts)))
+		}
+		if len(udpPorts) > 0 {
+			slices.Sort(udpPorts)
+			fmt.Fprintf(&b, "\t\tudp dport { %s } accept\n", joinPorts(slices.Compact(udpPorts)))
+		}
+	}
 	b.WriteString(`		icmp type echo-request accept
 		icmpv6 type echo-request accept
 	}
-	# The gateway does not pass traffic on between networks yet.
+`)
+	if cfg.VPNPort == 0 {
+		b.WriteString(`	# The gateway does not pass traffic on between networks yet.
 	chain forward {
 		type filter hook forward priority filter; policy drop;
 	}
 }
 `)
+		return b.String(), nil
+	}
+	fmt.Fprintf(&b, `	# Only the VPN's traffic passes the gateway. Which device may reach what
+	# is decided in the VPN's own table (inet sgc_vpn), which also has to
+	# let it through.
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+		ct state invalid drop
+		iifname "%[1]s" accept
+		oifname "%[1]s" ct state established,related accept
+	}
+}
+`, VPNInterface)
 	return b.String(), nil
 }
 

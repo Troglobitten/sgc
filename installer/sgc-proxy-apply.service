@@ -1,0 +1,31 @@
+[Unit]
+Description=Server Gateway Control: put the proxy's configuration in place
+Documentation=https://github.com/Troglobitten/sgc
+# Never refused for having been started often (see sgc-firewall-change.service).
+StartLimitIntervalSec=0
+
+[Service]
+# Reads the configuration the helper put in /run/sgc-requests/proxy.json,
+# checks every value in it again, writes Traefik's files from it, restarts
+# Traefik if its ports changed, and asks Traefik whether it took every route.
+# If not, the previous files are put back. Started by the helper; see
+# internal/proxy.
+Type=oneshot
+ExecStart=/opt/sgc/current/sgc-helper proxy apply
+TimeoutStartSec=150
+
+# Root, because the files belong to root and are readable by Traefik's group
+# only (they contain the certificate's key). It writes to /etc/sgc and
+# nowhere else, and talks only to Traefik on 127.0.0.1.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/etc/sgc
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes

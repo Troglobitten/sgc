@@ -98,6 +98,185 @@ var migrations = []string{
 		added_by    TEXT    NOT NULL
 	);
 	`,
+
+	// 4: services behind SGC's names, and the tokens servers announce them with.
+	`
+	CREATE TABLE announce_token (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		-- What the owner calls the server ("media server").
+		label        TEXT    NOT NULL,
+		-- Only a hash: the token itself is shown once and then only the
+		-- server has it.
+		token_hash   BLOB    NOT NULL UNIQUE,
+		-- The token's first characters, to tell tokens apart in the page.
+		hint         TEXT    NOT NULL,
+		-- The address the token was first used from; announcements from
+		-- anywhere else are refused until the owner moves it.
+		pinned_ip    TEXT    NOT NULL DEFAULT '',
+		created_at   INTEGER NOT NULL,
+		last_used_at INTEGER NOT NULL DEFAULT 0
+	);
+
+	CREATE TABLE service (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		-- The label under the domain: "nas" in nas.domain.tld.
+		name          TEXT    NOT NULL UNIQUE,
+		-- What the dashboard calls it ("" means: the name).
+		title         TEXT    NOT NULL DEFAULT '',
+		kind          TEXT    NOT NULL CHECK (kind IN ('http', 'tcp', 'udp')),
+		-- For tcp and udp: through the proxy, or the name points at the device.
+		mode          TEXT    NOT NULL DEFAULT 'proxied' CHECK (mode IN ('proxied', 'direct')),
+		upstream_ip   TEXT    NOT NULL,
+		upstream_port INTEGER NOT NULL,
+		scheme        TEXT    NOT NULL DEFAULT 'http' CHECK (scheme IN ('http', 'https')),
+		verify_tls    INTEGER NOT NULL DEFAULT 0,
+		-- For a proxied tcp or udp service: its port on the gateway.
+		listen_port   INTEGER NOT NULL DEFAULT 0,
+		category      TEXT    NOT NULL DEFAULT '',
+		-- Behind SGC's login gate (web services only).
+		protected     INTEGER NOT NULL DEFAULT 0,
+		enabled       INTEGER NOT NULL DEFAULT 1,
+		-- Announced while "approve new services" was on, and not approved yet.
+		pending       INTEGER NOT NULL DEFAULT 0,
+		-- The token that announced it; NULL for a service added in the page.
+		token_id      INTEGER REFERENCES announce_token (id) ON DELETE SET NULL,
+		-- Who can reach it from where. Only "lan" exists (docs/design.md §5).
+		exposure      TEXT    NOT NULL DEFAULT 'lan',
+		created_at    INTEGER NOT NULL,
+		updated_at    INTEGER NOT NULL,
+		announced_at  INTEGER NOT NULL DEFAULT 0
+	);
+
+	CREATE TABLE service_icon (
+		service_id INTEGER PRIMARY KEY REFERENCES service (id) ON DELETE CASCADE,
+		-- Always a PNG that SGC drew itself from what it fetched.
+		png        BLOB    NOT NULL,
+		-- Where it came from: "page", "favicon", "catalogue".
+		source     TEXT    NOT NULL,
+		fetched_at INTEGER NOT NULL
+	);
+
+	CREATE TABLE service_health (
+		service_id INTEGER PRIMARY KEY REFERENCES service (id) ON DELETE CASCADE,
+		up         INTEGER NOT NULL,
+		-- Failed probes in a row.
+		failures   INTEGER NOT NULL DEFAULT 0,
+		-- Since when it has been up, or down.
+		since      INTEGER NOT NULL,
+		checked_at INTEGER NOT NULL,
+		last_up_at INTEGER NOT NULL DEFAULT 0
+	);
+	`,
+
+	// 5: people, their VPN devices, and what the devices used.
+	`
+	CREATE TABLE person (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		name          TEXT    NOT NULL UNIQUE,
+		-- What the person's VPN devices reach: the whole home network, or
+		-- SGC's names only.
+		network       TEXT    NOT NULL DEFAULT 'services' CHECK (network IN ('full', 'services')),
+		-- All services, or only those in person_service.
+		all_services  INTEGER NOT NULL DEFAULT 1,
+		-- A login for services behind SGC's login gate. Never for SGC's page.
+		login_enabled INTEGER NOT NULL DEFAULT 0,
+		username      TEXT    UNIQUE,
+		password_hash TEXT    NOT NULL DEFAULT '',
+		-- 0: no end. Otherwise a guest: devices and login stop then.
+		expires_at    INTEGER NOT NULL DEFAULT 0,
+		disabled      INTEGER NOT NULL DEFAULT 0,
+		created_at    INTEGER NOT NULL,
+		updated_at    INTEGER NOT NULL
+	);
+
+	CREATE TABLE person_service (
+		person_id  INTEGER NOT NULL REFERENCES person (id) ON DELETE CASCADE,
+		service_id INTEGER NOT NULL REFERENCES service (id) ON DELETE CASCADE,
+		PRIMARY KEY (person_id, service_id)
+	);
+
+	CREATE TABLE vpn_device (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		person_id     INTEGER NOT NULL REFERENCES person (id) ON DELETE CASCADE,
+		name          TEXT    NOT NULL,
+		-- Its address inside the tunnel, which WireGuard binds to its key.
+		address       TEXT    NOT NULL UNIQUE,
+		-- Kept so that the QR code can be shown again (docs/design.md §4.9).
+		private_key   TEXT    NOT NULL,
+		public_key    TEXT    NOT NULL UNIQUE,
+		preshared_key TEXT    NOT NULL,
+		-- Send all internet traffic through home, or only home's.
+		all_traffic   INTEGER NOT NULL DEFAULT 0,
+		enabled       INTEGER NOT NULL DEFAULT 1,
+		created_at    INTEGER NOT NULL,
+		UNIQUE (person_id, name)
+	);
+
+	CREATE TABLE vpn_usage (
+		device_id  INTEGER NOT NULL REFERENCES vpn_device (id) ON DELETE CASCADE,
+		resolution TEXT    NOT NULL CHECK (resolution IN ('minute', 'hour', 'day')),
+		-- Start of the period, in seconds.
+		at         INTEGER NOT NULL,
+		rx         INTEGER NOT NULL,
+		tx         INTEGER NOT NULL,
+		PRIMARY KEY (device_id, resolution, at)
+	);
+
+	CREATE TABLE vpn_peer_state (
+		device_id      INTEGER PRIMARY KEY REFERENCES vpn_device (id) ON DELETE CASCADE,
+		-- WireGuard's counters when last read, to turn them into usage.
+		rx             INTEGER NOT NULL,
+		tx             INTEGER NOT NULL,
+		last_handshake INTEGER NOT NULL DEFAULT 0,
+		endpoint       TEXT    NOT NULL DEFAULT '',
+		seen_at        INTEGER NOT NULL
+	);
+	`,
+
+	// 6: notifications shown in the page (and sent, where the owner chose).
+	`
+	CREATE TABLE notification (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		at          INTEGER NOT NULL,
+		event       TEXT    NOT NULL,
+		severity    TEXT    NOT NULL CHECK (severity IN ('info', 'warning', 'problem')),
+		title       TEXT    NOT NULL,
+		body        TEXT    NOT NULL,
+		-- Set for a problem that lasts until it is resolved (a banner).
+		ongoing_key TEXT,
+		resolved_at INTEGER NOT NULL DEFAULT 0,
+		read_at     INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE INDEX notification_at ON notification (at);
+	CREATE UNIQUE INDEX notification_open ON notification (ongoing_key)
+		WHERE ongoing_key IS NOT NULL AND resolved_at = 0;
+	`,
+
+	// 7: the login gate in front of protected services.
+	`
+	CREATE TABLE person_session (
+		-- A person signed in on SGC's gate page. Only a hash is kept.
+		token_hash   BLOB    PRIMARY KEY,
+		person_id    INTEGER NOT NULL REFERENCES person (id) ON DELETE CASCADE,
+		created_at   INTEGER NOT NULL,
+		last_seen_at INTEGER NOT NULL,
+		expires_at   INTEGER NOT NULL,
+		remote_addr  TEXT    NOT NULL,
+		user_agent   TEXT    NOT NULL
+	);
+
+	CREATE TABLE gate_pass (
+		-- The cookie one protected name received. Only a hash is kept.
+		token_hash BLOB    PRIMARY KEY,
+		host       TEXT    NOT NULL,
+		-- The person it is for, or NULL for the admin.
+		person_id  INTEGER REFERENCES person (id) ON DELETE CASCADE,
+		admin      TEXT    NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL,
+		expires_at INTEGER NOT NULL
+	);
+	CREATE INDEX gate_pass_expires ON gate_pass (expires_at);
+	`,
 }
 
 // Setting reads one setting. found is false if it was never set, in which

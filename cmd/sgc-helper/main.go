@@ -29,6 +29,10 @@
 //
 //   - "sgc-helper os-updates <job>" sets up Debian's own updates, looks for
 //     them and installs them (sgc-os-updates*.service, see osupdates.go).
+//
+//   - "sgc-helper proxy install|apply" installs the pinned Traefik, or puts
+//     a configuration for it in place (sgc-traefik-install.service,
+//     sgc-proxy-apply.service, see proxy.go).
 package main
 
 import (
@@ -76,6 +80,8 @@ func main() {
 		err = runAdguard(os.Args[2:])
 	case "log2ram":
 		err = runLog2ram(os.Args[2:])
+	case "proxy":
+		err = runProxy(os.Args[2:])
 	default:
 		err = runService()
 	}
@@ -121,6 +127,9 @@ func runService() error {
 			AdguardSettings:      adguardSettings,
 			Log2ramStatus:        log2ramStatus,
 			Log2ramSetEnabled:    setLog2ram,
+			ProxyStatus:          proxyStatus,
+			ProxyInstall:         installProxy,
+			ProxyApply:           applyProxy,
 		}).Handler(),
 		ConnContext:       helper.ConnContext,
 		ReadHeaderTimeout: 5 * time.Second,

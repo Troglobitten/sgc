@@ -64,6 +64,10 @@ type Server struct {
 	Log2ram     MemoryLogs
 	Domain      Domain
 	Certificate Certificates
+	Names       Names
+	Services    Services
+	Proxy       Proxy
+	Announcer   Announcer
 	// AdguardAddress is where AdGuard Home's own page listens (host:port).
 	AdguardAddress string
 	// StartOver asks the process to wind down the web server and start
@@ -126,6 +130,24 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/domain/remove", s.requireSession(s.handleDomainRemove))
 	mux.HandleFunc("GET /api/certificate", s.requireSession(s.handleCertificateStatus))
 	mux.HandleFunc("POST /api/certificate/request", s.requireSession(s.handleCertificateRequest))
+	mux.HandleFunc("GET /api/names", s.requireSession(s.handleNamesStatus))
+	mux.HandleFunc("POST /api/names/gateway", s.requireSession(s.handleGatewayName))
+	mux.HandleFunc("GET /api/services", s.requireSession(s.handleServices))
+	mux.HandleFunc("POST /api/services", s.requireSession(s.handleServiceAdd))
+	mux.HandleFunc("POST /api/services/settings", s.requireSession(s.handleServiceSettings))
+	mux.HandleFunc("POST /api/services/{id}", s.requireSession(s.handleServiceUpdate))
+	mux.HandleFunc("POST /api/services/{id}/remove", s.requireSession(s.handleServiceRemove))
+	mux.HandleFunc("POST /api/services/{id}/approve", s.requireSession(s.handleServiceApprove))
+	mux.HandleFunc("POST /api/services/{id}/icon", s.requireSession(s.handleServiceIconRefresh))
+	mux.HandleFunc("GET /api/services/{id}/icon", s.requireSession(s.handleServiceIcon))
+	mux.HandleFunc("GET /api/proxy", s.requireSession(s.handleProxyStatus))
+	mux.HandleFunc("POST /api/proxy/enabled", s.requireSession(s.handleProxyEnabled))
+	mux.HandleFunc("GET /api/tokens", s.requireSession(s.handleTokens))
+	mux.HandleFunc("POST /api/tokens", s.requireSession(s.handleTokenCreate))
+	mux.HandleFunc("POST /api/tokens/{id}/remove", s.requireSession(s.handleTokenRemove))
+	mux.HandleFunc("POST /api/tokens/{id}/repin", s.requireSession(s.handleTokenRepin))
+	// Servers announce their services with a token, not a session.
+	mux.HandleFunc("POST /api/announce", s.handleAnnounce)
 	// AdGuard Home's own page, behind SGC's login.
 	adguardPage := s.requireSession(s.adguardProxy().ServeHTTP)
 	mux.Handle(adguardPrefix, adguardPage)
@@ -615,9 +637,10 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	}{message})
 }
 
-// remoteIP is the address of whoever opened the connection. SGC is reached
-// directly at this stage; once it sits behind the proxy this must read the
-// proxy's forwarded address instead (and only trust it from the proxy).
+// remoteIP is the address of whoever opened the connection. SGC's page is
+// always reached directly, never through the proxy (docs/design.md §10), so
+// this is the browser's own address. What comes through the proxy arrives
+// at the second listener (InternalHandler), which reads Traefik's header.
 func remoteIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

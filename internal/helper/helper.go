@@ -30,6 +30,9 @@
 //	GET  /v1/adguard/settings     AdGuard Home's settings file, for an export
 //	GET  /v1/log2ram/status       is log2ram installed, switched on, in memory, and how full?
 //	POST /v1/log2ram/enabled      switch log2ram on or off (in effect from the next restart)
+//	GET  /v1/proxy/status         is Traefik installed, switched on, running?
+//	POST /v1/proxy/install        install the pinned release of Traefik the web process downloaded
+//	POST /v1/proxy/apply          put a configuration for Traefik in place (typed, checked again by the job)
 package helper
 
 import (
@@ -47,6 +50,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/firewall"
 	"github.com/Troglobitten/sgc/internal/log2ram"
 	"github.com/Troglobitten/sgc/internal/osupdate"
+	"github.com/Troglobitten/sgc/internal/proxy"
 	"github.com/Troglobitten/sgc/internal/release"
 	"github.com/Troglobitten/sgc/internal/sshd"
 )
@@ -73,6 +77,12 @@ const (
 	// Switching log2ram: restarting the journal and cutting it down. (Longer
 	// than the unit that does the work may run.)
 	log2ramTimeout = 200 * time.Second
+	// Installing Traefik, or putting a configuration in place: writing,
+	// restarting, and waiting for Traefik to report every route.
+	proxyTimeout = 3 * time.Minute
+	// The largest configuration for the proxy: a few hundred services and
+	// a certificate.
+	maxProxyRequest = 1 << 20
 )
 
 type log2ramEnabledRequest struct {
@@ -277,6 +287,20 @@ func (c *Client) Log2ramSetEnabled(ctx context.Context, enabled bool) error {
 }
 
 // AdguardSettings returns AdGuard Home's settings file, for an export.
+func (c *Client) ProxyStatus(ctx context.Context) (proxy.Status, error) {
+	var status proxy.Status
+	err := c.call(ctx, defaultTimeout, http.MethodGet, "/v1/proxy/status", nil, &status)
+	return status, err
+}
+
+func (c *Client) ProxyInstall(ctx context.Context) error {
+	return c.call(ctx, proxyTimeout, http.MethodPost, "/v1/proxy/install", struct{}{}, nil)
+}
+
+func (c *Client) ProxyApply(ctx context.Context, cfg proxy.Config) error {
+	return c.call(ctx, proxyTimeout, http.MethodPost, "/v1/proxy/apply", cfg, nil)
+}
+
 func (c *Client) AdguardSettings(ctx context.Context) (string, error) {
 	var resp adguardSettingsResponse
 	err := c.call(ctx, firewallTimeout, http.MethodGet, "/v1/adguard/settings", nil, &resp)
@@ -362,6 +386,11 @@ type Server struct {
 	// or off and nothing else.
 	Log2ramStatus     func() log2ram.Status
 	Log2ramSetEnabled func(enabled bool) error
+	// The proxy; see internal/proxy. ProxyApply is only ever called with a
+	// configuration that passed proxy.Config.Validate.
+	ProxyStatus  func() proxy.Status
+	ProxyInstall func() error
+	ProxyApply   func(cfg proxy.Config) error
 }
 
 type peerUIDKey struct{}
@@ -614,6 +643,36 @@ func (s *Server) Handler() http.Handler {
 		}
 		allow(w, log2ramTimeout)
 		if err := s.Log2ramSetEnabled(*req.Enabled); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, struct{}{})
+	})
+	mux.HandleFunc("GET /v1/proxy/status", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, s.ProxyStatus())
+	})
+	mux.HandleFunc("POST /v1/proxy/install", func(w http.ResponseWriter, _ *http.Request) {
+		allow(w, proxyTimeout)
+		if err := s.ProxyInstall(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, struct{}{})
+	})
+	mux.HandleFunc("POST /v1/proxy/apply", func(w http.ResponseWriter, r *http.Request) {
+		var cfg proxy.Config
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxProxyRequest))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&cfg); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "the request could not be read"})
+			return
+		}
+		if err := cfg.Validate(time.Now()); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "the configuration was refused: " + err.Error()})
+			return
+		}
+		allow(w, proxyTimeout)
+		if err := s.ProxyApply(cfg); err != nil {
 			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error()})
 			return
 		}

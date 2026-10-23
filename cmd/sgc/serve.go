@@ -26,12 +26,14 @@ import (
 	"github.com/Troglobitten/sgc/internal/backup"
 	"github.com/Troglobitten/sgc/internal/firewall"
 	"github.com/Troglobitten/sgc/internal/fwcontrol"
+	"github.com/Troglobitten/sgc/internal/gateway"
 	"github.com/Troglobitten/sgc/internal/health"
 	"github.com/Troglobitten/sgc/internal/helper"
 	"github.com/Troglobitten/sgc/internal/layout"
 	"github.com/Troglobitten/sgc/internal/maintenance"
 	"github.com/Troglobitten/sgc/internal/oscontrol"
 	"github.com/Troglobitten/sgc/internal/osupdate"
+	"github.com/Troglobitten/sgc/internal/proxy"
 	"github.com/Troglobitten/sgc/internal/sshcontrol"
 	"github.com/Troglobitten/sgc/internal/sshd"
 	"github.com/Troglobitten/sgc/internal/store"
@@ -56,6 +58,8 @@ type serveOptions struct {
 	osUpdatesFile   string
 	osUpdatesRunDir string
 	devHTTP         bool
+	// internalListen is SGC's second listener, for Traefik ("" for none).
+	internalListen string
 }
 
 // serve runs the web UI and API until ctx is cancelled, which is how systemd
@@ -75,6 +79,7 @@ func serve(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags.StringVar(&opts.osUpdatesFile, "os-updates-file", osupdate.DefaultPaths().ConfigFile, "SGC's file among apt's settings, written by the root side")
 	flags.StringVar(&opts.osUpdatesRunDir, "os-updates-run-dir", osupdate.DefaultPaths().RunDir, "folder in which the root side keeps its report on updates for the device")
 	flags.BoolVar(&opts.devHTTP, "dev-insecure-http", false, "development only: plain http, reachable from this machine only")
+	flags.StringVar(&opts.internalListen, "internal-listen", proxy.SGCInternal, "address of the listener for the proxy (this machine only; empty for none)")
 	if err := flags.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -219,6 +224,12 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 	// from the page runs under.
 	background.Go(func() { certControl.Run(runCtx) })
 
+	// The names SGC hands out: the gateway's, the services', and how they
+	// reach AdGuard Home and Traefik.
+	named := newParts(partsDeps{db: db, stateDir: opts.stateDir, helper: helperClient, audit: auditLog, log: log,
+		domain: domainControl, cert: certControl})
+	named.run(runCtx, background.Go)
+
 	dnsControl := newDNSControl(db, opts.stateDir, helperClient, auditLog, log)
 	if restored != nil {
 		// The export's DNS part is put in place below. Until that is done,
@@ -253,6 +264,10 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 		Log2ram:        newLogControl(db, helperClient, auditLog, log),
 		Domain:         domainControl,
 		Certificate:    certControl,
+		Names:          named.gateway,
+		Services:       named.catalog,
+		Proxy:          named.proxy,
+		Announcer:      named.announcer,
 		AdguardAddress: adguard.WebAddress,
 		Firewall:       firewallControl,
 		SSH:            sshControl,
@@ -308,9 +323,44 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 			return fail("prepare certificate", err)
 		}
 		listener = tls.NewListener(listener, &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			MinVersion:   tls.VersionTLS12,
+			// The certificate from Let's Encrypt for a name under the
+			// domain (the gateway's), the self-signed one for everything
+			// else: by address, and until there is a real one. That way
+			// there is always a way in.
+			GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+				if pair, err := certControl.Serving(hello.Context()); err == nil && pair != nil {
+					if _, ok := gateway.UnderDomain(hello.ServerName, pair.Domain); ok {
+						return pair.TLS, nil
+					}
+				}
+				return &cert, nil
+			},
+			MinVersion: tls.VersionTLS12,
 		})
+	}
+
+	// The second listener: what Traefik asks SGC for. It may only ever be
+	// on this machine. Without it the page works all the same, so failing
+	// to listen is reported, not fatal.
+	var internalServer *http.Server
+	if opts.internalListen != "" {
+		if host, _, err := net.SplitHostPort(opts.internalListen); err != nil || !net.ParseIP(host).IsLoopback() {
+			listener.Close()
+			return fail("read --internal-listen", fmt.Errorf("%q is not an address on this machine", opts.internalListen))
+		}
+		if internal, err := net.Listen("tcp", opts.internalListen); err != nil {
+			log.Error("listen for the proxy", "address", opts.internalListen, "error", err)
+		} else {
+			internalServer = &http.Server{
+				Handler:           server.InternalHandler(),
+				ReadHeaderTimeout: 10 * time.Second,
+				ReadTimeout:       30 * time.Second,
+				WriteTimeout:      30 * time.Second,
+				IdleTimeout:       120 * time.Second,
+				ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelDebug),
+			}
+			go internalServer.Serve(internal)
+		}
 	}
 
 	// Wind down cleanly when asked: stop accepting, let running requests finish.
@@ -326,6 +376,9 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		if internalServer != nil {
+			internalServer.Shutdown(shutdownCtx)
+		}
 		httpServer.Shutdown(shutdownCtx)
 	}()
 

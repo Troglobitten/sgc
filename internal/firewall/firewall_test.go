@@ -23,6 +23,9 @@ func TestRender(t *testing.T) {
 		{"on-moved-ssh", Config{Enabled: true, SSHPorts: []int{2222, 22, 2222}, WebPort: 8443}},
 		{"on-no-ssh", Config{Enabled: true, WebPort: 8443}},
 		{"on-dns", Config{Enabled: true, SSHPorts: []int{22}, WebPort: 8443, DNS: true}},
+		{"on-proxy", Config{Enabled: true, SSHPorts: []int{22}, WebPort: 8443, DNS: true, Proxy: true,
+			ProxyPorts: []string{"27015/udp", "25565/tcp", "7777/tcp", "25565/tcp"}}},
+		{"on-vpn", Config{Enabled: true, SSHPorts: []int{22}, WebPort: 8443, DNS: true, Proxy: true, VPNPort: 51820}},
 		{"off", Config{Enabled: false, SSHPorts: []int{22}, WebPort: 8443}},
 	}
 	for _, c := range cases {

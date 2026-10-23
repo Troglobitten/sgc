@@ -1,0 +1,26 @@
+[Unit]
+Description=Server Gateway Control: install Traefik
+Documentation=https://github.com/Troglobitten/sgc
+# Never refused for having been started often (see sgc-firewall-change.service).
+StartLimitIntervalSec=0
+
+[Service]
+# Installs the release of Traefik that SGC's web process downloaded: checks
+# it against the checksum compiled into this program, unpacks the one
+# program, creates the account and the folder for its configuration. It does
+# not switch Traefik on; on a device where it was on, it restarts it on the
+# new version and goes back if that fails. Started by the helper; see
+# internal/proxy.
+Type=oneshot
+ExecStart=/opt/sgc/current/sgc-helper proxy install
+TimeoutStartSec=200
+
+# Root, because it creates an account and writes under /opt and /etc. What
+# it installs is fixed: the request to run it carries nothing. It downloads
+# nothing.
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes

@@ -11,13 +11,28 @@ var exportedTables = []string{
 	"audit_log", // history of who did what
 	"setting",   // settings (with a few bookkeeping keys removed below)
 	"ssh_key",   // SSH keys added in SGC's page (public keys)
+	// Services and the tokens that announced them: servers keep their
+	// registrations, and the dashboard its icons.
+	"announce_token",
+	"service",
+	"service_icon",
+	// People and their VPN devices with their keys: every phone keeps working.
+	"person",
+	"person_service",
+	"vpn_device",
 }
 
 // transientTables only make sense on the machine they were written on.
 // Their rows are removed from an export.
 var transientTables = []string{
-	"session",     // sign-ins of browsers; a restored SGC asks to sign in again
-	"setup_token", // the one-time setup link of that installation
+	"session",        // sign-ins of browsers; a restored SGC asks to sign in again
+	"setup_token",    // the one-time setup link of that installation
+	"service_health", // whether each service answered this device's probes
+	"vpn_usage",      // what the VPN devices used (docs/design.md §10: not exported)
+	"vpn_peer_state", // WireGuard's counters as this device last read them
+	"notification",   // what this device reported in its page
+	"person_session", // people signed in on this device's gate page
+	"gate_pass",      // the gate's cookies this device gave out
 }
 
 // resetStatements put single-row tables back to their empty state instead of
@@ -43,6 +58,7 @@ var transientSettings = []string{
 	"certificate.attempt",         // how this device's last attempt at a certificate went
 	"certificate.open_records",    // DNS records an attempt at a certificate has made and not yet removed
 	"certificate.renewal",         // when this device means to renew, and whether that failed
+	"proxy.last_apply",            // how this device's last change to Traefik's configuration went
 }
 
 func cleanupStatements() []string {
