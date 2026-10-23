@@ -61,6 +61,8 @@ var transientSettings = []string{
 	"proxy.last_apply",            // how this device's last change to Traefik's configuration went
 	"vpn.last_apply",              // how this device's last change to the VPN went
 	"vpn.endpoint_state",          // what this device last saw of the home's public address
+	"backups.last",                // how this device's last scheduled backup went
+	"eol.state",                   // what this device last learnt about end-of-life dates
 }
 
 func cleanupStatements() []string {

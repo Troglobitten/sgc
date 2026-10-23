@@ -8,7 +8,10 @@ import { DomainCard } from '@/components/domain-card'
 import { ExportCard } from '@/components/export-card'
 import { FirewallCard } from '@/components/firewall-card'
 import { Log2ramCard } from '@/components/log2ram-card'
+import { BackupsCard } from '@/components/backups-card'
 import { MaintenanceCard } from '@/components/maintenance-card'
+import { NotificationsCard } from '@/components/notifications-card'
+import { SoftwareCard } from '@/components/software-card'
 import { NamesCard } from '@/components/names-card'
 import { OsUpdatesCard } from '@/components/os-updates-card'
 import { SshCard } from '@/components/ssh-card'
@@ -87,6 +90,9 @@ export function SystemPage({
           <MaintenanceCard onError={handleError} />
           <Log2ramCard onError={handleError} />
           <ExportCard minPassphraseLength={minPassphraseLength} />
+          <BackupsCard onError={handleError} />
+          <SoftwareCard onError={handleError} />
+          <NotificationsCard onError={handleError} />
           <Card>
             <CardContent className="flex flex-col gap-3">
               <h2 className="text-sm text-muted-foreground">Restart</h2>

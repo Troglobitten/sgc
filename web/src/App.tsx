@@ -6,7 +6,9 @@ import { Button } from '@/components/ui/button'
 import { api, errorMessage, type State } from '@/lib/api'
 import { pageForPath, pages, type Page } from '@/lib/pages'
 import { DashboardPage } from '@/pages/dashboard'
+import { GatePage } from '@/pages/gate'
 import { LoginPage } from '@/pages/login'
+import { LogsPage } from '@/pages/logs'
 import { PeoplePage } from '@/pages/people'
 import { ServicesPage } from '@/pages/services'
 import { SetupPage } from '@/pages/setup'
@@ -28,7 +30,16 @@ function readPage(): Page {
 // a fresh install shows setup, a signed-out visitor the sign-in form. Only a
 // signed-in admin has pages to choose between, and for those the address
 // counts. Otherwise the address bar is only kept tidy to match.
+// The login gate in front of protected services has a page of its own,
+// for people as well as the admin; nothing of SGC's own page is behind it.
+const onGatePage = window.location.pathname === '/gate'
+
 export default function App() {
+  if (onGatePage) return <GatePage />
+  return <AdminApp />
+}
+
+function AdminApp() {
   const [state, setState] = useState<State | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [setupToken, setSetupToken] = useState(readSetupToken)
@@ -126,6 +137,7 @@ export default function App() {
   }
   if (page === 'services') return <ServicesPage shell={shell} />
   if (page === 'people') return <PeoplePage shell={shell} />
+  if (page === 'logs') return <LogsPage shell={shell} />
   if (page === 'system') {
     return <SystemPage shell={shell} minPassphraseLength={state.minPassphraseLength} />
   }

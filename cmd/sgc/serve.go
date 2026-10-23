@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -24,6 +25,9 @@ import (
 	"github.com/Troglobitten/sgc/internal/audit"
 	"github.com/Troglobitten/sgc/internal/auth"
 	"github.com/Troglobitten/sgc/internal/backup"
+	"github.com/Troglobitten/sgc/internal/backups"
+	"github.com/Troglobitten/sgc/internal/components"
+	"github.com/Troglobitten/sgc/internal/eol"
 	"github.com/Troglobitten/sgc/internal/firewall"
 	"github.com/Troglobitten/sgc/internal/fwcontrol"
 	"github.com/Troglobitten/sgc/internal/gateway"
@@ -31,6 +35,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/helper"
 	"github.com/Troglobitten/sgc/internal/layout"
 	"github.com/Troglobitten/sgc/internal/maintenance"
+	"github.com/Troglobitten/sgc/internal/notify"
 	"github.com/Troglobitten/sgc/internal/oscontrol"
 	"github.com/Troglobitten/sgc/internal/osupdate"
 	"github.com/Troglobitten/sgc/internal/proxy"
@@ -237,11 +242,41 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 
 	// The names SGC hands out: the gateway's, the services', and how they
 	// reach AdGuard Home and Traefik.
+	// Notifications: the bell in the page, and email and ntfy where the
+	// owner set them up.
+	hostname, _ := os.Hostname()
+	notifier := notify.New(notify.Config{DB: db, Audit: auditLog, Hostname: hostname, Log: log})
+	alertAs := func(event string) func(context.Context, string, string) {
+		return func(ctx context.Context, title, body string) {
+			notifier.Notify(ctx, event, notify.Warning, title, body)
+		}
+	}
+
 	named := newParts(partsDeps{db: db, stateDir: opts.stateDir, helper: helperClient, audit: auditLog, auth: authService, log: log,
-		domain: domainControl, cert: certControl})
+		domain: domainControl, cert: certControl, alert: alertAs(notify.EventAnnounce)})
 	named.run(runCtx, background.Go)
 
 	dnsControl := newDNSControl(db, opts.stateDir, helperClient, auditLog, log)
+
+	// The software SGC stands on, and when it stops getting security fixes.
+	endOfLife := eol.New(eol.Config{DB: db, HTTP: &http.Client{Timeout: 20 * time.Second}, TraefikCycle: minorOf(components.Traefik.Version), Log: log})
+	background.Go(func() { endOfLife.Run(runCtx) })
+
+	// Daily backups to another device, encrypted to the backup key.
+	scheduled := backups.New(backups.Config{
+		DB:    db,
+		Audit: auditLog,
+		Export: func(ctx context.Context, w io.Writer, publicKey string) (*backup.Manifest, error) {
+			if err := dnsControl.SaveForExport(ctx); err != nil {
+				return nil, fmt.Errorf("AdGuard Home's settings could not be read: %w", err)
+			}
+			return backup.ExportToKey(ctx, db, w, publicKey, backup.Source{SGCVersion: sgc.Version(), Hostname: hostname}, filepath.Join(opts.stateDir, "tmp"))
+		},
+		Hostname: hostname,
+		Alert:    alertAs(notify.EventBackup),
+		Log:      log,
+	})
+	background.Go(func() { scheduled.Run(runCtx) })
 	if restored != nil {
 		// The export's DNS part is put in place below. Until that is done,
 		// the page says that it is still to do.
@@ -257,6 +292,10 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 		}
 	})
 
+	conditions := watched{cert: certControl, domain: domainControl, dns: dnsControl, named: named, monitor: monitor,
+		updates: updates, os: osControl, eol: endOfLife, backups: scheduled}.conditions()
+	background.Go(func() { notifier.Watch(runCtx, conditions) })
+
 	ui, err := fs.Sub(webui.Dist, "dist")
 	if err != nil {
 		return fail("load web interface", err)
@@ -264,29 +303,35 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 
 	startOver := make(chan struct{}, 1)
 	server := &web.Server{
-		Auth:           authService,
-		Audit:          auditLog,
-		Health:         monitor,
-		Helper:         helperClient,
-		Updates:        updates,
-		LastUpdate:     func() (*updater.Status, error) { return updater.ReadStatus(opts.updateWorkDir) },
-		Backups:        backups{db: db, stateDir: opts.stateDir, beforeExport: dnsControl.SaveForExport},
-		DNS:            dnsControl,
-		Log2ram:        newLogControl(db, helperClient, auditLog, log),
-		Domain:         domainControl,
-		Certificate:    certControl,
-		Names:          named.gateway,
-		Services:       named.catalog,
-		Proxy:          named.proxy,
-		Announcer:      named.announcer,
-		People:         named.people,
-		VPN:            named.vpn,
-		VPNEndpoint:    named.endpoint,
-		AdguardAddress: adguard.WebAddress,
-		Firewall:       firewallControl,
-		SSH:            sshControl,
-		OSUpdates:      osControl,
-		Maintenance:    maintenanceWindow,
+		Auth:             authService,
+		Audit:            auditLog,
+		Health:           monitor,
+		Helper:           helperClient,
+		Updates:          updates,
+		LastUpdate:       func() (*updater.Status, error) { return updater.ReadStatus(opts.updateWorkDir) },
+		Backups:          exports{db: db, stateDir: opts.stateDir, beforeExport: dnsControl.SaveForExport},
+		DNS:              dnsControl,
+		Log2ram:          newLogControl(db, helperClient, auditLog, log),
+		Domain:           domainControl,
+		Certificate:      certControl,
+		Names:            named.gateway,
+		Services:         named.catalog,
+		Proxy:            named.proxy,
+		Announcer:        named.announcer,
+		People:           named.people,
+		VPN:              named.vpn,
+		VPNEndpoint:      named.endpoint,
+		Gate:             &web.GateStore{DB: db},
+		Notifications:    notifier,
+		Journal:          helperClient,
+		Alert:            alertAs(notify.EventLogins),
+		ScheduledBackups: scheduled,
+		EndOfLife:        endOfLife,
+		AdguardAddress:   adguard.WebAddress,
+		Firewall:         firewallControl,
+		SSH:              sshControl,
+		OSUpdates:        osControl,
+		Maintenance:      maintenanceWindow,
 		StartOver: func() {
 			select {
 			case startOver <- struct{}{}:
@@ -404,8 +449,8 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 	return exitOK, again
 }
 
-// backups connects the web interface to export and restore.
-type backups struct {
+// exports connects the web interface to export and restore.
+type exports struct {
 	db       *sql.DB
 	stateDir string
 	// beforeExport brings into the database what lives in files and has to
@@ -413,7 +458,7 @@ type backups struct {
 	beforeExport func(context.Context) error
 }
 
-func (b backups) Export(ctx context.Context, w io.Writer, passphrase string) (*backup.Manifest, error) {
+func (b exports) Export(ctx context.Context, w io.Writer, passphrase string) (*backup.Manifest, error) {
 	hostname, _ := os.Hostname()
 	source := backup.Source{SGCVersion: sgc.Version(), Hostname: hostname}
 	// An export that silently lacked the DNS settings would be worse than none.
@@ -423,11 +468,11 @@ func (b backups) Export(ctx context.Context, w io.Writer, passphrase string) (*b
 	return backup.Export(ctx, b.db, w, passphrase, source, filepath.Join(b.stateDir, "tmp"))
 }
 
-func (b backups) Stage(ctx context.Context, r io.Reader, passphrase string) (*backup.Manifest, error) {
+func (b exports) Stage(ctx context.Context, r io.Reader, passphrase string) (*backup.Manifest, error) {
 	return backup.Stage(ctx, r, passphrase, b.stateDir)
 }
 
-func (b backups) Confirm(manifest *backup.Manifest) error {
+func (b exports) Confirm(manifest *backup.Manifest) error {
 	return backup.Confirm(b.stateDir, manifest)
 }
 
@@ -444,4 +489,13 @@ func deleteExpiredSessionsHourly(ctx context.Context, authService *auth.Service,
 		case <-ticker.C:
 		}
 	}
+}
+
+// minorOf is "3.7" for "3.7.16".
+func minorOf(version string) string {
+	parts := strings.SplitN(version, ".", 3)
+	if len(parts) < 2 {
+		return version
+	}
+	return parts[0] + "." + parts[1]
 }

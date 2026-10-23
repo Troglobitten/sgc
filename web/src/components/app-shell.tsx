@@ -1,5 +1,5 @@
 import type { MouseEvent, ReactNode } from 'react'
-import { LogOut, User } from 'lucide-react'
+import { Bell, LogOut, TriangleAlert, User } from 'lucide-react'
 
 import { Logo } from '@/components/logo'
 import { ThemeMenu } from '@/components/theme-menu'
@@ -12,6 +12,11 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { api } from '@/lib/api'
 import { pageNames, pages, type Page } from '@/lib/pages'
+import { usePolled } from '@/lib/poll'
+
+// The bell is a convenience: a failed look at it says nothing, the pages
+// report their own problems.
+const ignore = () => {}
 
 /** What every page needs to draw the frame around itself. */
 export interface ShellProps {
@@ -32,6 +37,8 @@ export function AppShell({
   onSignedOut,
   children,
 }: ShellProps & { page: Page; children: ReactNode }) {
+  const [summary] = usePolled(api.notificationSummary, 30_000, ignore)
+
   async function signOut() {
     try {
       await api.logout()
@@ -59,6 +66,23 @@ export function AppShell({
           ))}
         </nav>
         <div className="flex-1" />
+        <a
+          href={pages.logs.path}
+          onClick={(event) => {
+            if (event.button !== 0 || event.metaKey || event.ctrlKey) return
+            event.preventDefault()
+            onNavigate('logs')
+          }}
+          className={buttonVariants({ variant: 'ghost', size: 'icon' }) + ' relative'}
+          aria-label={summary && summary.unread > 0 ? `Notifications: ${summary.unread} unread` : 'Notifications'}
+        >
+          <Bell />
+          {summary && summary.unread > 0 && (
+            <span className="absolute -top-0.5 -right-0.5 min-w-4 rounded-full bg-red-600 px-1 text-[10px] leading-4 font-medium text-white">
+              {summary.unread > 99 ? '99+' : summary.unread}
+            </span>
+          )}
+        </a>
         <ThemeMenu />
         <DropdownMenu>
           <DropdownMenuTrigger render={<Button variant="ghost" />}>
@@ -75,7 +99,29 @@ export function AppShell({
         </DropdownMenu>
       </header>
 
-      <main className="mx-auto flex max-w-5xl flex-col gap-6 p-4">{children}</main>
+      <main className="mx-auto flex max-w-5xl flex-col gap-6 p-4">
+        {/* Problems that last stay on every page until they are over. */}
+        {summary && summary.banners.length > 0 && (
+          <div className="flex flex-col gap-2">
+            {summary.banners.map((b) => (
+              <p
+                key={b.id}
+                className={
+                  b.severity === 'problem'
+                    ? 'flex gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive'
+                    : 'flex gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-300'
+                }
+              >
+                <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+                <span>
+                  <span className="font-medium">{b.title}.</span> {b.body}
+                </span>
+              </p>
+            ))}
+          </div>
+        )}
+        {children}
+      </main>
     </div>
   )
 }

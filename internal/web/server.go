@@ -71,6 +71,14 @@ type Server struct {
 	People      People
 	VPN         VPN
 	VPNEndpoint VPNEndpoint
+	// Gate is what the login gate keeps (gate.go).
+	Gate          *GateStore
+	Notifications Notifications
+	Journal       Journal
+	// Alert tells the owner at once (a lock-out after failed sign-ins).
+	Alert            func(ctx context.Context, title, body string)
+	ScheduledBackups ScheduledBackups
+	EndOfLife        EndOfLife
 	// AdguardAddress is where AdGuard Home's own page listens (host:port).
 	AdguardAddress string
 	// StartOver asks the process to wind down the web server and start
@@ -151,6 +159,27 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tokens/{id}/repin", s.requireSession(s.handleTokenRepin))
 	// Servers announce their services with a token, not a session.
 	mux.HandleFunc("POST /api/announce", s.handleAnnounce)
+	// The login gate's page: people sign in here, never into SGC's page.
+	mux.HandleFunc("GET /api/gate", s.handleGateState)
+	mux.HandleFunc("POST /api/gate/login", s.handleGateLogin)
+	mux.HandleFunc("POST /api/gate/logout", s.handleGateLogout)
+	mux.HandleFunc("POST /api/gate/ticket", s.handleGateTicket)
+	mux.HandleFunc("POST /api/gate/password", s.handleGatePassword)
+	mux.HandleFunc("GET /api/notifications", s.requireSession(s.handleNotifications))
+	mux.HandleFunc("GET /api/notifications/summary", s.requireSession(s.handleNotificationSummary))
+	mux.HandleFunc("POST /api/notifications/read", s.requireSession(s.handleNotificationsRead))
+	mux.HandleFunc("GET /api/notifications/settings", s.requireSession(s.handleNotificationChannels))
+	mux.HandleFunc("POST /api/notifications/settings", s.requireSession(s.handleNotificationChannelsSave))
+	mux.HandleFunc("POST /api/notifications/test", s.requireSession(s.handleNotificationTest))
+	mux.HandleFunc("POST /api/logs", s.requireSession(s.handleLogs))
+	mux.HandleFunc("GET /api/backups", s.requireSession(s.handleBackupsStatus))
+	mux.HandleFunc("POST /api/backups/settings", s.requireSession(s.handleBackupsSettings))
+	mux.HandleFunc("POST /api/backups/key", s.requireSession(s.handleBackupsKey))
+	mux.HandleFunc("POST /api/backups/test", s.requireSession(s.handleBackupsTest))
+	mux.HandleFunc("POST /api/backups/run", s.requireSession(s.handleBackupsRun))
+	mux.HandleFunc("GET /api/eol", s.requireSession(s.handleEOL))
+	mux.HandleFunc("POST /api/eol/check", s.requireSession(s.handleEOLCheck))
+	mux.HandleFunc("POST /api/proxy/update", s.requireSession(s.handleProxyUpdate))
 	mux.HandleFunc("GET /api/people", s.requireSession(s.handlePeople))
 	mux.HandleFunc("POST /api/people", s.requireSession(s.handlePersonAdd))
 	mux.HandleFunc("POST /api/people/{id}", s.requireSession(s.handlePersonUpdate))
@@ -352,6 +381,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			// The attempted username is recorded, never the password.
 			s.record(r, "-", audit.ActionLoginFailed, "username tried: "+truncate(req.Username, 64))
 		}
+		var locked *auth.TooManyAttemptsError
+		if errors.As(err, &locked) && s.Alert != nil {
+			s.Alert(r.Context(), "Sign-ins to SGC's page are being refused", "Too many wrong passwords from "+remoteIP(r)+"; that address waits a few minutes before it may try again.")
+		}
 		s.authError(w, r, err)
 		return
 	}
@@ -376,7 +409,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
-	entries, err := s.Audit.Recent(r.Context(), 20)
+	// The dashboard shows the newest 20; the Logs page asks for more.
+	limit := 20
+	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 && n <= 2000 {
+		limit = n
+	}
+	entries, err := s.Audit.Recent(r.Context(), limit)
 	if err != nil {
 		s.internalError(w, r, err)
 		return

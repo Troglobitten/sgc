@@ -59,6 +59,7 @@ import (
 
 	"github.com/Troglobitten/sgc"
 	"github.com/Troglobitten/sgc/internal/helper"
+	"github.com/Troglobitten/sgc/internal/journal"
 )
 
 const systemctl = "/usr/bin/systemctl"
@@ -138,6 +139,9 @@ func runService() error {
 			ProxyApply:           applyProxy,
 			VPNStatus:            vpnStatus,
 			VPNApply:             applyVPN,
+			Logs: func(q journal.Query) (journal.Answer, error) {
+				return journal.Read(context.Background(), runProgram, q, time.Now())
+			},
 		}).Handler(),
 		ConnContext:       helper.ConnContext,
 		ReadHeaderTimeout: 5 * time.Second,
