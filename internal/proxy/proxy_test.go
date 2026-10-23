@@ -62,6 +62,10 @@ func sample(t *testing.T) Config {
 
 func TestRender(t *testing.T) {
 	cfg := sample(t)
+	// The routes file's label is a fingerprint of the certificate too, and
+	// sample makes a new one every time: a fixed text keeps the expected
+	// file the same (rendering does not read the certificate).
+	cfg.CertificatePEM = "the certificate of the expected files"
 	static, err := RenderStatic(cfg, "/etc/sgc/traefik/dynamic")
 	if err != nil {
 		t.Fatal(err)
@@ -173,6 +177,22 @@ type fakeDevice struct {
 	refuse    string // a router Traefik reports as disabled
 	portTaken bool
 	paths     Paths
+	// frozen: Traefik keeps the routes it has (as the real one does with a
+	// file it cannot read) instead of reading the file again.
+	frozen bool
+	loaded []byte
+}
+
+// routes is the routes file as Traefik has it.
+func (d *fakeDevice) routes() ([]byte, error) {
+	if d.frozen && d.loaded != nil {
+		return d.loaded, nil
+	}
+	data, err := os.ReadFile(d.paths.dynamicFile())
+	if err == nil {
+		d.loaded = data
+	}
+	return data, err
 }
 
 func (d *fakeDevice) run(_ context.Context, program string, args ...string) ([]byte, error) {
@@ -211,7 +231,13 @@ func (d *fakeDevice) api(_ context.Context, path string) ([]byte, error) {
 		return []byte("OK"), nil
 	}
 	// Traefik reports the routers in the file it has.
-	data, err := os.ReadFile(d.paths.dynamicFile())
+	data, err := d.routes()
+	if name, ok := strings.CutPrefix(path, "/api/http/middlewares/"); ok {
+		if err == nil && name == GenerationPrefix+Generation(data)+"@file" {
+			return []byte(`{"status":"enabled"}`), nil
+		}
+		return nil, errors.New("Traefik answered 404")
+	}
 	if err != nil {
 		return []byte("[]"), nil
 	}
@@ -242,7 +268,8 @@ func (d *fakeDevice) api(_ context.Context, path string) ([]byte, error) {
 
 func system(t *testing.T, d *fakeDevice) *System {
 	root := t.TempDir()
-	paths := Paths{Root: filepath.Join(root, "opt"), ConfigDir: filepath.Join(root, "etc"), SpoolDir: filepath.Join(root, "spool")}
+	// Laid out like the device, where /etc/sgc may not exist yet.
+	paths := Paths{Root: filepath.Join(root, "opt"), ConfigDir: filepath.Join(root, "etc", "sgc", "traefik"), SpoolDir: filepath.Join(root, "spool")}
 	os.MkdirAll(filepath.Join(paths.Root, "3.7.16"), 0o755)
 	os.WriteFile(filepath.Join(paths.Root, "3.7.16", "traefik"), []byte("program"), 0o755)
 	os.Symlink("3.7.16", paths.current())
@@ -250,6 +277,76 @@ func system(t *testing.T, d *fakeDevice) *System {
 	return &System{Paths: paths, Run: d.run, API: d.api, Group: func() (int, error) { return os.Getgid(), nil },
 		Chown: func(string, int) error { return nil },
 		Sleep: func(time.Duration) {}, Now: func() time.Time { return now }, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+}
+
+// Traefik reads a changed routes file a moment later, and keeps the one it
+// has when it cannot read the new one: until it reports the new file's
+// label, what its API says is about the previous file. A change it never
+// takes up is undone.
+func TestAChangeTraefikDoesNotTakeUpIsUndone(t *testing.T) {
+	device := &fakeDevice{}
+	s := system(t, device)
+	first := sample(t)
+	if err := s.Apply(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(s.Paths.dynamicFile())
+	appliedBefore := ReadApplied(s.Paths)
+
+	device.frozen = true
+	second := sample(t)
+	second.Services = second.Services[:1]
+	err := s.Apply(context.Background(), second)
+	if err == nil || !strings.Contains(err.Error(), "did not take up") {
+		t.Fatalf("err = %v, want Traefik not taking up the change", err)
+	}
+	if after, _ := os.ReadFile(s.Paths.dynamicFile()); string(after) != string(before) {
+		t.Error("the routes file of the change that was not taken up was left in place")
+	}
+	if ReadApplied(s.Paths).At != appliedBefore.At {
+		t.Error("the change that was not taken up was recorded as applied")
+	}
+}
+
+// A renewed certificate under the same file names is not noticed by Traefik
+// (seen with 3.7.16): the routes file must change with it.
+func TestARenewedCertificateChangesTheRoutesFile(t *testing.T) {
+	cfg := sample(t)
+	first, err := RenderDynamic(cfg, "/c.crt", "/c.key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, _ := RenderDynamic(cfg, "/c.crt", "/c.key")
+	if Generation(first) == "" || Generation(first) != Generation(again) {
+		t.Fatalf("the same configuration gave the labels %q and %q", Generation(first), Generation(again))
+	}
+	renewed := cfg
+	renewed.CertificatePEM, renewed.PrivateKeyPEM = certificate(t, "*.domain.tld")
+	second, err := RenderDynamic(renewed, "/c.crt", "/c.key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if Generation(second) == Generation(first) {
+		t.Error("a new certificate left the routes file as it was; Traefik would keep serving the old one")
+	}
+}
+
+// /etc/sgc also holds the firewall's file, which SGC's own account reads:
+// creating Traefik's closed folder in it must not close it too.
+func TestTraefiksFolderLeavesItsParentOpen(t *testing.T) {
+	s := system(t, &fakeDevice{})
+	if err := s.Apply(context.Background(), sample(t)); err != nil {
+		t.Fatal(err)
+	}
+	for dir, want := range map[string]os.FileMode{filepath.Dir(s.Paths.ConfigDir): 0o755, s.Paths.ConfigDir: 0o750} {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("%s has mode %o, want %o", dir, got, want)
+		}
+	}
 }
 
 func TestApplyAndUndo(t *testing.T) {
