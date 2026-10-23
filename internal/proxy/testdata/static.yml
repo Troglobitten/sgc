@@ -15,17 +15,24 @@
   },
   "entryPoints": {
     "25565-tcp": {
-      "address": ":25565/tcp"
+      "address": ":25565/tcp",
+      "http": {
+        "aliasHeadersStrategy": "delete"
+      }
     },
     "27016-udp": {
       "address": ":27016/udp"
     },
     "traefik": {
-      "address": "127.0.0.1:8082"
+      "address": "127.0.0.1:8082",
+      "http": {
+        "aliasHeadersStrategy": "delete"
+      }
     },
     "web": {
       "address": ":80",
       "http": {
+        "aliasHeadersStrategy": "delete",
         "redirections": {
           "entryPoint": {
             "permanent": true,
@@ -36,7 +43,10 @@
       }
     },
     "websecure": {
-      "address": ":443"
+      "address": ":443",
+      "http": {
+        "aliasHeadersStrategy": "delete"
+      }
     }
   },
   "global": {

@@ -25,6 +25,7 @@
           "authResponseHeaders": [
             "X-SGC-User"
           ],
+          "maxResponseBodySize": 65536,
           "trustForwardHeader": false
         }
       },
