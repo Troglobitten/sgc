@@ -2455,10 +2455,15 @@ notify)
     if wait_for 10 ntfy_got 'A test from SGC'; then pass "it reached ntfy, with the token"; else fail "ntfy got no test message"; fi
     check "with the topic and the token" sh -c "sudo grep -q 'Bearer tk_madeup.*sgc-test-made-up-topic' $standin_state/ntfy.log"
     echo "        (stopping a service and waiting for the notification: a few minutes)"
+    # The proxy step stops the same service, and the bell may still have
+    # that warning, from before ntfy was set up: first let it end, then
+    # wait for the banner, which shows only what is going on now (the bell
+    # also lists what is over).
+    if ! wait_for 150 banner_gone 'does not answer'; then fail "a banner from an earlier step did not go"; fi
     sudo systemctl stop sgc-test-web.service
-    if wait_for 300 notified 'does not answer'; then pass "a service that stops answering is in the bell"; else fail "no notification about the stopped service"; fi
+    if wait_for 300 banner_has 'does not answer'; then pass "a service that stops answering shows as a banner"; else fail "no banner about the stopped service"; fi
     if wait_for 60 ntfy_got 'does not answer'; then pass "and was sent to ntfy"; else fail "it did not reach ntfy"; fi
-    check "and shows as a banner" banner_has 'does not answer'
+    check "and is in the bell" notified 'does not answer'
     start_web_neighbour
     if wait_for 300 banner_gone 'does not answer'; then pass "once it answers again the banner goes"; else fail "the banner stayed"; fi
     expect_status "the logs of SGC" 200 POST /api/logs '{"part":"sgc","priority":6,"sinceSeconds":3600,"text":"","limit":50,"after":""}'

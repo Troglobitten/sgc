@@ -14,8 +14,6 @@ type Finding struct {
 	Severity string
 	Title    string
 	Body     string
-	// Resolved is what to say once it is over ("" to say nothing).
-	Resolved string
 }
 
 // Condition looks at one part of SGC and says what is wrong with it now. An
@@ -23,7 +21,7 @@ type Finding struct {
 type Condition func(ctx context.Context) ([]Finding, error)
 
 // Watch looks at every condition once a minute, raises what is new and
-// resolves what is over, until ctx ends. A condition's findings are kept
+// resolves what is over ("Resolved", with what it was), until ctx ends. A condition's findings are kept
 // under "<name>:<key>".
 func (s *Service) Watch(ctx context.Context, conditions map[string]Condition) {
 	ticker := time.NewTicker(time.Minute)
@@ -49,12 +47,10 @@ func (s *Service) look(ctx context.Context, name string, look Condition) {
 		return
 	}
 	seen := map[string]bool{}
-	resolved := map[string]string{}
 	for _, f := range findings {
 		key := name + ":" + f.Key
 		seen[key] = true
 		s.Raise(ctx, key, f.Event, f.Severity, f.Title, f.Body)
-		resolved[key] = f.Resolved
 	}
 	rows, err := s.cfg.DB.QueryContext(ctx, "SELECT ongoing_key FROM notification WHERE resolved_at = 0 AND ongoing_key LIKE ? ESCAPE '\\'",
 		strings.NewReplacer("%", "\\%", "_", "\\_").Replace(name)+":%")
