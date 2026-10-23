@@ -1,4 +1,4 @@
-import { LayoutDashboard, LayoutGrid, Settings2, Users } from 'lucide-react'
+import { LayoutDashboard, LayoutGrid, ScrollText, Settings2, Users } from 'lucide-react'
 
 /** The pages a signed-in admin can open, with their addresses. */
 export const pages = {
@@ -6,6 +6,7 @@ export const pages = {
   services: { path: '/services', label: 'Services', icon: LayoutGrid },
   people: { path: '/people', label: 'People', icon: Users },
   system: { path: '/system', label: 'System', icon: Settings2 },
+  logs: { path: '/logs', label: 'Logs', icon: ScrollText },
 } as const
 
 export type Page = keyof typeof pages

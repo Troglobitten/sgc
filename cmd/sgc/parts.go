@@ -163,8 +163,9 @@ func newParts(d partsDeps) *parts {
 		},
 		PublicIP: publicIP,
 		HTTP:     &http.Client{Timeout: 15 * time.Second},
-		Alert:    d.alert,
-		Log:      d.log,
+		// Problems with the public name are told while they last, by the
+		// notifications' own look (cmd/sgc/watch.go).
+		Log: d.log,
 	})
 	p.vpn = vpncontrol.New(vpncontrol.Config{
 		DB:       d.db,

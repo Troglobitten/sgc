@@ -362,7 +362,7 @@ async function send(method: string, path: string, body?: unknown): Promise<Respo
   return response
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+export async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const response = await send(method, path, body)
   return (await response.json().catch(() => null)) as T
 }
@@ -566,6 +566,114 @@ export interface UsagePoint {
   tx: number
 }
 
+/** One entry of the bell (internal/notify). */
+export interface Notification {
+  id: number
+  at: string
+  event: string
+  severity: 'info' | 'warning' | 'problem'
+  title: string
+  body: string
+  ongoing: boolean
+  resolvedAt: string | null
+  read: boolean
+}
+
+export interface NotificationSummary {
+  unread: number
+  banners: Notification[]
+}
+
+export interface NotificationChannels {
+  email: {
+    enabled: boolean
+    host: string
+    port: number
+    security: 'starttls' | 'tls' | 'none'
+    username: string
+    password?: string
+    from: string
+    to: string
+  }
+  ntfy: { enabled: boolean; server: string; topic: string; token?: string }
+  routes: Record<string, { email: boolean; ntfy: boolean }>
+}
+
+export interface NotificationSettings {
+  channels: NotificationChannels
+  hasPassword: boolean
+  hasToken: boolean
+  events: { key: string; label: string }[]
+}
+
+export interface LogQuery {
+  part: string
+  priority: number
+  sinceSeconds: number
+  text: string
+  limit: number
+  after: string
+}
+
+export interface LogAnswer {
+  entries: { at: string; unit: string; priority: number; message: string }[]
+  cursor: string
+}
+
+export interface BackupTarget {
+  kind: 'smb' | 'sftp' | 'webdav'
+  host: string
+  port: number
+  share: string
+  path: string
+  url: string
+  username: string
+  password?: string
+  hostKey: string
+  skipVerify: boolean
+}
+
+export interface BackupSettings {
+  enabled: boolean
+  target: BackupTarget
+  time: string
+  keep: number
+  publicKey: string
+  since: string
+}
+
+export interface BackupRun {
+  at: string
+  ok: boolean
+  message: string
+  file: string
+  size: number
+}
+
+export interface BackupStatus {
+  settings: BackupSettings
+  hasPassword: boolean
+  hasKey: boolean
+  last: BackupRun | null
+  lastSuccess: string | null
+  overdue: boolean
+  nextAt: string | null
+}
+
+export interface EolState {
+  items: {
+    product: string
+    label: string
+    cycle: string
+    securityEnd: string | null
+    end: string | null
+    source: 'online' | 'table'
+    warning: string
+  }[]
+  checkedAt: string | null
+  problem: string
+}
+
 export const api = {
   state: () => request<State>('GET', '/api/state'),
   setup: (token: string, username: string, password: string) =>
@@ -574,7 +682,7 @@ export const api = {
     request<void>('POST', '/api/login', { username, password }),
   logout: () => request<void>('POST', '/api/logout', {}),
   health: () => request<Health>('GET', '/api/health'),
-  audit: () => request<AuditEntry[]>('GET', '/api/audit'),
+  audit: (limit = 20) => request<AuditEntry[]>('GET', `/api/audit?limit=${limit}`),
   restartDevice: () => request<void>('POST', '/api/device/restart', { confirm: true }),
   update: () => request<UpdateStatus>('GET', '/api/update'),
   checkForUpdate: () => request<UpdateStatus>('POST', '/api/update/check', {}),
@@ -680,6 +788,26 @@ export const api = {
     request<UsagePoint[]>('GET', `/api/vpn/usage?device=${device}&resolution=${resolution}`),
   checkVpnEndpoint: () => request<VpnEndpointState>('POST', '/api/vpn/endpoint/check', {}),
   takeOverVpnRecord: () => request<VpnEndpointState>('POST', '/api/vpn/endpoint/take-over', {}),
+  notifications: (limit = 100) => request<Notification[]>('GET', `/api/notifications?limit=${limit}`),
+  notificationSummary: () => request<NotificationSummary>('GET', '/api/notifications/summary'),
+  markNotificationsRead: () => request<NotificationSummary>('POST', '/api/notifications/read', {}),
+  notificationSettings: () => request<NotificationSettings>('GET', '/api/notifications/settings'),
+  /** an empty password or token keeps the one SGC has */
+  saveNotificationSettings: (channels: NotificationChannels) =>
+    request<NotificationSettings>('POST', '/api/notifications/settings', channels),
+  testNotification: (channel: 'email' | 'ntfy') => request<void>('POST', '/api/notifications/test', { channel }),
+  logs: (query: LogQuery) => request<LogAnswer>('POST', '/api/logs', query),
+  backups: () => request<BackupStatus>('GET', '/api/backups'),
+  /** an empty password keeps the one SGC has */
+  saveBackups: (settings: BackupSettings) => request<BackupStatus>('POST', '/api/backups/settings', settings),
+  /** the secret half is in this answer only */
+  makeBackupKey: (password: string) => request<{ secret: string }>('POST', '/api/backups/key', { password }),
+  testBackupTarget: (target: BackupTarget) =>
+    request<{ ok: boolean; hostKey?: string; message?: string }>('POST', '/api/backups/test', target),
+  backUpNow: () => request<BackupRun>('POST', '/api/backups/run', {}),
+  eol: () => request<EolState>('GET', '/api/eol'),
+  checkEol: () => request<EolState>('POST', '/api/eol/check', {}),
+  updateProxy: () => request<ProxyStatus>('POST', '/api/proxy/update', {}),
 }
 
 /** The message to show for any thrown value. */

@@ -35,6 +35,7 @@
 //	POST /v1/proxy/apply          put a configuration for Traefik in place (typed, checked again by the job)
 //	GET  /v1/vpn/status           is the VPN on, and what do its devices' counters say?
 //	POST /v1/vpn/apply            put a configuration for the VPN in place (typed, checked again by its program)
+//	POST /v1/logs                 read the journal of one of SGC's parts (typed query)
 package helper
 
 import (
@@ -50,6 +51,7 @@ import (
 
 	"github.com/Troglobitten/sgc/internal/adguard"
 	"github.com/Troglobitten/sgc/internal/firewall"
+	"github.com/Troglobitten/sgc/internal/journal"
 	"github.com/Troglobitten/sgc/internal/log2ram"
 	"github.com/Troglobitten/sgc/internal/osupdate"
 	"github.com/Troglobitten/sgc/internal/proxy"
@@ -327,6 +329,12 @@ func (c *Client) VPNApply(ctx context.Context, cfg wireguard.Config) error {
 	return c.call(ctx, vpnTimeout, http.MethodPost, "/v1/vpn/apply", cfg, nil)
 }
 
+func (c *Client) Logs(ctx context.Context, q journal.Query) (journal.Answer, error) {
+	var answer journal.Answer
+	err := c.call(ctx, 30*time.Second, http.MethodPost, "/v1/logs", q, &answer)
+	return answer, err
+}
+
 func (c *Client) AdguardSettings(ctx context.Context) (string, error) {
 	var resp adguardSettingsResponse
 	err := c.call(ctx, firewallTimeout, http.MethodGet, "/v1/adguard/settings", nil, &resp)
@@ -421,6 +429,9 @@ type Server struct {
 	// configuration that passed wireguard.Config.Validate.
 	VPNStatus func() (any, error)
 	VPNApply  func(cfg wireguard.Config) error
+	// Logs reads the journal; only ever called with a query that passed
+	// journal.Query.Validate.
+	Logs func(q journal.Query) (journal.Answer, error)
 }
 
 type peerUIDKey struct{}
@@ -734,6 +745,22 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, struct{}{})
+	})
+	mux.HandleFunc("POST /v1/logs", func(w http.ResponseWriter, r *http.Request) {
+		var q journal.Query
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&q); err != nil || q.Validate() != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "the request could not be read"})
+			return
+		}
+		allow(w, 30*time.Second)
+		answer, err := s.Logs(q)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "the journal could not be read: " + err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, answer)
 	})
 	mux.HandleFunc("GET /v1/adguard/settings", func(w http.ResponseWriter, _ *http.Request) {
 		settings, err := s.AdguardSettings()

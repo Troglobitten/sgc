@@ -27,6 +27,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"filippo.io/age"
@@ -99,7 +100,36 @@ func Export(ctx context.Context, db *sql.DB, w io.Writer, passphrase string, sou
 	if err := checkPassphrase(passphrase); err != nil {
 		return nil, err
 	}
+	recipient, err := age.NewScryptRecipient(passphrase)
+	if err != nil {
+		return nil, fmt.Errorf("prepare encryption: %w", err)
+	}
+	recipient.SetWorkFactor(scryptWorkFactor)
+	return exportTo(ctx, db, w, recipient, source, workDir)
+}
 
+// ExportToKey writes an export encrypted to a backup key's public half
+// ("age1…"), for scheduled backups: SGC keeps only that half, and only the
+// owner's secret half (NewBackupKey) opens the file.
+func ExportToKey(ctx context.Context, db *sql.DB, w io.Writer, publicKey string, source Source, workDir string) (*Manifest, error) {
+	recipient, err := age.ParseX25519Recipient(publicKey)
+	if err != nil {
+		return nil, fmt.Errorf("the backup key is not usable: %w", err)
+	}
+	return exportTo(ctx, db, w, recipient, source, workDir)
+}
+
+// NewBackupKey makes a backup key: the secret half for the owner to keep
+// ("AGE-SECRET-KEY-1…"), and the public half for SGC.
+func NewBackupKey() (secret, public string, err error) {
+	identity, err := age.GenerateX25519Identity()
+	if err != nil {
+		return "", "", err
+	}
+	return identity.String(), identity.Recipient().String(), nil
+}
+
+func exportTo(ctx context.Context, db *sql.DB, w io.Writer, recipient age.Recipient, source Source, workDir string) (*Manifest, error) {
 	if err := os.MkdirAll(workDir, 0o700); err != nil {
 		return nil, fmt.Errorf("prepare export: %w", err)
 	}
@@ -122,11 +152,6 @@ func Export(ctx context.Context, db *sql.DB, w io.Writer, passphrase string, sou
 		return nil, err
 	}
 
-	recipient, err := age.NewScryptRecipient(passphrase)
-	if err != nil {
-		return nil, fmt.Errorf("prepare encryption: %w", err)
-	}
-	recipient.SetWorkFactor(scryptWorkFactor)
 	encrypted, err := age.Encrypt(w, recipient)
 	if err != nil {
 		return nil, fmt.Errorf("encrypt export: %w", err)
@@ -251,11 +276,23 @@ func Stage(ctx context.Context, r io.Reader, passphrase, stateDir string) (*Mani
 		return nil, ErrWrongPassphrase
 	}
 
-	identity, err := age.NewScryptIdentity(passphrase)
-	if err != nil {
-		return nil, ErrWrongPassphrase
+	// A scheduled backup opens with the backup key's secret half instead
+	// of a passphrase.
+	var identity age.Identity
+	if strings.HasPrefix(strings.TrimSpace(passphrase), "AGE-SECRET-KEY-1") {
+		key, err := age.ParseX25519Identity(strings.TrimSpace(passphrase))
+		if err != nil {
+			return nil, ErrWrongPassphrase
+		}
+		identity = key
+	} else {
+		scrypt, err := age.NewScryptIdentity(passphrase)
+		if err != nil {
+			return nil, ErrWrongPassphrase
+		}
+		scrypt.SetMaxWorkFactor(scryptWorkFactor)
+		identity = scrypt
 	}
-	identity.SetMaxWorkFactor(scryptWorkFactor)
 	decrypted, err := age.Decrypt(r, identity)
 	if err != nil {
 		var wrong *age.NoIdentityMatchError
