@@ -69,11 +69,38 @@ var neededPorts = []struct {
 	{51820, "the VPN"},
 }
 
+// ownPart tells SGC's own parts on their ports from other programs:
+// AdGuard Home, Traefik, and WireGuard, which is part of the kernel, so its
+// socket has no program. systemd-resolved steps aside by itself when
+// AdGuard Home is installed.
+func ownPart(port int, protocol, program string, hasProgram bool) bool {
+	switch {
+	case program == "AdGuardHome" || program == "systemd-resolve":
+		return true
+	case program == "traefik" && (port == 80 || port == 443):
+		return true
+	case port == 51820 && protocol == "udp" && !hasProgram:
+		return true
+	}
+	return false
+}
+
 func checkPorts(ctx context.Context) []doctor.Result {
 	output, err := ask(ctx, "/usr/bin/ss", "-H", "-lntup")
 	if err != nil {
 		return one(doctor.Warn("Which ports are in use could not be found out: "+err.Error(), ""))
 	}
+	taken := takenPorts(output)
+	if len(taken) == 0 {
+		return one(doctor.Good("The ports SGC needs, now or later, are free (53, 80, 443, 51820)"))
+	}
+	return one(doctor.Warn("In use by another program: port "+strings.Join(taken, "; port "),
+		"SGC's part for that port cannot start while it is taken. Which program: sudo ss -lntup"))
+}
+
+// takenPorts reads `ss -H -lntup` and says which of the ports SGC needs
+// another program holds, as "80 (the proxy) by nginx".
+func takenPorts(output string) []string {
 	var taken []string
 	for line := range strings.Lines(output) {
 		fields := strings.Fields(line)
@@ -83,13 +110,12 @@ func checkPorts(ctx context.Context) []doctor.Result {
 		address := fields[4]
 		port := address[strings.LastIndex(address, ":")+1:]
 		program := "a program"
-		if _, rest, ok := strings.Cut(line, `users:(("`); ok {
+		_, rest, hasProgram := strings.Cut(line, `users:(("`)
+		if hasProgram {
 			program, _, _ = strings.Cut(rest, `"`)
 		}
 		for _, needed := range neededPorts {
-			// SGC's own parts are where they belong. And systemd-resolved
-			// steps aside by itself when AdGuard Home is installed.
-			if port != fmt.Sprint(needed.port) || program == "AdGuardHome" || program == "systemd-resolve" {
+			if port != fmt.Sprint(needed.port) || ownPart(needed.port, fields[0], program, hasProgram) {
 				continue
 			}
 			entry := fmt.Sprintf("%d (%s) by %s", needed.port, needed.what, program)
@@ -98,9 +124,5 @@ func checkPorts(ctx context.Context) []doctor.Result {
 			}
 		}
 	}
-	if len(taken) == 0 {
-		return one(doctor.Good("The ports SGC needs, now or later, are free (53, 80, 443, 51820)"))
-	}
-	return one(doctor.Warn("In use by another program: port "+strings.Join(taken, "; port "),
-		"SGC's part for that port cannot start while it is taken. Which program: sudo ss -lntup"))
+	return taken
 }
