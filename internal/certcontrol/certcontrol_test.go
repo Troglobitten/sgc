@@ -435,6 +435,10 @@ func TestRenewingByItself(t *testing.T) {
 	if !first.LastAttempt.OK {
 		t.Fatalf("the first certificate: %+v", first.LastAttempt)
 	}
+	// SGC's page serves it, and keeps the answer for a while.
+	if served, err := e.service.Serving(ctx); err != nil || served == nil || served.CertificatePEM != e.kept().CertificatePEM {
+		t.Fatalf("served after the first certificate: %v, %v", served, err)
+	}
 
 	// Long before its time: the authority is asked when, and that is all.
 	e.service.Tick(ctx)
@@ -456,6 +460,11 @@ func TestRenewingByItself(t *testing.T) {
 	}
 	if e.trial.Orders() != 1 || e.real.Orders() != 2 || e.history(1) != "system certificate.renewed" {
 		t.Errorf("asked for: %d and %d; history: %s", e.trial.Orders(), e.real.Orders(), e.history(1))
+	}
+	// The renewed one is served from the next connection on, not when the
+	// kept answer runs out.
+	if served, err := e.service.Serving(ctx); err != nil || served == nil || served.CertificatePEM != e.kept().CertificatePEM {
+		t.Error("right after the renewal SGC's page still serves the previous certificate")
 	}
 
 	// A renewal that fails is said, and tried again later, not every minute.

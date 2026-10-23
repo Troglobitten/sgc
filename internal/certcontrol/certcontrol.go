@@ -541,6 +541,7 @@ func (s *Service) issue(ctx context.Context, kind string, account Account) (*x50
 	if err := s.writeJSON(ctx, SettingCurrent, kept); err != nil {
 		return nil, err
 	}
+	s.forgetServing()
 	// A new certificate has a renewal time of its own.
 	if err := store.SetSetting(context.WithoutCancel(ctx), s.cfg.DB, SettingRenewal, ""); err != nil {
 		return nil, err
@@ -1078,6 +1079,16 @@ func (s *Service) Serving(ctx context.Context) (*KeyPair, error) {
 	}
 	s.serving = &KeyPair{Domain: kept.Domain, CertificatePEM: kept.CertificatePEM, PrivateKeyPEM: kept.PrivateKeyPEM, TLS: &pair, NotAfter: pair.Leaf.NotAfter}
 	return s.valid(s.serving, now), nil
+}
+
+// forgetServing makes the next Serving read the database: a certificate
+// that was just obtained is served from the next connection on, not up to
+// ten seconds later (the whole-machine test asked within those ten seconds
+// and got the self-signed one).
+func (s *Service) forgetServing() {
+	s.servingMu.Lock()
+	defer s.servingMu.Unlock()
+	s.servingAt = time.Time{}
 }
 
 func (s *Service) valid(pair *KeyPair, now time.Time) *KeyPair {

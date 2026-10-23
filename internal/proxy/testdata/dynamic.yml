@@ -10,6 +10,13 @@
           ]
         }
       },
+      "config-b0bb5ae67ed8a634": {
+        "headers": {
+          "customRequestHeaders": {
+            "X-SGC-Config": "b0bb5ae67ed8a634"
+          }
+        }
+      },
       "friendly-errors": {
         "errors": {
           "query": "/proxy-error/{status}",

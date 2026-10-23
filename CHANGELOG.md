@@ -31,7 +31,7 @@ Everything SGC was meant to do is now there: names for your devices, the proxy, 
 - SGC tells you when Debian or Traefik is about to stop getting security fixes.
 
 **Also**
-- `sudo sgc reset-admin` gives the admin a new password if it is lost.
+- `sudo sgc reset-admin` gives the admin a new password if it is lost or got out, and ends every admin sign-in, on SGC's page and at services behind the login gate.
 - `sudo sgc doctor` checks the names, the proxy, the VPN, backups and end-of-life dates too.
 
 What only you can check, because no test of SGC can: a phone on mobile data connecting to the VPN through your router, email through your provider, ntfy on your phone, and backups to your own NAS.

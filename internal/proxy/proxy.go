@@ -15,7 +15,9 @@ package proxy
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -420,7 +422,55 @@ func RenderDynamic(cfg Config, certFile, keyFile string) ([]byte, error) {
 	if len(udpRouters) > 0 {
 		dynamic["udp"] = map[string]any{"routers": udpRouters, "services": udpServices}
 	}
+	label, err := generationOf(dynamic, cfg.CertificatePEM)
+	if err != nil {
+		return nil, err
+	}
+	// No router uses it; it is there for Traefik to report (see Generation).
+	middlewares[GenerationPrefix+label] = map[string]any{"headers": map[string]any{
+		"customRequestHeaders": map[string]any{"X-SGC-Config": label}}}
 	return marshal(dynamic)
+}
+
+// GenerationPrefix starts the name of the middleware that labels a routes
+// file. Traefik reads a changed file a second or two after it was written
+// (seen with 3.7.16), keeps the previous one when it cannot read the new
+// one, and does not notice certificate files that change under the same
+// name. So the label is a fingerprint of the routes and the certificate:
+// a renewed certificate changes the routes file, which makes Traefik read
+// the certificate again, and a change counts as in place only once Traefik
+// reports the new label.
+const GenerationPrefix = "config-"
+
+func generationOf(dynamic map[string]any, certificatePEM string) (string, error) {
+	routes, err := json.Marshal(dynamic)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.New()
+	sum.Write(routes)
+	sum.Write([]byte{0})
+	sum.Write([]byte(certificatePEM))
+	return hex.EncodeToString(sum.Sum(nil))[:16], nil
+}
+
+// Generation returns the label of a routes file RenderDynamic wrote, "" if
+// it has none.
+func Generation(routesFile []byte) string {
+	var parsed struct {
+		HTTP struct {
+			Middlewares map[string]json.RawMessage `json:"middlewares"`
+		} `json:"http"`
+	}
+	if json.Unmarshal(routesFile[bytes.IndexByte(routesFile, '\n')+1:], &parsed) != nil {
+		return ""
+	}
+	for name := range parsed.HTTP.Middlewares {
+		if label, ok := strings.CutPrefix(name, GenerationPrefix); ok {
+			return label
+		}
+	}
+	return ""
 }
 
 // ExpectedRouters lists the routers Traefik must report as enabled once a

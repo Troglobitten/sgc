@@ -2387,7 +2387,11 @@ vpn)
     expect_status "the person is changed" 200 POST "/api/people/$person_id" \
         "{\"name\":\"Kim\",\"network\":\"full\",\"allServices\":true,\"serviceIds\":[],\"loginEnabled\":false,\"username\":\"\",\"password\":\"\",\"expiresAt\":null,\"disabled\":false}"
     if wait_for 30 reaches "$phone_net" "$lan_address" 8443; then pass "now SGC's page is reachable through the tunnel"; else fail "SGC's page is still out of reach"; fi
-    check "and the other service" phone_gets "https://other.domain.tld/" 'served by the test neighbour'
+    # The VPN's rules change first; the proxy's list of who may open the
+    # service follows a moment later (it waits for Traefik to take it up).
+    if wait_for 30 phone_gets "https://other.domain.tld/" 'served by the test neighbour'; then pass "and the other service"; else
+        fail "the other service is still out of reach"
+    fi
     echo "A guest whose time ran out"
     expect_status "the person gets an end date in the past" 200 POST "/api/people/$person_id" \
         "{\"name\":\"Kim\",\"network\":\"full\",\"allServices\":true,\"serviceIds\":[],\"loginEnabled\":false,\"username\":\"\",\"password\":\"\",\"expiresAt\":\"2020-01-01T00:00:00Z\",\"disabled\":false}"

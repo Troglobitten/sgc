@@ -54,6 +54,11 @@ var DecoyHash = sync.OnceValue(func() string {
 
 // ResetAdminPassword gives the admin a new password and ends every
 // sign-in: what `sudo sgc reset-admin` does. It returns the admin's name.
+//
+// "Every sign-in" includes the passes the login gate gave the admin for
+// services: the reset is what the owner does after a password got out, and
+// a pass left behind would keep whoever has it in for up to 12 hours.
+// People's passes are theirs and stay.
 func (s *Service) ResetAdminPassword(ctx context.Context, password string) (string, error) {
 	if err := validateCredentials("admin", password); err != nil {
 		return "", err
@@ -66,10 +71,21 @@ func (s *Service) ResetAdminPassword(ctx context.Context, password string) (stri
 	if err != nil {
 		return "", err
 	}
-	if _, err := s.db.ExecContext(ctx, "UPDATE admin SET password_hash = ? WHERE id = 1", hash); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
 		return "", err
 	}
-	if _, err := s.db.ExecContext(ctx, "DELETE FROM session"); err != nil {
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "UPDATE admin SET password_hash = ? WHERE id = 1", hash); err != nil {
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM session"); err != nil {
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM gate_pass WHERE person_id IS NULL"); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
 		return "", err
 	}
 	return username, nil

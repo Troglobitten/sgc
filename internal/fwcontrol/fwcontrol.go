@@ -125,12 +125,13 @@ type Status struct {
 	Wanted  bool           `json:"wanted"`
 	Pending *PendingStatus `json:"pending"`
 	// What is let in from inside while the firewall is on.
+	// The fields older SGCs had come first, in their order.
 	SSHPorts   []int    `json:"sshPorts"`
 	DNS        bool     `json:"dns"`
+	WebPort    int      `json:"webPort"`
 	Proxy      bool     `json:"proxy"`
 	ProxyPorts []string `json:"proxyPorts"`
 	VPNPort    int      `json:"vpnPort"`
-	WebPort    int      `json:"webPort"`
 	// Behind lists, in words, what is switched on but not let in by the
 	// rules in effect (they were made before). Bringing them up to date is
 	// an ordinary change (Change with again).

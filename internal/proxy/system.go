@@ -231,11 +231,24 @@ func (s *System) prepareAccount(ctx context.Context) error {
 	return nil
 }
 
+// makeSharedParent makes the folder Traefik's folder is in (/etc/sgc)
+// before MkdirAll does: it holds the firewall's file too, which SGC's own
+// account reads, so it is open to everyone like the firewall makes it.
+// Created by MkdirAll for Traefik's closed folder it was closed as well,
+// and the firewall's state could no longer be read (found on the test
+// machine on 2026-10-23, where the installer sets Traefik up first).
+func (s *System) makeSharedParent() error {
+	return os.MkdirAll(filepath.Dir(s.Paths.ConfigDir), 0o755)
+}
+
 // prepareConfigDir makes the folders Traefik reads: root's, readable by
 // Traefik's group only (the key of the certificate is in there).
 func (s *System) prepareConfigDir() error {
 	gid, err := s.Group()
 	if err != nil {
+		return err
+	}
+	if err := s.makeSharedParent(); err != nil {
 		return err
 	}
 	for _, dir := range []string{s.Paths.ConfigDir, s.Paths.dynamicDir(), s.Paths.certDir()} {
@@ -393,10 +406,30 @@ func (s *System) Apply(ctx context.Context, cfg Config) error {
 	if err := s.waitReady(ctx); err != nil {
 		return undo(err)
 	}
+	if err := s.waitForGeneration(ctx, Generation(dynamic)); err != nil {
+		return undo(err)
+	}
 	if err := s.checkRouters(ctx, cfg); err != nil {
 		return undo(err)
 	}
 	return s.recordApplied(cfg)
+}
+
+// waitForGeneration waits until Traefik reports the label of the routes
+// file just written (see GenerationPrefix). Until then what its API says is
+// about the previous file. A file it cannot read never gets there, and the
+// change is undone.
+func (s *System) waitForGeneration(ctx context.Context, label string) error {
+	if label == "" {
+		return errors.New("the routes file has no label to check it by")
+	}
+	for range 60 {
+		if _, err := s.api(ctx, "/api/http/middlewares/"+GenerationPrefix+label+"@file"); err == nil {
+			return nil
+		}
+		s.Sleep(500 * time.Millisecond)
+	}
+	return errors.New("Traefik did not take up the new configuration within 30 seconds; it may have refused the file (its log: sudo journalctl -u sgc-traefik --no-pager -n 30)")
 }
 
 func (s *System) recordApplied(cfg Config) error {
@@ -405,6 +438,9 @@ func (s *System) recordApplied(cfg Config) error {
 		return err
 	}
 	temporary := s.Paths.appliedFile() + ".new"
+	if err := s.makeSharedParent(); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(s.Paths.ConfigDir, 0o750); err != nil {
 		return err
 	}
