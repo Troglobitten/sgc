@@ -100,6 +100,8 @@ export function FirewallCard({ onError }: { onError: (error: unknown) => void })
   const letIn = [
     `SGC's page (port ${status.webPort})`,
     ...(status.dns ? ['DNS'] : []),
+    ...(status.proxy ? ['the proxy'] : []),
+    ...(status.vpnPort ? [`the VPN (from anywhere)`] : []),
     ...(status.sshPorts.length > 0 ? [`SSH (port ${status.sshPorts.join(', ')})`] : []),
   ].join(' and ')
   // Switching on from an address the firewall would refuse is not offered.
@@ -154,16 +156,40 @@ export function FirewallCard({ onError }: { onError: (error: unknown) => void })
           </Notice>
         )}
 
-        <Button
-          variant="outline"
-          disabled={wouldLockOut || status.pending !== null}
-          onClick={() => {
-            setNotice(null)
-            setAsking(true)
-          }}
-        >
-          {on ? 'Switch off' : 'Switch on'}
-        </Button>
+        {on && !status.pending && status.behind.length > 0 && (
+          <Notice>
+            The rules were made before {status.behind.join(', ')}{' '}
+            {status.behind.length === 1 ? 'was' : 'were'} switched on, and do not let{' '}
+            {status.behind.length === 1 ? 'it' : 'them'} in yet.
+          </Notice>
+        )}
+
+        <div className="flex flex-wrap gap-2">
+          {on && !status.pending && status.behind.length > 0 && (
+            <Button
+              onClick={async () => {
+                setNotice(null)
+                try {
+                  take(await api.changeFirewall(true, true))
+                } catch (e) {
+                  setNotice(errorMessage(e))
+                }
+              }}
+            >
+              Bring the rules up to date
+            </Button>
+          )}
+          <Button
+            variant="outline"
+            disabled={wouldLockOut || status.pending !== null}
+            onClick={() => {
+              setNotice(null)
+              setAsking(true)
+            }}
+          >
+            {on ? 'Switch off' : 'Switch on'}
+          </Button>
+        </div>
 
         {asking && (
           <ChangeDialog

@@ -68,6 +68,10 @@ func (p Paths) certFile() string    { return filepath.Join(p.certDir(), "wildcar
 func (p Paths) keyFile() string     { return filepath.Join(p.certDir(), "wildcard.key") }
 func (p Paths) appliedFile() string { return filepath.Join(p.ConfigDir, "applied.json") }
 
+// onFile is what lets sgc-traefik.service start: present only while the
+// owner has the proxy on (see the unit's conditions).
+func (p Paths) onFile() string { return filepath.Join(p.ConfigDir, "on") }
+
 // Installed reports whether Traefik is installed.
 func Installed(paths Paths) bool {
 	info, err := os.Stat(paths.Program())
@@ -123,6 +127,8 @@ type System struct {
 
 // Status is what the root side knows.
 type Status struct {
+	// On: the last change switched it on (what the firewall goes by).
+	On          bool     `json:"on"`
 	Installed   bool     `json:"installed"`
 	Version     string   `json:"version"`
 	Enabled     bool     `json:"enabled"`
@@ -131,7 +137,9 @@ type Status struct {
 }
 
 func (s *System) Status(ctx context.Context) Status {
-	status := Status{Installed: Installed(s.Paths), Version: InstalledVersion(s.Paths), ListenPorts: ReadApplied(s.Paths).ListenPorts}
+	applied := ReadApplied(s.Paths)
+	status := Status{Installed: Installed(s.Paths), Version: InstalledVersion(s.Paths), ListenPorts: applied.ListenPorts}
+	status.On = applied.Enabled && status.Installed
 	if status.Installed {
 		_, err := s.Run(ctx, systemctl, "is-active", "--quiet", ServiceUnit)
 		status.Running = err == nil
@@ -193,7 +201,7 @@ func (s *System) Install(ctx context.Context) error {
 	if err := switchLink(s.Paths.current(), s.Component.Version); err != nil {
 		return err
 	}
-	if s.Status(ctx).Enabled {
+	if ReadApplied(s.Paths).Enabled {
 		if output, err := s.Run(ctx, systemctl, "restart", ServiceUnit); err != nil || s.waitReady(ctx) != nil {
 			s.Log.Error("Traefik did not come up on the new version; going back", "output", string(output))
 			if previous != "" {
@@ -311,6 +319,7 @@ func (s *System) Apply(ctx context.Context, cfg Config) error {
 		return err
 	}
 	if !cfg.Enabled {
+		os.Remove(s.Paths.onFile())
 		if output, err := s.Run(ctx, systemctl, "disable", "--now", ServiceUnit); err != nil {
 			return fmt.Errorf("Traefik could not be stopped: %s", lastLine(output, err))
 		}
@@ -360,6 +369,7 @@ func (s *System) Apply(ctx context.Context, cfg Config) error {
 		s.writeFiles(before)
 		switch {
 		case !wasRunning:
+			os.Remove(s.Paths.onFile())
 			s.Run(ctx, systemctl, "disable", "--now", ServiceUnit)
 		case restart:
 			s.Run(ctx, systemctl, "restart", ServiceUnit)
@@ -368,6 +378,9 @@ func (s *System) Apply(ctx context.Context, cfg Config) error {
 	}
 	if err := s.writeFiles(next); err != nil {
 		return undo(fmt.Errorf("the configuration could not be written: %w", err))
+	}
+	if err := os.WriteFile(s.Paths.onFile(), []byte("The owner switched the proxy on in SGC's page.\n"), 0o644); err != nil {
+		return undo(fmt.Errorf("the proxy could not be marked as on: %w", err))
 	}
 	if output, err := s.Run(ctx, systemctl, "enable", ServiceUnit); err != nil {
 		return undo(fmt.Errorf("Traefik could not be made part of start-up: %s", lastLine(output, err)))

@@ -14,6 +14,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/helper"
 	"github.com/Troglobitten/sgc/internal/log2ram"
 	"github.com/Troglobitten/sgc/internal/osupdate"
+	"github.com/Troglobitten/sgc/internal/wireguard"
 )
 
 const (
@@ -46,6 +47,9 @@ var requiredPackages = map[string][]debianPackage{
 	// way of copying that never removes a log from the disk again, so that
 	// the logs on the disk only grow.
 	helper.PackagesLog2ram: {{"log2ram", log2ram.DefaultPaths().Program}, {"rsync", "/usr/bin/rsync"}},
+	// WireGuard itself is in the kernel; wg is its tool. The VPN's own
+	// firewall table needs nftables, also with SGC's firewall off.
+	helper.PackagesVPN: {{"wireguard-tools", wireguard.WG}, {"nftables", firewall.NftProgram}},
 }
 
 type packagesRequest struct {

@@ -7,6 +7,8 @@ import { api, errorMessage, type State } from '@/lib/api'
 import { pageForPath, pages, type Page } from '@/lib/pages'
 import { DashboardPage } from '@/pages/dashboard'
 import { LoginPage } from '@/pages/login'
+import { PeoplePage } from '@/pages/people'
+import { ServicesPage } from '@/pages/services'
 import { SetupPage } from '@/pages/setup'
 import { SystemPage } from '@/pages/system'
 
@@ -122,6 +124,8 @@ export default function App() {
     onNavigate: navigate,
     onSignedOut: refresh,
   }
+  if (page === 'services') return <ServicesPage shell={shell} />
+  if (page === 'people') return <PeoplePage shell={shell} />
   if (page === 'system') {
     return <SystemPage shell={shell} minPassphraseLength={state.minPassphraseLength} />
   }

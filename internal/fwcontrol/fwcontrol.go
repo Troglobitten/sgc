@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -78,6 +79,10 @@ type Config struct {
 	Paths  firewall.Paths
 	// Installed reports whether the firewall software (nftables) is there.
 	Installed func() bool
+	// Expected reports what the rules should let in besides SGC's page and
+	// SSH, given what is installed and switched on now (the root side
+	// decides the same from the same facts). nil: nothing besides.
+	Expected func(ctx context.Context) Expected
 	// Uptime is the clock a pending change's deadline is measured on.
 	Uptime func() (float64, error)
 	Log    *slog.Logger
@@ -102,6 +107,14 @@ type PendingStatus struct {
 	SecondsLeft int  `json:"secondsLeft"`
 }
 
+// Expected is what the rules should let in, as the parts of SGC are now.
+type Expected struct {
+	DNS        bool
+	Proxy      bool
+	ProxyPorts []string
+	VPNPort    int
+}
+
 type Status struct {
 	State string `json:"state"`
 	// SoftwareInstalled is false on a clean Debian: nftables is installed the
@@ -112,9 +125,16 @@ type Status struct {
 	Wanted  bool           `json:"wanted"`
 	Pending *PendingStatus `json:"pending"`
 	// What is let in from inside while the firewall is on.
-	SSHPorts []int `json:"sshPorts"`
-	DNS      bool  `json:"dns"`
-	WebPort  int   `json:"webPort"`
+	SSHPorts   []int    `json:"sshPorts"`
+	DNS        bool     `json:"dns"`
+	Proxy      bool     `json:"proxy"`
+	ProxyPorts []string `json:"proxyPorts"`
+	VPNPort    int      `json:"vpnPort"`
+	WebPort    int      `json:"webPort"`
+	// Behind lists, in words, what is switched on but not let in by the
+	// rules in effect (they were made before). Bringing them up to date is
+	// an ordinary change (Change with again).
+	Behind []string `json:"behind"`
 	// ConfirmSeconds is how long a change waits for its confirmation.
 	ConfirmSeconds int `json:"confirmSeconds"`
 }
@@ -133,6 +153,8 @@ func (s *Service) Status(ctx context.Context) (Status, error) {
 		SoftwareInstalled: s.cfg.Installed(),
 		Wanted:            wanted == "true",
 		SSHPorts:          []int{},
+		ProxyPorts:        []string{},
+		Behind:            []string{},
 		ConfirmSeconds:    int(firewall.ConfirmWindow.Seconds()),
 	}
 	// What is in effect right now: the pending rules if there are any.
@@ -154,9 +176,38 @@ func (s *Service) Status(ctx context.Context) (Status, error) {
 	if effective != nil && effective.Enabled {
 		status.SSHPorts = append(status.SSHPorts, effective.SSHPorts...)
 		status.DNS = effective.DNS
+		status.Proxy, status.VPNPort = effective.Proxy, effective.VPNPort
+		status.ProxyPorts = append(status.ProxyPorts, effective.ProxyPorts...)
 		status.WebPort = effective.WebPort
 	}
+	if status.State == StateOn && s.cfg.Expected != nil {
+		status.Behind = behind(s.cfg.Expected(ctx), *effective)
+	}
 	return status, nil
+}
+
+// behind says what the expected parts need that the rules in effect lack.
+// Something the rules let in that is no longer needed is not listed: it is
+// tidied up at the next change, and lets nothing in that answers.
+func behind(want Expected, have firewall.Config) []string {
+	out := []string{}
+	if want.DNS && !have.DNS {
+		out = append(out, "DNS")
+	}
+	if want.Proxy && !have.Proxy {
+		out = append(out, "the proxy (ports 80 and 443)")
+	}
+	if want.Proxy {
+		for _, port := range want.ProxyPorts {
+			if !slices.Contains(have.ProxyPorts, port) {
+				out = append(out, "the proxied service on port "+port)
+			}
+		}
+	}
+	if want.VPNPort != 0 && have.VPNPort != want.VPNPort {
+		out = append(out, fmt.Sprintf("the VPN (port %d/udp, from the internet)", want.VPNPort))
+	}
+	return out
 }
 
 // openChange is what SettingOpenChange holds.

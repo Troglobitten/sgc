@@ -78,6 +78,9 @@ Invoke-Cases dns $new
 Invoke-Cases log2ram $new
 Invoke-Cases domain $new
 Invoke-Cases certificate $new
+Invoke-Cases names $new
+Invoke-Cases proxy $new
+Invoke-Cases announce $new
 Invoke-Cases restart $new
 
 Write-Host ""

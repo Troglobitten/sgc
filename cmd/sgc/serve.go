@@ -165,8 +165,19 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 		Audit:     auditLog,
 		Paths:     firewall.Paths{ConfirmedFile: opts.firewallFile, RunDir: opts.firewallRunDir},
 		Installed: func() bool { _, err := os.Stat(firewall.NftProgram); return err == nil },
-		Uptime:    firewall.Uptime,
-		Log:       log,
+		// What the root side would let in now: the same facts it goes by.
+		Expected: func(ctx context.Context) fwcontrol.Expected {
+			expected := fwcontrol.Expected{DNS: adguard.Installed(adguard.DefaultPaths())}
+			if status, err := helperClient.ProxyStatus(ctx); err == nil && status.On {
+				expected.Proxy, expected.ProxyPorts = true, status.ListenPorts
+			}
+			if status, err := helperClient.VPNStatus(ctx); err == nil && status.On {
+				expected.VPNPort = status.Port
+			}
+			return expected
+		},
+		Uptime: firewall.Uptime,
+		Log:    log,
 	})
 	// Writes down how firewall changes ended that nobody ended by hand.
 	background.Go(func() { firewallControl.Run(runCtx) })
@@ -226,7 +237,7 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 
 	// The names SGC hands out: the gateway's, the services', and how they
 	// reach AdGuard Home and Traefik.
-	named := newParts(partsDeps{db: db, stateDir: opts.stateDir, helper: helperClient, audit: auditLog, log: log,
+	named := newParts(partsDeps{db: db, stateDir: opts.stateDir, helper: helperClient, audit: auditLog, auth: authService, log: log,
 		domain: domainControl, cert: certControl})
 	named.run(runCtx, background.Go)
 
@@ -268,6 +279,9 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 		Services:       named.catalog,
 		Proxy:          named.proxy,
 		Announcer:      named.announcer,
+		People:         named.people,
+		VPN:            named.vpn,
+		VPNEndpoint:    named.endpoint,
 		AdguardAddress: adguard.WebAddress,
 		Firewall:       firewallControl,
 		SSH:            sshControl,

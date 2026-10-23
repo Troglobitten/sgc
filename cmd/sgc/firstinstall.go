@@ -9,9 +9,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/Troglobitten/sgc/internal/adguard"
 	"github.com/Troglobitten/sgc/internal/audit"
@@ -21,6 +24,8 @@ import (
 	"github.com/Troglobitten/sgc/internal/layout"
 	"github.com/Troglobitten/sgc/internal/log2ram"
 	"github.com/Troglobitten/sgc/internal/logcontrol"
+	"github.com/Troglobitten/sgc/internal/proxy"
+	"github.com/Troglobitten/sgc/internal/proxycontrol"
 	"github.com/Troglobitten/sgc/internal/store"
 )
 
@@ -90,6 +95,15 @@ func firstInstallCommand(ctx context.Context, args []string, stdout, stderr io.W
 			fmt.Fprintln(stdout, answer.Message)
 		}
 	}
+	if !proxy.Installed(proxy.DefaultPaths()) {
+		fmt.Fprintf(stdout, "Installing Traefik %s, the proxy (switched off until you switch it on) ...\n", components.Traefik.Version)
+		var answer firstInstallAnswer
+		if err := work("first-install", "proxy", &answer); err != nil {
+			fmt.Fprintln(stdout, "Traefik could not be installed just now; the reason is above. Switching the proxy on, on SGC's Services page, installs it.")
+		} else {
+			fmt.Fprintln(stdout, answer.Message)
+		}
+	}
 	if due.DNS {
 		if !adguard.Installed(adguard.DefaultPaths()) {
 			fmt.Fprintf(stdout, "Installing AdGuard Home %s, the DNS server (about a minute) ...\n", components.AdGuardHome.Version)
@@ -149,6 +163,16 @@ func firstInstallWorker(ctx context.Context, task, stateDir, helperSocket string
 			return fail(err)
 		}
 		answer.Message = "log2ram is installed and switched off. If this device runs from an SD card, switch on \"Logs in memory\" on SGC's System page."
+	case "proxy":
+		control := proxycontrol.New(proxycontrol.Config{
+			DB: db, Helper: helperClient, Audit: audit.New(db), HTTP: &http.Client{Timeout: 10 * time.Minute},
+			SpoolDir: filepath.Join(stateDir, "components"), Arch: runtime.GOARCH, Log: quiet,
+			Build: func(context.Context) (proxy.Config, error) { return proxy.Config{}, nil },
+		})
+		if err := control.EnsureInstalled(ctx); err != nil {
+			return fail(err)
+		}
+		answer.Message = "Traefik is installed and switched off. Once your domain and certificate are set up, switch the proxy on on SGC's Services page."
 	default:
 		return fail(fmt.Errorf("unknown task %q", task))
 	}

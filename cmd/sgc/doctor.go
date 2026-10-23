@@ -67,6 +67,8 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		checkLog2ram,
 		checkDomain(*stateDir),
 		checkCertificate(*stateDir),
+		checkNames(*stateDir),
+		checkProxy(*stateDir),
 		checkPorts,
 	})
 	if doctor.Print(stdout, results) > 0 {

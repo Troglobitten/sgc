@@ -45,7 +45,9 @@ ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
 ProtectProc=invisible
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# AF_NETLINK: reading this device's addresses (internal/netinfo; Go asks
+# the kernel over netlink). Without any capability it can only read.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes

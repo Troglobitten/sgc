@@ -1,0 +1,58 @@
+#!/usr/sbin/nft -f
+# Written by SGC. Do not edit: SGC replaces this file.
+
+destroy table inet sgc_vpn
+table inet sgc_vpn {
+	set full {
+		type ipv4_addr
+		elements = { 10.86.0.2 }
+	}
+	set services {
+		type ipv4_addr
+		elements = { 10.86.0.3, 10.86.0.4 }
+	}
+	set direct {
+		type ipv4_addr . ipv4_addr . inet_proto . inet_service
+		elements = { 10.86.0.3 . 192.168.1.40 . udp . 9987 }
+	}
+	set gateway_ports {
+		type ipv4_addr . inet_proto . inet_service
+		elements = { 10.86.0.3 . tcp . 25565 }
+	}
+	# What a device in the tunnel may ask of the gateway itself. A device
+	# whose person reaches services only gets DNS and the proxy, and the
+	# gateway's ports of the proxied services on its list: not SGC's page,
+	# not SSH.
+	chain input {
+		type filter hook input priority filter; policy accept;
+		iifname "sgc-wg" ip saddr @full accept
+		iifname "sgc-wg" ip saddr @services jump services_only
+		iifname "sgc-wg" drop
+	}
+	chain services_only {
+		ct state established,related accept
+		meta l4proto { tcp, udp } th dport 53 accept
+		tcp dport { 80, 443 } accept
+		ip saddr . meta l4proto . th dport @gateway_ports accept
+		icmp type echo-request accept
+		drop
+	}
+	# What passes through the gateway: full-network devices to anywhere, the
+	# others only to the services on their list; and the answers back.
+	chain forward {
+		type filter hook forward priority filter; policy accept;
+		ct state invalid drop
+		iifname "sgc-wg" ip saddr @full accept
+		iifname "sgc-wg" ip saddr . ip daddr . meta l4proto . th dport @direct accept
+		iifname "sgc-wg" drop
+		oifname "sgc-wg" ct state established,related accept
+		oifname "sgc-wg" drop
+	}
+	# The home network does not know the tunnel's range: what leaves the
+	# tunnel goes on with the gateway's address. Traffic to the internet
+	# (devices that send everything through home) the same.
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		ip saddr 10.86.0.0/24 oifname != "sgc-wg" masquerade
+	}
+}

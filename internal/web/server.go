@@ -68,6 +68,9 @@ type Server struct {
 	Services    Services
 	Proxy       Proxy
 	Announcer   Announcer
+	People      People
+	VPN         VPN
+	VPNEndpoint VPNEndpoint
 	// AdguardAddress is where AdGuard Home's own page listens (host:port).
 	AdguardAddress string
 	// StartOver asks the process to wind down the web server and start
@@ -148,6 +151,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tokens/{id}/repin", s.requireSession(s.handleTokenRepin))
 	// Servers announce their services with a token, not a session.
 	mux.HandleFunc("POST /api/announce", s.handleAnnounce)
+	mux.HandleFunc("GET /api/people", s.requireSession(s.handlePeople))
+	mux.HandleFunc("POST /api/people", s.requireSession(s.handlePersonAdd))
+	mux.HandleFunc("POST /api/people/{id}", s.requireSession(s.handlePersonUpdate))
+	mux.HandleFunc("POST /api/people/{id}/remove", s.requireSession(s.handlePersonRemove))
+	mux.HandleFunc("GET /api/vpn", s.requireSession(s.handleVPNStatus))
+	mux.HandleFunc("POST /api/vpn/settings", s.requireSession(s.handleVPNSettings))
+	mux.HandleFunc("POST /api/vpn/devices", s.requireSession(s.handleDeviceAdd))
+	mux.HandleFunc("POST /api/vpn/devices/{id}", s.requireSession(s.handleDeviceUpdate))
+	mux.HandleFunc("POST /api/vpn/devices/{id}/remove", s.requireSession(s.handleDeviceRemove))
+	mux.HandleFunc("POST /api/vpn/devices/{id}/config", s.requireSession(s.handleDeviceConfig))
+	mux.HandleFunc("GET /api/vpn/usage", s.requireSession(s.handleVPNUsage))
+	mux.HandleFunc("POST /api/vpn/endpoint/check", s.requireSession(s.handleVPNEndpointCheck))
+	mux.HandleFunc("POST /api/vpn/endpoint/take-over", s.requireSession(s.handleVPNEndpointTakeOver))
 	// AdGuard Home's own page, behind SGC's login.
 	adguardPage := s.requireSession(s.adguardProxy().ServeHTTP)
 	mux.Handle(adguardPrefix, adguardPage)

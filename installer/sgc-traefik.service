@@ -2,10 +2,13 @@
 Description=Traefik (the reverse proxy for the home network's names), installed by Server Gateway Control
 Documentation=https://github.com/Troglobitten/sgc
 After=network.target
-# Only once Traefik has been installed. Until then this unit is skipped,
-# also when it is switched on for start-up.
+# Only once Traefik has been installed, and only while the owner has the
+# proxy switched on. The installer and the updater make every unit with an
+# [Install] section part of start-up; the file "on" is what SGC's own switch
+# sets (internal/proxy), so a proxy the owner left off stays off after a
+# restart.
 ConditionPathExists=/opt/sgc/components/traefik/current/traefik
-ConditionPathExists=/etc/sgc/traefik/traefik.yml
+ConditionPathExists=/etc/sgc/traefik/on
 
 [Service]
 # Traefik passes requests for the names under the owner's domain on to the
