@@ -58,6 +58,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "first-install":
 		// Run by the installer; not in the list of commands below.
 		return firstInstallCommand(ctx, args[1:], stdout, stderr)
+	case "reset-admin":
+		return resetAdmin(ctx, args[1:], stdout, stderr)
 	case "doctor":
 		return doctorCommand(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -81,6 +83,7 @@ Commands:
   firewall     Show the firewall's state ("firewall off": switch it off)
   ssh          Show what SGC set up for SSH ("ssh allow-passwords": undo "keys only")
   dns          Show whether DNS (AdGuard Home) is on ("dns on", "dns off": switch it)
+  reset-admin  Give the admin a new password, when it is lost (with sudo)
   version      Print the installed SGC version
   help         Show this help
 `)

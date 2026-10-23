@@ -15,8 +15,10 @@ import (
 
 	"github.com/Troglobitten/sgc/internal/adguard"
 	"github.com/Troglobitten/sgc/internal/audit"
+	"github.com/Troglobitten/sgc/internal/backups"
 	"github.com/Troglobitten/sgc/internal/doctor"
 	"github.com/Troglobitten/sgc/internal/domaincontrol"
+	"github.com/Troglobitten/sgc/internal/eol"
 	"github.com/Troglobitten/sgc/internal/gateway"
 	"github.com/Troglobitten/sgc/internal/layout"
 	"github.com/Troglobitten/sgc/internal/netinfo"
@@ -24,18 +26,24 @@ import (
 	"github.com/Troglobitten/sgc/internal/proxycontrol"
 	"github.com/Troglobitten/sgc/internal/services"
 	"github.com/Troglobitten/sgc/internal/store"
+	"github.com/Troglobitten/sgc/internal/vpncontrol"
+	"github.com/Troglobitten/sgc/internal/wireguard"
 )
 
 // partsReport is what the doctor's worker reads from the database about
 // names, the proxy and the services.
 type partsReport struct {
-	Configured  bool     `json:"configured"`
-	Domain      string   `json:"domain"`
-	GatewayName string   `json:"gatewayName"`
-	ProxyWanted bool     `json:"proxyWanted"`
-	Down        []string `json:"down"`
-	Abandoned   []string `json:"abandoned"`
-	Pending     []string `json:"pending"`
+	Configured  bool                     `json:"configured"`
+	Domain      string                   `json:"domain"`
+	GatewayName string                   `json:"gatewayName"`
+	ProxyWanted bool                     `json:"proxyWanted"`
+	Down        []string                 `json:"down"`
+	Abandoned   []string                 `json:"abandoned"`
+	Pending     []string                 `json:"pending"`
+	VPN         vpncontrol.Settings      `json:"vpn"`
+	Endpoint    vpncontrol.EndpointState `json:"endpoint"`
+	Backups     backups.Status           `json:"backups"`
+	EndOfLife   eol.State                `json:"endOfLife"`
 }
 
 func readParts(ctx context.Context, stateDir string) (partsReport, error) {
@@ -197,6 +205,13 @@ func readPartsReport(ctx context.Context, db *sql.DB, domain *domaincontrol.Serv
 		return report, err
 	}
 	report.Down, report.Abandoned, report.Pending = []string{}, []string{}, []string{}
+	quietVPN := vpncontrol.New(vpncontrol.Config{DB: db, Log: log})
+	report.VPN = quietVPN.Settings(ctx)
+	report.Endpoint = vpncontrol.NewEndpoint(vpncontrol.EndpointConfig{DB: db, Log: log}).State(ctx)
+	if status, err := backups.New(backups.Config{DB: db, Log: log}).Status(ctx); err == nil {
+		report.Backups = status
+	}
+	report.EndOfLife = eol.New(eol.Config{DB: db, Log: log}).State(ctx)
 	for _, s := range list {
 		switch {
 		case s.Pending:
@@ -209,4 +224,68 @@ func readPartsReport(ctx context.Context, db *sql.DB, domain *domaincontrol.Serv
 		}
 	}
 	return report, nil
+}
+
+// checkVPN: switched on means its program runs, the interface is there and
+// listens, and the public name points at home.
+func checkVPN(stateDir string) doctor.Check {
+	return func(ctx context.Context) []doctor.Result {
+		report, err := readParts(ctx, stateDir)
+		if err != nil {
+			return one(doctor.Warn("The VPN's state could not be read: "+err.Error(), ""))
+		}
+		if !report.VPN.Enabled {
+			return one(doctor.Good("The VPN is off (switching it on is on the People page)"))
+		}
+		const vpnLog = "Its log: sudo journalctl -u sgc-wireguard --no-pager -n 30"
+		var results []doctor.Result
+		if state, _ := ask(ctx, "/usr/bin/systemctl", "is-active", wireguard.ServiceUnit); state != "active" {
+			results = append(results, doctor.Bad("The VPN is switched on but its program is not running ("+state+")",
+				"Start it: sudo systemctl start sgc-wireguard\n"+vpnLog))
+		} else if output, err := ask(ctx, wireguard.WG, "show", wireguard.Interface, "listen-port"); err != nil {
+			results = append(results, doctor.Bad("The VPN's program runs but WireGuard has no interface: "+output, vpnLog))
+		} else {
+			results = append(results, doctor.Good(fmt.Sprintf("The VPN runs and listens on UDP port %s. Whether the router passes that port on, only a phone on mobile data can tell", output)))
+		}
+		if e := report.Endpoint; e.Problem != "" {
+			results = append(results, doctor.Warn("The VPN's public name: "+e.Problem, "The People page, VPN, says more."))
+		} else if e.RecordIP != "" && e.PublicIP != "" && e.RecordIP != e.PublicIP && report.VPN.EndpointMode != "static" {
+			results = append(results, doctor.Warn(fmt.Sprintf("The VPN's public name points at %s, the home is at %s", e.RecordIP, e.PublicIP),
+				"SGC puts it right within five minutes; if it stays, Zone.eu may be refusing SGC's key."))
+		}
+		return results
+	}
+}
+
+// checkBackupsAndSoftware: backups are recent, and the software has not
+// run out of security fixes.
+func checkBackupsAndSoftware(stateDir string) doctor.Check {
+	return func(ctx context.Context) []doctor.Result {
+		report, err := readParts(ctx, stateDir)
+		if err != nil {
+			return one(doctor.Warn("The state of backups could not be read: "+err.Error(), ""))
+		}
+		var results []doctor.Result
+		b := report.Backups
+		switch {
+		case !b.Settings.Enabled:
+			results = append(results, doctor.Warn("No backups to another device are made",
+				"Set them up on SGC's System page, Backups. Until then, make an export by hand now and then."))
+		case b.Overdue:
+			reason := ""
+			if b.Last != nil && !b.Last.OK {
+				reason = " The last attempt: " + b.Last.Message
+			}
+			results = append(results, doctor.Bad("There has been no good backup for more than three days."+reason,
+				"The System page, Backups: test the connection, and back up now."))
+		case b.LastSuccess != nil:
+			results = append(results, doctor.Good("The last backup to another device was made "+b.LastSuccess.Local().Format("2 January 15:04")))
+		}
+		for _, item := range report.EndOfLife.Items {
+			if item.Warning != "" {
+				results = append(results, doctor.Warn(item.Warning, ""))
+			}
+		}
+		return results
+	}
 }

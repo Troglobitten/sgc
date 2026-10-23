@@ -31,6 +31,7 @@ import (
 const (
 	fixtureFile       = "testdata/export-schema2.age"
 	fixtureSchema3    = "testdata/export-schema3.age"
+	fixtureSchema7    = "testdata/export-schema7.age"
 	fixturePassphrase = "fixture passphrase, not a secret"
 )
 
@@ -105,6 +106,61 @@ func TestRestoresAnExportMadeBySGC060(t *testing.T) {
 	var keys int
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM ssh_key").Scan(&keys); err != nil || keys != 0 {
 		t.Errorf("SSH keys = %d, %v", keys, err)
+	}
+}
+
+func TestRestoresAnExportMadeBySGC0160(t *testing.T) {
+	ctx := context.Background()
+	file, err := os.ReadFile(fixtureSchema7)
+	if err != nil {
+		t.Fatalf("the fixture is missing: %v", err)
+	}
+	targetDir := t.TempDir()
+	manifest, err := Stage(ctx, bytes.NewReader(file), fixturePassphrase, targetDir)
+	if err != nil {
+		t.Fatalf("an export made by SGC 0.16.0 can no longer be restored: %v", err)
+	}
+	if manifest.SGCVersion != "0.16.0" || manifest.SchemaVersion != 7 {
+		t.Errorf("manifest = %+v", manifest)
+	}
+	if err := Confirm(targetDir, manifest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyStaged(targetDir); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open(ctx, filepath.Join(targetDir, layout.DatabaseFile))
+	if err != nil {
+		t.Fatalf("open the restored database: %v", err)
+	}
+	defer db.Close()
+	for query, want := range map[string]string{
+		// What travels: every phone keeps working, servers keep their
+		// registrations, the dashboard its icons.
+		"SELECT value FROM setting WHERE key = 'gateway.name'":                         "gw",
+		"SELECT value FROM setting WHERE key = 'vpn.server_key'":                       "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+		"SELECT label || '|' || pinned_ip FROM announce_token":                         "media server|192.168.1.30",
+		"SELECT COUNT(*) FROM service":                                                 "2",
+		"SELECT name || '|' || token_id || '|' || protected FROM service WHERE id = 1": "media|1|1",
+		"SELECT COUNT(*) FROM service_icon":                                            "1",
+		"SELECT name || '|' || username || '|' || password_hash FROM person":           "Kim|kim|a-person-hash",
+		"SELECT COUNT(*) FROM person_service":                                          "1",
+		"SELECT name || '|' || address || '|' || private_key FROM vpn_device":          "phone|10.86.0.2|AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+		"SELECT COUNT(*) FROM setting WHERE key = 'notify.channels'":                   "1",
+		"SELECT COUNT(*) FROM setting WHERE key = 'backups.settings'":                  "1",
+		// What does not: this device's own bookkeeping.
+		"SELECT COUNT(*) FROM service_health": "0",
+		"SELECT COUNT(*) FROM vpn_usage":      "0",
+		"SELECT COUNT(*) FROM vpn_peer_state": "0",
+		"SELECT COUNT(*) FROM notification":   "0",
+		"SELECT COUNT(*) FROM person_session": "0",
+		"SELECT COUNT(*) FROM gate_pass":      "0",
+		"SELECT COUNT(*) FROM setting WHERE key IN ('proxy.last_apply', 'vpn.last_apply', 'backups.last', 'eol.state', 'vpn.endpoint_state')": "0",
+	} {
+		var got string
+		if err := db.QueryRowContext(ctx, query).Scan(&got); err != nil || got != want {
+			t.Errorf("%s = %q, %v; want %q", query, got, err, want)
+		}
 	}
 }
 

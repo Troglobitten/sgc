@@ -81,6 +81,10 @@ Invoke-Cases certificate $new
 Invoke-Cases names $new
 Invoke-Cases proxy $new
 Invoke-Cases announce $new
+Invoke-Cases vpn $new
+Invoke-Cases gate $new
+Invoke-Cases notify $new
+Invoke-Cases backups $new
 Invoke-Cases restart $new
 
 Write-Host ""

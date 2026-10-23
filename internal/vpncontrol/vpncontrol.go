@@ -745,6 +745,12 @@ func (s *Service) Apply(ctx context.Context) error {
 			s.mu.Unlock()
 			return nil
 		}
+	} else if status, err := s.cfg.Helper.VPNStatus(ctx); err == nil && !status.Installed {
+		// A device restored from an export of one with the VPN on: it
+		// gets WireGuard's tools, as switching on would have.
+		if err := s.cfg.Helper.InstallPackages(ctx, helper.PackagesVPN); err != nil {
+			return problem.Newf("WireGuard's tools could not be installed from Debian: %v", err)
+		}
 	}
 	err = s.cfg.Helper.VPNApply(context.WithoutCancel(ctx), cfg)
 	result := ApplyResult{At: s.cfg.Now().UTC(), OK: err == nil}
