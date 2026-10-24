@@ -264,7 +264,12 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 	dnsControl := newDNSControl(db, opts.stateDir, helperClient, auditLog, log)
 
 	// The software SGC stands on, and when it stops getting security fixes.
-	endOfLife := eol.New(eol.Config{DB: db, HTTP: &http.Client{Timeout: 20 * time.Second}, TraefikCycle: minorOf(components.Traefik.Version), Log: log})
+	endOfLife := eol.New(eol.Config{DB: db, HTTP: &http.Client{Timeout: 20 * time.Second}, TraefikCycle: minorOf(components.Traefik.Version),
+		Programs: []eol.Program{
+			{Name: "AdGuard Home", Repo: "AdguardTeam/AdGuardHome", Pinned: components.AdGuardHome.Version},
+			{Name: "Traefik", Repo: "traefik/traefik", Pinned: components.Traefik.Version},
+		},
+		Log: log})
 	background.Go(func() { endOfLife.Run(runCtx) })
 
 	// Daily backups to another device, encrypted to the backup key.

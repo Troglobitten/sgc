@@ -49,7 +49,10 @@ type Item struct {
 
 // State is the last look.
 type State struct {
-	Items     []Item     `json:"items"`
+	Items []Item `json:"items"`
+	// Programs are what SGC installs besides Debian's packages, with their
+	// newest releases (upstream.go).
+	Programs  []Program  `json:"programs"`
 	CheckedAt *time.Time `json:"checkedAt"`
 	// Problem says why endoflife.date could not be asked (the table was used).
 	Problem string `json:"problem"`
@@ -69,8 +72,12 @@ type Config struct {
 	DebianCycle func() string
 	// TraefikCycle is the pinned Traefik's minor version ("3.7").
 	TraefikCycle string
-	Now          func() time.Time
-	Log          *slog.Logger
+	// Programs are looked up for their newest releases (Pinned and Repo
+	// set); GitHubAPI is where ("" for GitHub itself).
+	Programs  []Program
+	GitHubAPI string
+	Now       func() time.Time
+	Log       *slog.Logger
 }
 
 type Service struct{ cfg Config }
@@ -107,6 +114,9 @@ func (s *Service) State(ctx context.Context) State {
 	}
 	if state.Items == nil {
 		state.Items = []Item{}
+	}
+	if state.Programs == nil {
+		state.Programs = []Program{}
 	}
 	return state
 }
@@ -198,6 +208,7 @@ func (s *Service) Check(ctx context.Context) State {
 	if len(problems) > 0 {
 		state.Problem = "endoflife.date could not be asked (" + strings.Join(problems, "; ") + "); SGC's own table was used."
 	}
+	state.Programs = s.checkPrograms(ctx)
 	if data, err := json.Marshal(state); err == nil {
 		store.SetSetting(context.WithoutCancel(ctx), s.cfg.DB, SettingState, string(data))
 	}

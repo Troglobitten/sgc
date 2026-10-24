@@ -57,8 +57,38 @@ export function SoftwareCard({ onError }: { onError: (error: unknown) => void })
             )}
           </div>
         ))}
+        {eol?.items.some((i) => i.product === 'debian') && (
+          <p className="text-xs text-muted-foreground">
+            Debian's date covers everything that comes from Debian: the Linux kernel (WireGuard is part of it), the
+            firewall (nftables), SSH and the rest of the system. Debian keeps fixing them until then, also where the
+            programs' own makers have stopped.
+          </p>
+        )}
+        {eol?.programs.map((p) => (
+          <div key={p.name} className="text-sm">
+            <span className="font-medium">
+              {p.name} {p.pinned}
+            </span>
+            {p.name === 'AdGuard Home'
+              ? ': publishes no end-of-life dates; only its newest release gets fixes.'
+              : ': installed by SGC.'}
+            {p.behind && (
+              <p className="flex gap-2 text-amber-700 dark:text-amber-400">
+                <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+                {p.name} {p.newest} is out; this SGC brings {p.pinned}. A newer SGC brings it.
+              </p>
+            )}
+            {!p.behind && p.newest && <span className="text-xs text-muted-foreground"> The newest release.</span>}
+            {p.problem && <p className="text-xs text-muted-foreground">{p.name}: {p.problem}</p>}
+          </div>
+        ))}
         {eol?.problem && <p className="text-xs text-amber-700 dark:text-amber-400">{eol.problem}</p>}
-        {eol?.checkedAt && <p className="text-xs text-muted-foreground">From endoflife.date, looked {formatTimeAgo(eol.checkedAt)}.</p>}
+        {eol?.checkedAt && (
+          <p className="text-xs text-muted-foreground">
+            Dates from endoflife.date, newest releases from GitHub, looked {formatTimeAgo(eol.checkedAt)}. SGC itself
+            comes with SGC's own updates (on the dashboard).
+          </p>
+        )}
         {proxy?.installed && (
           <p className="text-sm">
             Traefik {proxy.version}

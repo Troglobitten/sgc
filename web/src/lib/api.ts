@@ -700,6 +700,8 @@ export interface EolState {
     source: 'online' | 'table'
     warning: string
   }[]
+  /** what SGC installs besides Debian's packages, with their newest releases */
+  programs: { name: string; repo: string; pinned: string; newest: string; behind: boolean; problem?: string }[]
   checkedAt: string | null
   problem: string
 }
