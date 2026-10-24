@@ -299,9 +299,10 @@ function ChangeDialog({
 
 /**
  * Shown while a change waits for its confirmation. It cannot be dismissed:
- * the question has to be answered, by the owner or by the clock.
+ * the question has to be answered, by the owner or by the clock. Also used
+ * by FirewallFollowUp on the cards of the proxy and the VPN.
  */
-function ConfirmDialog({
+export function ConfirmDialog({
   status,
   onAnswered,
 }: {

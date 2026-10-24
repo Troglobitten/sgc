@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { Copy, KeyRound } from 'lucide-react'
+import { ChevronDown, ChevronUp, Copy, KeyRound } from 'lucide-react'
 
 import { FormError } from '@/components/auth-card'
 import {
@@ -34,6 +34,7 @@ export function TokensCard({
   const [made, setMade] = useState<{ label: string; secret: string } | null>(null)
   const [removing, setRemoving] = useState<AnnounceToken | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [showHelp, setShowHelp] = useState(false)
 
   async function create(event: FormEvent) {
     event.preventDefault()
@@ -60,7 +61,16 @@ export function TokensCard({
         </p>
 
         {made ? (
-          <ShowOnce host={host} label={made.label} secret={made.secret} onDone={() => setMade(null)} />
+          <div className="flex flex-col gap-2 rounded-lg bg-muted/50 p-3 text-sm">
+            <p>
+              The token for <span className="font-medium">{made.label}</span>. It is shown only now;
+              SGC keeps only a fingerprint of it.
+            </p>
+            <ComposeInstructions host={host} secret={made.secret} />
+            <Button size="sm" className="self-start" onClick={() => setMade(null)}>
+              Done
+            </Button>
+          </div>
         ) : (
           <form onSubmit={create} className="flex flex-wrap items-end gap-2">
             <div className="flex min-w-48 flex-1 flex-col gap-1.5">
@@ -77,6 +87,25 @@ export function TokensCard({
           </form>
         )}
         <FormError message={error} />
+
+        {!made && (
+          <div className="flex flex-col gap-2">
+            <Button size="sm" variant="ghost" className="self-start" onClick={() => setShowHelp(!showHelp)}
+              aria-expanded={showHelp}>
+              {showHelp ? <ChevronUp /> : <ChevronDown />}
+              {showHelp ? 'Hide the compose block' : 'Show the compose block'}
+            </Button>
+            {showHelp && (
+              <div className="flex flex-col gap-2 rounded-lg bg-muted/50 p-3 text-sm">
+                <ComposeInstructions host={host} />
+                <p className="text-xs text-muted-foreground">
+                  Lost a server's token? SGC cannot show it again: make a new one, put it in the
+                  server's <code>.env</code> file, and remove the old one below.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
 
         {tokens && tokens.length > 0 && (
           <ul className="flex flex-col gap-2 text-sm">
@@ -120,7 +149,12 @@ export function TokensCard({
   )
 }
 
-function ShowOnce({ host, label, secret, onDone }: { host: string; label: string; secret: string; onDone: () => void }) {
+/**
+ * What goes on a server that announces its services: its token in the .env
+ * file (the real one right after it was made, a placeholder later) and the
+ * block for its compose file.
+ */
+function ComposeInstructions({ host, secret }: { host: string; secret?: string }) {
   const [copied, setCopied] = useState('')
   const compose = `  announce:
     image: curlimages/curl
@@ -130,20 +164,21 @@ function ShowOnce({ host, label, secret, onDone }: { host: string; label: string
       -H "Authorization: Bearer \${SGC_TOKEN}"
       -d service=NAME:PORT
       https://${host}/api/announce`
-  const env = `SGC_TOKEN=${secret}`
+  const env = `SGC_TOKEN=${secret ?? '<the token you saved for this server>'}`
   const copy = (what: string, text: string) =>
     navigator.clipboard.writeText(text).then(() => setCopied(what), () => setCopied(''))
   return (
-    <div className="flex flex-col gap-2 rounded-lg bg-muted/50 p-3 text-sm">
+    <>
       <p>
-        The token for <span className="font-medium">{label}</span>. It is shown only now; SGC
-        keeps only a fingerprint of it. Put it in the server's <code>.env</code> file:
+        {secret ? 'Put it' : "The server's token goes"} in the server's <code>.env</code> file:
       </p>
       <pre className="overflow-x-auto rounded-md bg-background p-2 text-xs">{env}</pre>
-      <Button size="sm" variant="outline" className="self-start" onClick={() => copy('env', env)}>
-        <Copy />
-        {copied === 'env' ? 'Copied' : 'Copy'}
-      </Button>
+      {secret && (
+        <Button size="sm" variant="outline" className="self-start" onClick={() => copy('env', env)}>
+          <Copy />
+          {copied === 'env' ? 'Copied' : 'Copy'}
+        </Button>
+      )}
       <p>
         And this under <code>services:</code> in its compose file, with your service's name and
         port (repeat <code>-d service=…</code> for several):
@@ -157,10 +192,7 @@ function ShowOnce({ host, label, secret, onDone }: { host: string; label: string
         Optional fields: -d category=…, -d scheme=https, -d type=tcp or udp, -d mode=proxied. The
         token works from the server's address only: the first one it is used from.
       </p>
-      <Button size="sm" className="self-start" onClick={onDone}>
-        Done
-      </Button>
-    </div>
+    </>
   )
 }
 
