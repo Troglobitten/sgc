@@ -23,6 +23,7 @@ import (
 
 	"golang.org/x/net/html"
 
+	"github.com/Troglobitten/sgc/internal/iconpack"
 	"github.com/Troglobitten/sgc/internal/proxy"
 )
 
@@ -32,30 +33,28 @@ const (
 	maxPageBytes = 512 << 10
 	// A service whose icon could not be found is asked again after a day.
 	iconRetry = 24 * time.Hour
-	// CatalogueURL is the public dashboard-icons catalogue, by name
-	// (docs/design.md §10).
-	CatalogueURL = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/%s.png"
 )
 
+// IconCollection is the icon collection kept on the device (internal/iconpack).
+type IconCollection interface {
+	// Lookup returns the icon for the first of the names it has, nil if none.
+	Lookup(names ...string) []byte
+}
+
 // IconFetcher fetches icons: from the services themselves, and from the
-// public catalogue.
+// collection on the device (until 0.17.0, a public CDN was asked by name).
 type IconFetcher struct {
-	// Catalogue fetches from the internet; nil means the catalogue is not used.
-	Catalogue *http.Client
-	// CatalogueURL is a format with one %s for the name.
-	CatalogueURL string
+	// Collection is nil when there is none.
+	Collection IconCollection
 
 	mu        sync.Mutex
 	queue     chan int64
 	attempted map[int64]time.Time
 }
 
-// NewIconFetcher returns a fetcher with ordinary clients.
-func NewIconFetcher() *IconFetcher {
-	return &IconFetcher{
-		Catalogue:    &http.Client{Timeout: 10 * time.Second},
-		CatalogueURL: CatalogueURL,
-	}
+// NewIconFetcher returns a fetcher that also looks in the collection.
+func NewIconFetcher(collection IconCollection) *IconFetcher {
+	return &IconFetcher{Collection: collection}
 }
 
 func (f *IconFetcher) init() {
@@ -193,38 +192,55 @@ func (f *IconFetcher) find(ctx context.Context, s Service, catalogue bool) ([]by
 			return icon, "favicon"
 		}
 	}
-	if catalogue && f.Catalogue != nil {
-		for _, name := range catalogueNames(s) {
-			if icon, err := f.fetchImage(ctx, f.Catalogue, fmt.Sprintf(f.CatalogueURL, url.PathEscape(name))); err == nil {
-				return icon, "catalogue"
+	if catalogue && f.Collection != nil {
+		// Drawn anew like any icon: the collection is not trusted further.
+		if data := f.Collection.Lookup(catalogueNames(s)...); data != nil {
+			if icon, err := Redraw(data); err == nil {
+				return icon, SourceCollection
 			}
 		}
 	}
 	return nil, ""
 }
 
+// SourceCollection is how an icon from the collection is marked (until
+// 0.17.0 those came from the CDN, marked "catalogue").
+const SourceCollection = "collection"
+
 // catalogueNames are the names to look a service up by: its own, and its
-// title written as the catalogue writes names ("Home Assistant" is
+// title written as the collection writes names ("Home Assistant" is
 // home-assistant).
 func catalogueNames(s Service) []string {
 	names := []string{s.Name}
-	if s.Title != "" {
-		var b strings.Builder
-		for _, r := range strings.ToLower(s.Title) {
-			switch {
-			case r >= 'a' && r <= 'z' || r >= '0' && r <= '9':
-				b.WriteRune(r)
-			case r == ' ' || r == '-' || r == '_' || r == '.':
-				if b.Len() > 0 && !strings.HasSuffix(b.String(), "-") {
-					b.WriteByte('-')
-				}
-			}
-		}
-		if slug := strings.Trim(b.String(), "-"); slug != "" && slug != s.Name {
-			names = append(names, slug)
-		}
+	if slug := iconpack.Slug(s.Title); slug != "" && slug != s.Name {
+		names = append(names, slug)
 	}
 	return names
+}
+
+// RefreshCollectionIcons looks again for the icons of services that have
+// none, or one from the collection: a new pack may have them, or newer ones.
+func (c *Catalog) RefreshCollectionIcons(ctx context.Context) {
+	all, err := c.List(ctx)
+	if err != nil {
+		return
+	}
+	fromCollection := map[int64]bool{}
+	rows, err := c.cfg.DB.QueryContext(ctx, "SELECT service_id FROM service_icon WHERE source IN (?, 'catalogue')", SourceCollection)
+	if err == nil {
+		for rows.Next() {
+			var id int64
+			if rows.Scan(&id) == nil {
+				fromCollection[id] = true
+			}
+		}
+		rows.Close()
+	}
+	for _, s := range all {
+		if !s.HasIcon || fromCollection[s.ID] {
+			c.fetchIconSoon(s.ID)
+		}
+	}
 }
 
 func get(ctx context.Context, client *http.Client, target string, limit int64) ([]byte, error) {

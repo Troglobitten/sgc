@@ -21,6 +21,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/domaincontrol"
 	"github.com/Troglobitten/sgc/internal/gateway"
 	"github.com/Troglobitten/sgc/internal/helper"
+	"github.com/Troglobitten/sgc/internal/iconpack"
 	"github.com/Troglobitten/sgc/internal/layout"
 	"github.com/Troglobitten/sgc/internal/netinfo"
 	"github.com/Troglobitten/sgc/internal/people"
@@ -38,6 +39,11 @@ import (
 // owner's real zone.
 const publicIPVariable = "SGC_PUBLIC_IP_URL"
 
+// iconPackVariable names a stand-in for where the icon pack is published,
+// honoured like publicIPVariable only while Zone.eu is a stand-in too: the
+// whole-machine test, which must not fetch the real pack from GitHub.
+const iconPackVariable = "SGC_ICON_PACK_URL"
+
 // parts are the pieces of SGC that hand out names and let people in: the
 // gateway's own name, the services, the proxy, people and their VPN
 // devices. They depend on each other (a service's name must not be the
@@ -53,6 +59,7 @@ type parts struct {
 	people    *people.Service
 	vpn       *vpncontrol.Service
 	endpoint  *vpncontrol.Endpoint
+	icons     *iconpack.Service
 }
 
 type partsDeps struct {
@@ -70,6 +77,29 @@ type partsDeps struct {
 
 func newParts(d partsDeps) *parts {
 	p := &parts{}
+	_, zoneStandInForIcons := zoneEndpoint()
+	iconPackURL := iconpack.DefaultManifestURL
+	if url := os.Getenv(iconPackVariable); url != "" && zoneStandInForIcons {
+		d.log.Warn("asking a stand-in for the icon pack", "address", url)
+		iconPackURL = url
+	}
+	p.icons = iconpack.New(iconpack.Config{
+		Dir:         filepath.Join(d.stateDir, "icons"),
+		ManifestURL: iconPackURL,
+		HTTP:        &http.Client{Timeout: 5 * time.Minute},
+		// The pack (about 20 MB) is fetched once there is a service to find
+		// an icon for, and only while the owner's switch is on.
+		Wanted: func(ctx context.Context) bool {
+			settings, err := p.catalog.Settings(ctx)
+			if err != nil || !settings.IconCatalogue {
+				return false
+			}
+			list, err := p.catalog.List(ctx)
+			return err == nil && len(list) > 0
+		},
+		Installed: func() { p.catalog.RefreshCollectionIcons(context.Background()) },
+		Log:       d.log,
+	})
 	lan := netinfo.Reader{}.Find
 	domainOf := func(ctx context.Context) (string, bool, error) {
 		domain, _, _, configured, err := d.domain.Account(ctx)
@@ -94,6 +124,10 @@ func newParts(d partsDeps) *parts {
 		p.names.Kick()
 		p.proxy.Kick()
 		p.vpn.Kick()
+		// The first service: the icon pack is fetched now, not tomorrow.
+		if !p.icons.Status().Installed {
+			p.icons.Kick()
+		}
 	}
 
 	p.gateway = gateway.NewControl(gateway.ControlConfig{
@@ -122,7 +156,7 @@ func newParts(d partsDeps) *parts {
 			return []int{p.vpn.Settings(ctx).Port}
 		},
 		Changed: everythingChanged,
-		Icons:   services.NewIconFetcher(),
+		Icons:   services.NewIconFetcher(p.icons),
 		Log:     d.log,
 	})
 
@@ -254,6 +288,7 @@ func newParts(d partsDeps) *parts {
 func (p *parts) run(ctx context.Context, start func(func())) {
 	start(func() { p.names.Run(ctx) })
 	start(func() { p.catalog.Run(ctx, nil) })
+	start(func() { p.icons.Run(ctx) })
 	start(func() { p.proxy.Run(ctx) })
 	start(func() { p.people.Run(ctx) })
 	start(func() { p.vpn.Run(ctx) })

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/domaincontrol"
 	"github.com/Troglobitten/sgc/internal/eol"
 	"github.com/Troglobitten/sgc/internal/gateway"
+	"github.com/Troglobitten/sgc/internal/iconpack"
 	"github.com/Troglobitten/sgc/internal/layout"
 	"github.com/Troglobitten/sgc/internal/netinfo"
 	"github.com/Troglobitten/sgc/internal/proxy"
@@ -35,10 +37,13 @@ import (
 // partsReport is what the doctor's worker reads from the database about
 // names, the proxy and the services.
 type partsReport struct {
-	Configured  bool                     `json:"configured"`
-	Domain      string                   `json:"domain"`
-	GatewayName string                   `json:"gatewayName"`
-	ProxyWanted bool                     `json:"proxyWanted"`
+	Configured  bool   `json:"configured"`
+	Domain      string `json:"domain"`
+	GatewayName string `json:"gatewayName"`
+	ProxyWanted bool   `json:"proxyWanted"`
+	// IconsWanted: the owner's switch for the icon collection is on and
+	// there is a service to find an icon for.
+	IconsWanted bool                     `json:"iconsWanted"`
 	Down        []string                 `json:"down"`
 	Abandoned   []string                 `json:"abandoned"`
 	Pending     []string                 `json:"pending"`
@@ -203,6 +208,15 @@ func checkProxy(stateDir string) doctor.Check {
 				}
 			}
 		}
+		// Read only: the pack belongs to SGC's own account.
+		switch icons := iconpack.New(iconpack.Config{Dir: filepath.Join(stateDir, "icons")}).Status(); {
+		case icons.Installed:
+			results = append(results, doctor.Good(fmt.Sprintf("%d service icons are on this device (the collection of %s)",
+				icons.Count, icons.Built.Format("2 January 2006"))))
+		case report.IconsWanted:
+			results = append(results, doctor.Warn("The icon collection is not on this device yet",
+				"SGC fetches it within a day once there is a service. If this stays, the Services page (How services are handled) says why."))
+		}
 		if len(report.Pending) > 0 {
 			results = append(results, doctor.Warn("Announced and waiting for your approval: "+strings.Join(report.Pending, ", "), "Approve or remove them on SGC's Services page."))
 		}
@@ -243,6 +257,9 @@ func readPartsReport(ctx context.Context, db *sql.DB, domain *domaincontrol.Serv
 	list, err := catalog.List(ctx)
 	if err != nil {
 		return report, err
+	}
+	if settings, err := catalog.Settings(ctx); err == nil {
+		report.IconsWanted = settings.IconCatalogue && len(list) > 0
 	}
 	report.Down, report.Abandoned, report.Pending = []string{}, []string{}, []string{}
 	quietVPN := vpncontrol.New(vpncontrol.Config{DB: db, Log: log})

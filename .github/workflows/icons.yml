@@ -1,0 +1,85 @@
+# The icon pack SGC keeps on the device (internal/iconpack, docs/design.md
+# §11): once a week, the icons of homarr-labs/dashboard-icons drawn anew by
+# SGC's own code (tools/iconpack), published as the pre-release tagged
+# "icons". Devices look for a new pack once a day.
+#
+# That release is never the "latest": SGC's updater and the one-line install
+# use the latest release, which must always be a version of SGC. It is not
+# signed with the release key either (that key is only for SGC itself, in
+# release.yml); devices check the pack by the SHA-256 in icons.json, and draw
+# every icon anew before showing it.
+name: Icons
+
+on:
+  schedule:
+    - cron: "17 4 * * 1" # Mondays, 04:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write # to publish the "icons" release
+
+concurrency:
+  group: icons
+  cancel-in-progress: false
+
+jobs:
+  pack:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Fetch the collection (data only, nothing of it is run)
+        run: |
+          git clone --quiet --depth 1 --filter=blob:none --sparse \
+            https://github.com/homarr-labs/dashboard-icons.git "$RUNNER_TEMP/upstream"
+          git -C "$RUNNER_TEMP/upstream" sparse-checkout set --no-cone '/png/' '/metadata.json' '/LICENSE'
+          echo "COMMIT=$(git -C "$RUNNER_TEMP/upstream" rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Is there anything new?
+        id: new
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          published="$(gh release download icons --repo "$GITHUB_REPOSITORY" --pattern icons.json --output - 2>/dev/null | jq -r '.commit // empty' || true)"
+          if [ "$published" = "$COMMIT" ] && [ "${{ github.event_name }}" != workflow_dispatch ]; then
+            echo "The published pack is already of $COMMIT."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the pack
+        if: steps.new.outputs.build == 'true'
+        run: go run ./tools/iconpack --source "$RUNNER_TEMP/upstream" --commit "$COMMIT" --out "$RUNNER_TEMP/pack"
+
+      - name: Publish
+        if: steps.new.outputs.build == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          if ! gh release view icons --repo "$repo" >/dev/null 2>&1; then
+            gh release create icons --repo "$repo" --prerelease --latest=false --title "Icon pack" \
+              --notes "The service icons SGC keeps on the device, rebuilt every week from homarr-labs/dashboard-icons (Apache License 2.0). Not a version of SGC; SGC fetches it by itself."
+          fi
+          pack="$(jq -r .file "$RUNNER_TEMP/pack/icons.json")"
+          # The pack first, then the list that names it: a device never reads
+          # a list whose pack is not there yet.
+          gh release upload icons --repo "$repo" --clobber "$RUNNER_TEMP/pack/$pack"
+          gh release upload icons --repo "$repo" --clobber "$RUNNER_TEMP/pack/icons.json"
+          # Older packs go, the one before stays (a device may be fetching it).
+          previous="$(gh release view icons --repo "$repo" --json assets --jq '[.assets[] | select(.name | startswith("icons-")) | .name] | sort | .[]' | grep -vx "$pack" || true)"
+          keep="$(printf '%s\n' "$previous" | tail -n 1)"
+          for old in $previous; do
+            [ "$old" = "$keep" ] || gh release delete-asset icons "$old" --repo "$repo" --yes
+          done
+          # Still never the latest release.
+          gh release edit icons --repo "$repo" --prerelease --latest=false

@@ -20,6 +20,7 @@ import { Switch } from '@/components/ui/switch'
 import {
   api,
   errorMessage,
+  type IconsStatus,
   type Service,
   type ServiceInput,
   type ServicesResponse,
@@ -385,13 +386,16 @@ function SettingsCard({ data, onSaved }: { data: ServicesResponse; onSaved: (nex
         </label>
         <label className="flex items-start justify-between gap-4 text-sm">
           <span>
-            Look up icons in the public catalogue
+            Icons from the icon collection
             <span className="block text-xs text-muted-foreground">
-              When a service has no icon of its own, SGC asks the dashboard-icons catalogue (on the jsDelivr CDN) by name. That tells the CDN the names of your services.
+              When a service has no icon of its own, SGC looks in a copy of the dashboard-icons collection
+              that it keeps on this device (about 20 MB, fetched once there is a service and then kept up to
+              date). Nobody outside learns the names of your services.
             </span>
           </span>
           <Switch checked={data.settings.iconCatalogue} onCheckedChange={(v) => save({ iconCatalogue: v })} />
         </label>
+        {data.settings.iconCatalogue && data.icons && <IconsLine icons={data.icons} onSaved={onSaved} onError={setError} />}
         <div className="flex flex-wrap items-center gap-2 text-sm">
           A service down for
           <Input type="number" min={1} max={365} value={days} className="w-20" onChange={(e) => setDays(e.target.value)}
@@ -401,6 +405,53 @@ function SettingsCard({ data, onSaved }: { data: ServicesResponse; onSaved: (nex
         <FormError message={error} />
       </CardContent>
     </Card>
+  )
+}
+
+function IconsLine({
+  icons,
+  onSaved,
+  onError,
+}: {
+  icons: IconsStatus
+  onSaved: (next: ServicesResponse) => void
+  onError: (message: string | null) => void
+}) {
+  const [asked, setAsked] = useState(false)
+  async function update() {
+    onError(null)
+    setAsked(true)
+    try {
+      onSaved(await api.updateIcons())
+    } catch (e) {
+      onError(errorMessage(e))
+    }
+  }
+  const state = icons.updating
+    ? 'Looking for a new icon pack…'
+    : icons.installed
+      ? `${icons.count.toLocaleString()} icons, from ${new Date(icons.built!).toLocaleDateString()}` +
+        (icons.checkedAt ? ` · looked for a newer pack ${formatTimeAgo(icons.checkedAt)}` : '')
+      : 'No icons on this device yet: they are fetched once there is a service.'
+  return (
+    <div className="flex flex-col gap-2 rounded-lg bg-muted/50 p-3 text-xs">
+      <p>{state}</p>
+      {icons.problem && <p className="text-amber-700 dark:text-amber-400">{icons.problem}</p>}
+      {asked && !icons.updating && (
+        <p className="text-muted-foreground">SGC is looking; this line follows when the page next refreshes.</p>
+      )}
+      <Button size="sm" variant="outline" className="self-start" onClick={update} disabled={icons.updating}>
+        <RefreshCw />
+        Update icons
+      </Button>
+      <p className="text-muted-foreground">
+        Icons:{' '}
+        <a href="https://github.com/homarr-labs/dashboard-icons" target="_blank" rel="noreferrer" className="underline-offset-4 hover:underline">
+          dashboard-icons
+        </a>{' '}
+        by homarr-labs, under the Apache License 2.0, drawn anew by SGC at 64 pixels.
+      </p>
+    </div>
   )
 }
 

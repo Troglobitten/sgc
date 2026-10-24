@@ -426,6 +426,7 @@ standin_environment=(
     "SGC_ACME_ROOTS=$standin_state/authority-cert.pem"
     "SGC_ACME_DNS=$dns_address"
     "SGC_PUBLIC_IP_URL=http://$zone_address/ip"
+    "SGC_ICON_PACK_URL=http://127.0.0.1:9500/icons/icons.json"
 )
 
 # install_standin: puts the program in place. Copied as a program: what the
@@ -2260,6 +2261,28 @@ proxy)
     check "the gateway's own name opens SGC's page, without a port" sh -c "curl -sk --resolve sgc.domain.tld:443:127.0.0.1 https://sgc.domain.tld/api/state | grep -q '\"version\"'"
     check "plain http to it is sent on to https, without a port" sh -c "curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --resolve sgc.domain.tld:80:127.0.0.1 http://sgc.domain.tld/system | grep -qE '^30[18] https://sgc.domain.tld/system'"
     check "SGC's listener for the proxy takes nothing without the proxy's header" sh -c "! curl -sk --max-time 5 https://127.0.0.1:8445/api/state"
+    echo "Icons from the collection kept on the device (a stand-in publishes the pack)"
+    # shellcheck disable=SC2317  # called indirectly through wait_for()
+    icons_installed() { [ "$(http GET /api/services)" = 200 ] && grep -q '"installed":true' /tmp/sgc-test-body; }
+    if wait_for 90 icons_installed; then pass "the icon pack is fetched once there is a service"; else
+        fail "the icon pack did not arrive"
+        indent </tmp/sgc-test-body
+    fi
+    check "it is kept on the device" sudo test -s /var/lib/sgc/icons/current.json
+    if wait_for 90 service_has web '"hasIcon":true'; then pass "the service gets its icon from it"; else fail "the service has no icon"; fi
+    expect_status "the owner can ask for a newer pack" 200 POST /api/icons/update '{}'
+    output="$(sudo sgc doctor 2>&1)"
+    if grep -q 'ok    [0-9]* service icons are on this device' <<<"$output"; then pass "the doctor sees the icons"; else
+        fail "the doctor does not see the icons"
+        indent <<<"$output"
+    fi
+    sudo mv /var/lib/sgc/icons/current.json /var/lib/sgc/icons/current.json.away
+    output="$(sudo sgc doctor 2>&1)"
+    if grep -q 'WARN  The icon collection is not on this device yet' <<<"$output"; then pass "and notices when they are gone"; else
+        fail "the doctor did not notice the icons gone"
+        indent <<<"$output"
+    fi
+    sudo mv /var/lib/sgc/icons/current.json.away /var/lib/sgc/icons/current.json
     check "a name SGC does not know gets SGC's page saying so" through_proxy nothing '/' 'No service by this name'
     if wait_for 90 answers_with web.domain.tld "$lan_address"; then pass "AdGuard Home answers web.domain.tld with this device's address"; else fail "web.domain.tld is not in AdGuard Home"; fi
     check "AdGuard Home's page has a name too" answers_with adguard.domain.tld "$lan_address"
