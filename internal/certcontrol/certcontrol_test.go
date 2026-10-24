@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/Troglobitten/sgc/internal/audit"
 	"github.com/Troglobitten/sgc/internal/certcontrol/acmetest"
+	"github.com/Troglobitten/sgc/internal/dnsprovider"
 	"github.com/Troglobitten/sgc/internal/layout"
 	"github.com/Troglobitten/sgc/internal/store"
 	"github.com/Troglobitten/sgc/internal/zone"
@@ -32,6 +34,8 @@ const (
 	apiKey   = "a-made-up-api-key"
 	domain   = "domain.tld"
 )
+
+var zoneAccount = Account{Domain: domain, Provider: "zone", Values: map[string]string{"username": username, "apiKey": apiKey}}
 
 // env is a whole small world: Zone.eu's stand-in (API and name servers), two
 // authorities (the test one and the "real" one, both Pebble), and SGC's
@@ -71,7 +75,7 @@ func newEnvWith(t *testing.T, o options) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &env{t: t, db: db, zone: zonetest.New(username, apiKey, domain), account: &Account{Domain: domain, Username: username, APIKey: apiKey}, options: o}
+	e := &env{t: t, db: db, zone: zonetest.New(username, apiKey, domain), account: &Account{Domain: domain, Provider: "zone", Values: map[string]string{"username": username, "apiKey": apiKey}}, options: o}
 	e.zoneAPI = httptest.NewServer(e.zone)
 	dnsAddress, stopDNS, err := e.zone.ListenDNS("127.0.0.1:0")
 	if err != nil {
@@ -127,7 +131,8 @@ func (e *env) config(trialServer, realServer *httptest.Server, dnsAddress string
 			}
 			return *e.account, true, nil
 		},
-		ZoneEndpoint: e.zoneAPI.URL + "/v2/", ZoneHTTP: &http.Client{Timeout: 5 * time.Second}, UserAgent: "sgc/test",
+		DNS:       dnsprovider.Options{ZoneEndpoint: e.zoneAPI.URL + "/v2/", StandIn: true, HTTP: &http.Client{Timeout: 5 * time.Second}},
+		UserAgent: "sgc/test",
 		Directory: realServer.URL + acmetest.DirectoryPath, TrialDirectory: trialServer.URL + acmetest.DirectoryPath,
 		// Every test server of this kind shows the same certificate, which
 		// its client trusts.
@@ -620,19 +625,34 @@ func TestTheDevicesOwnDNSServersAreReadForEveryAttempt(t *testing.T) {
 func TestWhatGoesWrongIsSaidInWords(t *testing.T) {
 	// What Let's Encrypt answered on 2026-10-13, with a made-up domain.
 	old := &acme.ProblemDetails{Type: "urn:ietf:params:acme:error:unauthorized", Detail: `Incorrect TXT record "the-trials-proof" found at _acme-challenge.domain.tld`}
-	got := words(&phaseError{err: old})
+	got := words(&phaseError{err: old}, zoneAccount)
 	if !strings.HasPrefix(got, "Let's Encrypt did not find the proof in the domain's DNS: Incorrect TXT record") || !strings.Contains(got, "Trying again later usually works") {
 		t.Errorf("an older proof still being served: %s", got)
 	}
-	if got := words(&phaseError{trial: true, err: old}); !strings.HasPrefix(got, "Let's Encrypt's test authority did not find the proof") {
+	if got := words(&phaseError{trial: true, err: old}, zoneAccount); !strings.HasPrefix(got, "Let's Encrypt's test authority did not find the proof") {
 		t.Errorf("the same from the test authority: %s", got)
 	}
 	limited := &acme.ProblemDetails{Type: "urn:ietf:params:acme:error:rateLimited", Detail: "too many failed authorizations (5) for \"domain.tld\" in the last 1h0m0s"}
-	if got := words(&phaseError{err: limited}); !strings.Contains(got, "has reached its limit") {
+	if got := words(&phaseError{err: limited}, zoneAccount); !strings.Contains(got, "has reached its limit") {
 		t.Errorf("a limit: %s", got)
 	}
-	if got := words(context.Canceled); !strings.Contains(got, "SGC was stopped") {
+	if got := words(context.Canceled, zoneAccount); !strings.Contains(got, "SGC was stopped") {
 		t.Errorf("stopped: %s", got)
+	}
+	// The DNS provider's part is said with the provider's name.
+	cloudflare := Account{Domain: domain, Provider: "cloudflare", Values: map[string]string{"apiToken": "x"}}
+	for err, want := range map[error]string{
+		fmt.Errorf("present: %w", dnsprovider.ErrCredentials):              "Cloudflare does not accept the API token, so the proof could not be published.",
+		fmt.Errorf("present: %w", dnsprovider.ErrUnreachable):              "Cloudflare could not be reached",
+		&dnsprovider.Refusal{Message: "Cloudflare does not let the token"}: "The proof could not be published: Cloudflare does not let the token.",
+		errors.New("propagation: time limit exceeded"):                     "The proof was published at Cloudflare, but its name servers",
+	} {
+		if got := words(err, cloudflare); !strings.HasPrefix(got, want) {
+			t.Errorf("words(%v) = %s", err, got)
+		}
+	}
+	if got := words(fmt.Errorf("x: %w", dnsprovider.ErrCredentials), zoneAccount); got != "Zone.eu does not accept the username and API key, so the proof could not be published." {
+		t.Errorf("Zone.eu's refusal of the key: %s", got)
 	}
 	for d, want := range map[time.Duration]string{2 * time.Minute: "2 minutes", time.Minute: "1 minute", 90 * time.Second: "90 seconds", 1500 * time.Millisecond: "2 seconds", time.Second: "1 second"} {
 		if got := plainDuration(d); got != want {
@@ -652,14 +672,14 @@ func TestWithoutADomainAndWhenSwitchedOff(t *testing.T) {
 
 	// A domain other than the certificate's: the certificate is shown as not
 	// for it, and the next request is a first certificate again.
-	e.account = &Account{Domain: domain, Username: username, APIKey: apiKey}
+	e.account = &Account{Domain: domain, Provider: "zone", Values: map[string]string{"username": username, "apiKey": apiKey}}
 	if err := e.request(true); err != nil {
 		t.Fatal(err)
 	}
 	if s := e.finished(); !s.LastAttempt.OK {
 		t.Fatalf("the certificate: %+v", s.LastAttempt)
 	}
-	e.account = &Account{Domain: "other.tld", Username: username, APIKey: apiKey}
+	e.account = &Account{Domain: "other.tld", Provider: "zone", Values: map[string]string{"username": username, "apiKey": apiKey}}
 	if s := e.status(); s.Certificate == nil || s.Certificate.ForDomain || s.RenewsAt != nil || s.WaitUntil != nil {
 		t.Errorf("with another domain set up: %+v", s)
 	}

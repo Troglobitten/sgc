@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"github.com/Troglobitten/sgc/internal/audit"
+	"github.com/Troglobitten/sgc/internal/dnsprovider"
 	"github.com/Troglobitten/sgc/internal/problem"
 	"github.com/Troglobitten/sgc/internal/store"
-	"github.com/Troglobitten/sgc/internal/zone"
 )
 
 // PublicIPServices are asked for the home's public address, the second if
@@ -32,9 +32,9 @@ type EndpointConfig struct {
 	Audit *audit.Log
 	// Settings are the VPN's settings now.
 	Settings func(ctx context.Context) Settings
-	// Zone returns a client for the owner's Zone.eu account and the
-	// domain, if one is set up.
-	Zone func(ctx context.Context) (*zone.Client, string, bool, error)
+	// DNS returns the owner's DNS provider, opened, with the account (its
+	// domain), if one is set up (domaincontrol.Service.Open).
+	DNS func(ctx context.Context) (dnsprovider.Provider, dnsprovider.Account, bool, error)
 	// PublicIP asks what the home's address on the internet is; nil means
 	// asking PublicIPServices.
 	PublicIP func(ctx context.Context) (netip.Addr, error)
@@ -48,19 +48,21 @@ type EndpointConfig struct {
 type EndpointState struct {
 	PublicIP  string     `json:"publicIp"`
 	CheckedAt *time.Time `json:"checkedAt"`
-	// RecordIP is where the public name points at Zone.eu.
+	// RecordIP is where the public name points at the DNS provider.
 	RecordIP  string     `json:"recordIp"`
 	UpdatedAt *time.Time `json:"updatedAt"`
 	Problem   string     `json:"problem"`
-	// Foreign: Zone.eu has a record for the name that SGC did not make.
+	// Foreign: the provider has a record for the name that SGC did not make.
 	Foreign bool `json:"foreign"`
 }
 
-// mine is the record SGC made (SettingRecord).
+// mine is the record SGC made (SettingRecord). Provider is where; before
+// 0.18.0 always Zone.eu, and not written.
 type mine struct {
-	Domain string `json:"domain"`
-	Name   string `json:"name"`
-	ID     string `json:"id"`
+	Provider string `json:"provider,omitempty"`
+	Domain   string `json:"domain"`
+	Name     string `json:"name"`
+	ID       string `json:"id"`
 }
 
 // Endpoint keeps the VPN's public name pointing at the home's address.
@@ -170,7 +172,7 @@ func AskPublicIP(ctx context.Context, client *http.Client, url string) (netip.Ad
 }
 
 // Check looks once: the home's public address, and whether the name points
-// at it; it changes the record at Zone.eu when it does not.
+// at it; it changes the record at the DNS provider when it does not.
 func (e *Endpoint) Check(ctx context.Context) EndpointState {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -179,11 +181,17 @@ func (e *Endpoint) Check(ctx context.Context) EndpointState {
 	if !settings.Enabled {
 		return state
 	}
-	client, domain, configured, err := e.cfg.Zone(ctx)
+	client, account, configured, err := e.cfg.DNS(ctx)
+	if err != nil && configured {
+		state.Problem = "The DNS provider could not be used: " + err.Error()
+		e.keep(ctx, state)
+		return state
+	}
 	if err != nil || !configured {
 		// Without a domain, devices connect to the fixed address directly.
 		return state
 	}
+	domain, at := account.Domain, dnsprovider.Name(account.Provider)
 	now := e.cfg.Now().UTC()
 	state.Problem, state.Foreign = "", false
 	address, err := e.publicIP(ctx)
@@ -210,7 +218,7 @@ func (e *Endpoint) Check(ctx context.Context) EndpointState {
 	defer cancel()
 	records, err := client.ARecords(ctx, domain)
 	if err != nil {
-		state.Problem = "Zone.eu could not be asked about " + name + ": " + err.Error()
+		state.Problem = at + " could not be asked about " + name + ": " + err.Error()
 		e.keep(ctx, state)
 		return state
 	}
@@ -218,13 +226,17 @@ func (e *Endpoint) Check(ctx context.Context) EndpointState {
 	if raw, found, _ := store.Setting(ctx, e.cfg.DB, SettingRecord); found {
 		json.Unmarshal([]byte(raw), &made)
 	}
-	var own *zone.ARecord
-	var others []zone.ARecord
+	madeAt := made.Provider
+	if madeAt == "" {
+		madeAt = dnsprovider.ZoneID
+	}
+	var own *dnsprovider.Record
+	var others []dnsprovider.Record
 	for i, r := range records {
 		if !strings.EqualFold(r.Name, name) {
 			continue
 		}
-		if made.Domain == domain && made.Name == name && r.ID == made.ID {
+		if madeAt == account.Provider && made.Domain == domain && made.Name == name && r.ID == made.ID {
 			own = &records[i]
 		} else {
 			others = append(others, r)
@@ -232,25 +244,25 @@ func (e *Endpoint) Check(ctx context.Context) EndpointState {
 	}
 	switch {
 	case own != nil:
-		state.RecordIP = own.Address
-		if own.Address != want {
+		state.RecordIP = own.Value
+		if own.Value != want {
 			if err := client.UpdateA(ctx, domain, own.ID, name, want); err != nil {
-				state.Problem = "Zone.eu did not take the new address for " + name + ": " + err.Error()
+				state.Problem = at + " did not take the new address for " + name + ": " + err.Error()
 				break
 			}
 			state.RecordIP, state.UpdatedAt = want, &now
 			e.record(ctx, audit.ActionVPNEndpointUpdated, name+" → "+want)
 		}
 	case len(others) > 0:
-		state.Foreign, state.RecordIP = true, others[0].Address
-		state.Problem = "Zone.eu already has an address for " + name + " (" + others[0].Address + ") that SGC did not make. SGC changes it only if you let it (VPN page)."
+		state.Foreign, state.RecordIP = true, others[0].Value
+		state.Problem = at + " already has an address for " + name + " (" + others[0].Value + ") that SGC did not make. SGC changes it only if you let it (VPN page)."
 	default:
 		created, err := client.AddA(ctx, domain, name, want)
 		if err != nil {
-			state.Problem = "Zone.eu did not take the record for " + name + ": " + err.Error()
+			state.Problem = at + " did not take the record for " + name + ": " + err.Error()
 			break
 		}
-		data, _ := json.Marshal(mine{Domain: domain, Name: name, ID: created.ID})
+		data, _ := json.Marshal(mine{Provider: account.Provider, Domain: domain, Name: name, ID: created.ID})
 		store.SetSetting(context.WithoutCancel(ctx), e.cfg.DB, SettingRecord, string(data))
 		state.RecordIP, state.UpdatedAt = want, &now
 		e.record(ctx, audit.ActionVPNEndpointUpdated, name+" → "+want+" (new)")
@@ -263,21 +275,22 @@ func (e *Endpoint) Check(ctx context.Context) EndpointState {
 // make (the owner's choice in the page).
 func (e *Endpoint) TakeOver(ctx context.Context) error {
 	settings := e.cfg.Settings(ctx)
-	client, domain, configured, err := e.cfg.Zone(ctx)
-	if err != nil {
-		return err
-	}
-	if !configured {
+	client, account, configured, err := e.cfg.DNS(ctx)
+	if !configured && err == nil {
 		return problem.New("Set up your domain first.")
 	}
+	if err != nil {
+		return problem.Newf("The DNS provider could not be used: %v", err)
+	}
+	domain := account.Domain
 	name := settings.Name + "." + domain
 	records, err := client.ARecords(ctx, domain)
 	if err != nil {
-		return problem.Newf("Zone.eu could not be asked: %v", err)
+		return problem.Newf("%s could not be asked: %v", dnsprovider.Name(account.Provider), err)
 	}
 	for _, r := range records {
 		if strings.EqualFold(r.Name, name) {
-			data, _ := json.Marshal(mine{Domain: domain, Name: name, ID: r.ID})
+			data, _ := json.Marshal(mine{Provider: account.Provider, Domain: domain, Name: name, ID: r.ID})
 			if err := store.SetSetting(ctx, e.cfg.DB, SettingRecord, string(data)); err != nil {
 				return err
 			}

@@ -419,11 +419,12 @@ func TestExportFromOneInstallRestoresIntoAFreshOne(t *testing.T) {
 	// bookkeeping the export does not carry.
 	var domain struct {
 		Configured       bool
-		Domain, Username string
+		Domain, Provider string
+		Shown            map[string]string
 		OK               bool
 		CheckedAt        *time.Time
 	}
-	if fresh.getJSON("/api/domain", &domain) != http.StatusOK || !domain.Configured || domain.Domain != "domain.tld" || domain.Username != "alex" || domain.CheckedAt != nil {
+	if fresh.getJSON("/api/domain", &domain) != http.StatusOK || !domain.Configured || domain.Domain != "domain.tld" || domain.Provider != "zone" || domain.Shown["username"] != "alex" || domain.CheckedAt != nil {
 		t.Errorf("the domain after the restore: %+v", domain)
 	}
 	if resp, body := fresh.postJSON("/api/domain/check", map[string]string{}); resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"ok":true`) {

@@ -192,7 +192,7 @@ export function DashboardPage({ shell, onOpenGuide }: { shell: ShellProps; onOpe
       </Section>
 
       <Section title="Services">
-        {/* Zone.eu no longer accepting the key stops certificates from being
+        {/* The DNS provider no longer accepting the key stops certificates from being
             renewed, weeks before anything else shows it. */}
         {domain?.configured && domain.checkedAt !== null && !domain.ok && (
           <button
@@ -564,9 +564,9 @@ function describeActivity(entry: AuditEntry): string {
     case 'domain.removed':
       return `${entry.actor} removed the domain ${entry.detail}`
     case 'zone.check_failed':
-      return `Zone.eu: ${entry.detail}`
+      return `The DNS provider: ${entry.detail}`
     case 'zone.check_recovered':
-      return `Zone.eu accepts the saved key for ${entry.detail} again`
+      return `The DNS provider accepts the saved key for ${entry.detail} again`
     case 'log2ram.switched_on':
       return `${entry.actor} switched logs in memory on (${entry.detail})`
     case 'log2ram.switched_off':

@@ -173,12 +173,37 @@ export interface DnsStatus {
   restorePending: boolean
 }
 
-/** The owner's domain and Zone.eu account, as SGC reports them (internal/domaincontrol). The API key is never in it. */
+/** One thing a DNS provider's form asks for (internal/dnsprovider). */
+export interface DnsProviderField {
+  key: string
+  label: string
+  help: string
+  /** kept, never shown again */
+  secret: boolean
+  max: number
+}
+
+/** A DNS provider SGC knows, and what it asks of the owner. */
+export interface DnsProviderKind {
+  id: string
+  name: string
+  fields: DnsProviderField[]
+  /** what to do at the provider first, in words */
+  before: string
+}
+
+/** The owner's domain and the account at its DNS provider, as SGC reports them (internal/domaincontrol). No secret is ever in it. */
 export interface DomainStatus {
   configured: boolean
   domain: string
-  username: string
-  /** when Zone.eu was last asked; null if not yet */
+  /** the provider's ID ("zone") and name ("Zone.eu") */
+  provider: string
+  providerName: string
+  /** the account's values that are not secret (a username) */
+  shown: Record<string, string>
+  /** the providers SGC knows, for the form */
+  kinds: DnsProviderKind[]
+  /** when the provider was last asked; null if not yet */
   checkedAt: string | null
   /** its answer, and what was wrong in words */
   ok: boolean
@@ -748,9 +773,9 @@ export const api = {
   installDns: () => request<DnsStatus>('POST', '/api/dns/install', {}),
   finishDnsRestore: () => request<DnsStatus>('POST', '/api/dns/restore', {}),
   domain: () => request<DomainStatus>('GET', '/api/domain'),
-  /** saved only if Zone.eu says that domain and account belong together */
-  saveDomain: (domain: string, username: string, apiKey: string) =>
-    request<DomainStatus>('POST', '/api/domain', { domain, username, apiKey }),
+  /** saved only if the provider says that domain and account belong together */
+  saveDomain: (domain: string, provider: string, values: Record<string, string>) =>
+    request<DomainStatus>('POST', '/api/domain', { domain, provider, values }),
   checkDomain: () => request<DomainStatus>('POST', '/api/domain/check', {}),
   removeDomain: () => request<DomainStatus>('POST', '/api/domain/remove', { confirm: true }),
   certificate: () => request<CertificateStatus>('GET', '/api/certificate'),

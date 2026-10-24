@@ -55,23 +55,22 @@ func zoneEndpoint() (endpoint string, standIn bool) {
 // the real Let's Encrypt for a certificate for a made-up domain, or publish
 // test records in the owner's real zone.
 func newCertControl(db *sql.DB, auditLog *audit.Log, log *slog.Logger, domain *domaincontrol.Service) *certcontrol.Service {
-	endpoint, zoneStandIn := zoneEndpoint()
+	options := dnsOptions()
+	zoneStandIn := options.StandIn
 	cfg := certcontrol.Config{
-		DB:    db,
-		Audit: auditLog,
-		Log:   log,
-		Account: func(ctx context.Context) (certcontrol.Account, bool, error) {
-			name, username, apiKey, configured, err := domain.Account(ctx)
-			return certcontrol.Account{Domain: name, Username: username, APIKey: apiKey}, configured, err
-		},
-		ZoneEndpoint:   endpoint,
-		ZoneHTTP:       &http.Client{Timeout: 20 * time.Second},
+		DB:             db,
+		Audit:          auditLog,
+		Log:            log,
+		Account:        domain.Account,
+		DNS:            options,
 		UserAgent:      "sgc/" + sgc.Version(),
 		Directory:      lego.LEDirectoryProduction,
 		TrialDirectory: lego.LEDirectoryStaging,
 		AuthorityHTTP:  &http.Client{Timeout: 30 * time.Second},
-		// Zone.eu's name servers show a change within minutes at most.
-		PropagationTimeout:  10 * time.Minute,
+		// As long as the provider's name servers need to show a change
+		// (dnsprovider.Kind.Propagation: ten minutes for Zone.eu, an hour
+		// for Namecheap).
+		PropagationTimeout:  0,
 		PropagationInterval: 10 * time.Second,
 		// Let's Encrypt asks from several places in the world, and name
 		// servers far away can be behind the ones nearby. How far is not

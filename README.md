@@ -2,7 +2,7 @@
 
 A secure front door for your home network, running on a Raspberry Pi or any small Debian machine.
 
-> **Status: beta.** Everything SGC is meant to do is built: the installer, the dashboard, self-updating, export and restore, the firewall, SSH keys, updates for the device, a maintenance window, DNS (AdGuard Home), the domain at Zone.eu with a certificate from Let's Encrypt, names for your devices, the proxy (Traefik), servers that announce their services, the VPN (WireGuard) with people and their devices, a login in front of services, notifications, logs and daily backups. It has been tested on a test machine, not yet for weeks on a real home network.
+> **Status: beta.** Everything SGC is meant to do is built: the installer, the dashboard, self-updating, export and restore, the firewall, SSH keys, updates for the device, a maintenance window, DNS (AdGuard Home), the domain (at Zone.eu, Cloudflare, Porkbun or Namecheap) with a certificate from Let's Encrypt, names for your devices, the proxy (Traefik), servers that announce their services, the VPN (WireGuard) with people and their devices, a login in front of services, notifications, logs and daily backups. It has been tested on a test machine, not yet for weeks on a real home network.
 
 ## What it does
 
@@ -17,7 +17,7 @@ SGC does not implement VPN, DNS or proxying itself. It installs and configures W
 ## Requirements
 
 - Debian 13 or Raspberry Pi OS based on it, 64-bit (arm64 or amd64)
-- A domain whose DNS is hosted at Zone.eu (for names, the certificate and the VPN's public name)
+- A domain whose DNS is hosted at Zone.eu, Cloudflare, Porkbun or Namecheap (for names, the certificate and the VPN's public name)
 - For the VPN from outside: a router that can forward a UDP port, and a public IPv4 address from your provider (not one shared between customers)
 
 ## Installation
@@ -142,19 +142,28 @@ Inside the window SGC restarts the device only if an installed update asked for 
 
 On the dashboard, SGC's own updates can be set to install by themselves in the same window (off by default). A new version then waits until your device has known it for three days, counted from when the device first saw it, not from a date the release carries. That leaves time for a faulty release to be noticed and withdrawn. With this on, a release reaches the device without a click from you; the wait is what stands between a bad release and your gateway.
 
-### Domain: Zone.eu
+### Domain and its DNS provider
 
-Every name SGC will hand out ends in your domain, and the certificate for those names is obtained by proving to Let's Encrypt, through DNS, that the domain is yours. For that SGC needs the Zone.eu account that holds the domain's DNS. On the **System** page, under Network, enter the domain, your ZoneID username and an API key (made in your ZoneID account management at Zone.eu).
+Every name SGC will hand out ends in your domain, and the certificate for those names is obtained by proving to Let's Encrypt, through DNS, that the domain is yours. For that SGC needs an account at the company whose name servers answer for the domain: **Zone.eu, Cloudflare, Porkbun or Namecheap**. On the **System** page, under Network, enter the domain, pick the provider, and enter what the page asks for; it also says what to do at the provider first.
 
-- **Checked before it is saved.** SGC asks Zone.eu for the domain's DNS zone with the key. A wrong key, or a domain that is not in that account, is refused with the reason and nothing is saved.
-- **Watched afterwards.** SGC asks again every 6 hours (every hour while the answer is no). A key that stops working shows on the dashboard, on the System page and in `sudo sgc doctor`. Zone.eu allows 60 requests a minute; SGC stays far below that.
-- **The key is kept close.** It opens the whole Zone.eu account, not only DNS. It is stored in SGC's database (readable by SGC's own user only), carried by an export (which is encrypted with your passphrase), sent to `api.zone.eu` and nowhere else, and never returned to the page or written to a log.
+| Provider | What SGC needs | First, at the provider |
+|---|---|---|
+| Zone.eu | ZoneID username, API key | Make an API key in your ZoneID account management |
+| Cloudflare | API token | Make a token with Zone · Zone · Read and Zone · DNS · Edit, for this domain only |
+| Porkbun | API key, secret key | Make the keys under Account, API Access, and switch on API Access for the domain |
+| Namecheap | Username, API key | Switch on API access (Namecheap allows it with 20 domains or $50 in or spent at the account), and allow your home's public address |
+
+- **Checked before it is saved.** SGC asks the provider about the domain with what you entered. A wrong key, or a domain that is not in that account, is refused with the reason and nothing is saved.
+- **Watched afterwards.** SGC asks again every 6 hours (every hour while the answer is no). A key that stops working shows on the dashboard, on the System page and in `sudo sgc doctor`.
+- **The key is kept close.** With most providers it opens the whole account, not only DNS (Cloudflare's token can be limited to the domain). It is stored in SGC's database (readable by SGC's own user only), carried by an export (which is encrypted with your passphrase), sent to the provider and nowhere else, and never returned to the page or written to a log.
+- **Namecheap replaces the whole list.** Its API can only write all of a domain's records at once. SGC reads them first, writes every other record back as it was (and the domain's mail setting with it), and reads them again to check. Keep a copy of your records when you try it the first time.
+- **Adding a provider** is one file in `internal/dnsprovider` and its stand-in in that package's test.
 
 ### Certificate: Let's Encrypt
 
 With the domain set up, **Get the certificate** on the System page asks [Let's Encrypt](https://letsencrypt.org) for one certificate that covers every name under the domain (`*.domain.tld`).
 
-- **How the domain is proven.** Let's Encrypt names a piece of text; SGC publishes it in the domain's DNS through the Zone.eu account (a TXT record under `_acme-challenge`), waits until Zone.eu's name servers show it, and removes it afterwards. Nothing has to be reachable from the internet for this.
+- **How the domain is proven.** Let's Encrypt names a piece of text; SGC publishes it in the domain's DNS through the provider's account (a TXT record under `_acme-challenge`), waits until the provider's name servers show it (up to ten minutes, an hour at Namecheap), and removes it afterwards. Nothing has to be reachable from the internet for this.
 - **Waiting on purpose.** Let's Encrypt looks for the proof from several places in the world, and name servers far away can be behind the ones nearby. SGC waits two minutes after it sees the proof itself, and two more between the trial and the real request, because both proofs are published under the same name and the old one has to be forgotten everywhere first. The first certificate takes about ten minutes; a renewal a few.
 - **A trial first.** Before the first certificate SGC goes through the same steps with Let's Encrypt's test authority (its "staging" service) and throws that certificate away. Mistakes in the set-up show there, and Let's Encrypt counts failures at the real authority: a handful within an hour locks the domain out for a while.
 - **Your agreement.** Let's Encrypt has a Subscriber Agreement. SGC asks you to agree once and records that you did; it never agrees for you.
@@ -216,15 +225,15 @@ It runs once when the compose file comes up. Several services go in one call (`-
 
 ### VPN and people
 
-On the People page, switch the VPN on (WireGuard), and **forward UDP port 51820 on your router to this device**: that is the only port of your home that faces the internet. SGC publishes one public name, `vpn.domain.tld`, at Zone.eu and keeps it pointing at your home's address, also when that changes. Inside the home it points at this device, so a phone that is always connected works at home too.
+On the People page, switch the VPN on (WireGuard), and **forward UDP port 51820 on your router to this device**: that is the only port of your home that faces the internet. SGC publishes one public name, `vpn.domain.tld`, at your DNS provider and keeps it pointing at your home's address, also when that changes. Inside the home it points at this device, so a phone that is always connected works at home too.
 
-Add people, and per person choose what their devices reach: the whole home network (for you), all services, or only the services you pick. A guest gets an end date, after which their devices and login stop. Add a device for a person, and scan its QR code with the WireGuard app (the code holds the device's secret key, so showing it needs your admin password and is recorded). "All traffic through home" sends a device's internet traffic through home too.
+Add people, and per person choose what their devices reach: the whole home network (for you), all services, or only the services you pick. A guest gets an end date, after which their devices and login stop. Add a device for a person, and scan its QR code with the WireGuard app (the code holds the device's secret key, so showing it needs your admin password and is recorded). For people with the whole home network, "use home's internet connection too" sends a device's internet traffic through home as well. People who reach services only always keep their own internet connection: only the services and SGC's DNS go through the tunnel.
 
 What a device used is kept per minute for two days, per hour for 90 days and per day after that. If your provider shares one public address between customers (carrier-grade NAT), SGC says so: a VPN from outside cannot reach your home then.
 
 ### SGC's login in front of a service
 
-Put a web service behind SGC's login (on the Services page). Opening it then asks to sign in first: as you, or as a person with a login you gave them whose list has that service. People sign in on a page of their own and never get into SGC's page; they can change their own password there. Each service gets its own pass, so one service cannot use the pass of another. A device that reaches the service by its address instead of its name skips the login.
+Put a web service behind SGC's login (on the Services page). Opening it then asks to sign in first: as you, or as a person with a login you gave them whose list has that service. People sign in on a page of their own and never get into SGC's page; they can change their own password there (`https://sgc.domain.tld/gate`). You change yours on the System page, under Your account; either change ends the other sign-ins of that account. Each service gets its own pass, so one service cannot use the pass of another. A device that reaches the service by its address instead of its name skips the login.
 
 ### Notifications and logs
 
@@ -234,11 +243,11 @@ The Logs page has the notifications, the logs of each part of SGC (with a live v
 
 ### Backups to another device
 
-On the System page, Backups, SGC makes an export every day at your time and puts it on a share (SMB), an SFTP server or a WebDAV folder, keeping the newest ten. Make the backup key first: SGC shows its secret half once and keeps only the half that locks, so the backups are no use to anyone without what you kept. To restore one, install SGC on a fresh device, open the setup link, choose the backup file and enter the backup key where the passphrase goes. SGC warns after three days without a good backup. For SFTP, SGC shows the server's key the first time; compare it with the server's own before confirming.
+On the System page, Backups, SGC makes an export every day at your time and puts it on a share (SMB), an SFTP server or a WebDAV folder, keeping the newest ten. Make the backup key first: SGC shows its secret half once and keeps only the half that locks, so the backups are no use to anyone without what you kept. "Make a new key" replaces it (for instance if the secret half got out); keep the old one as long as you keep backups made with it. To restore one, install SGC on a fresh device, open the setup link, choose the backup file and enter the backup key where the passphrase goes. SGC warns after three days without a good backup. For SFTP, SGC shows the server's key the first time; compare it with the server's own before confirming.
 
 ### End of life
 
-SGC looks once a day when Debian and Traefik stop getting security fixes, and warns half a year before. The way to a newer Debian: an export, a fresh install of the new Debian and SGC, and a restore.
+SGC looks once a day when Debian and Traefik stop getting security fixes, and warns half a year before. Debian's date covers everything that comes from Debian: the Linux kernel with WireGuard, the firewall, SSH. AdGuard Home publishes no such dates, so SGC shows the newest releases of AdGuard Home and Traefik next to the versions it installs, and says when a newer one is out. The way to a newer Debian: an export, a fresh install of the new Debian and SGC, and a restore.
 
 ### When something is wrong
 
@@ -246,7 +255,7 @@ SGC looks once a day when Debian and Traefik stop getting security fixes, and wa
 sudo sgc doctor
 ```
 
-checks every part of SGC on the machine (the service, its page, the root helper, storage, the clock, the firewall, SSH, the device's updates, AdGuard Home, logs in memory, the domain's connection to Zone.eu, the certificate, the names, the proxy and the services, the VPN, backups, end-of-life dates, the ports SGC needs) and says what to do about each problem it finds. It asks the machine directly, so it also works when SGC's page does not answer.
+checks every part of SGC on the machine (the service, its page, the root helper, storage, the clock, the firewall, SSH, the device's updates, AdGuard Home, logs in memory, the domain's DNS provider, the certificate, the names, the proxy and the services, the VPN, backups, end-of-life dates, the ports SGC needs) and says what to do about each problem it finds. It asks the machine directly, so it also works when SGC's page does not answer.
 
 If the admin password is lost, `sudo sgc reset-admin` at the device gives the admin a new one and ends every sign-in.
 

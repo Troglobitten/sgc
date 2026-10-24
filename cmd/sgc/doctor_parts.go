@@ -235,11 +235,11 @@ func checkProxy(stateDir string) doctor.Check {
 // readPartsReport is the worker's side: what the database says.
 func readPartsReport(ctx context.Context, db *sql.DB, domain *domaincontrol.Service, log *slog.Logger) (partsReport, error) {
 	var report partsReport
-	name, _, _, configured, err := domain.Account(ctx)
+	account, configured, err := domain.Account(ctx)
 	if err != nil {
 		return report, err
 	}
-	report.Configured, report.Domain = configured, name
+	report.Configured, report.Domain = configured, account.Domain
 	if report.GatewayName, err = gateway.Name(ctx, db); err != nil {
 		return report, err
 	}
@@ -250,7 +250,7 @@ func readPartsReport(ctx context.Context, db *sql.DB, domain *domaincontrol.Serv
 	report.ProxyWanted = wanted == "true"
 	catalog := services.New(services.Config{
 		DB: db, Audit: audit.New(db), Log: log,
-		Domain:   func(context.Context) (string, bool, error) { return name, configured, nil },
+		Domain:   func(context.Context) (string, bool, error) { return account.Domain, configured, nil },
 		LAN:      netinfo.Reader{}.Find,
 		Reserved: func(context.Context) (map[string]string, error) { return nil, nil },
 	})
@@ -308,7 +308,7 @@ func checkVPN(stateDir string) doctor.Check {
 			results = append(results, doctor.Warn("The VPN's public name: "+e.Problem, "The People page, VPN, says more."))
 		} else if e.RecordIP != "" && e.PublicIP != "" && e.RecordIP != e.PublicIP && report.VPN.EndpointMode != "static" {
 			results = append(results, doctor.Warn(fmt.Sprintf("The VPN's public name points at %s, the home is at %s", e.RecordIP, e.PublicIP),
-				"SGC puts it right within five minutes; if it stays, Zone.eu may be refusing SGC's key."))
+				"SGC puts it right within five minutes; if it stays, the DNS provider may be refusing SGC's key (sudo sgc doctor's line about the domain)."))
 		}
 		return results
 	}

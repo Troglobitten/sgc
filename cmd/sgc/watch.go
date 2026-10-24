@@ -60,7 +60,7 @@ func (w watched) conditions() map[string]notify.Condition {
 			}
 			if status.Configured && status.CheckedAt != nil && !status.OK {
 				return []notify.Finding{{Key: "zone", Event: notify.EventDomain, Severity: notify.Problem,
-					Title: "Zone.eu no longer accepts SGC's key for " + status.Domain,
+					Title: status.ProviderName + " no longer accepts SGC's key for " + status.Domain,
 					Body:  status.Problem + " Without it the certificate cannot be renewed. Enter a new key on the System page."}}, nil
 			}
 			return nil, nil

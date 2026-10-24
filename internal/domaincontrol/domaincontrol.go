@@ -1,15 +1,17 @@
-// Package domaincontrol keeps the owner's domain and the Zone.eu account
-// that holds its DNS, and watches whether Zone.eu still accepts the key.
+// Package domaincontrol keeps the owner's domain and the account at the
+// company that holds its DNS (internal/dnsprovider: Zone.eu, Cloudflare,
+// Porkbun, Namecheap), and watches whether that account still works.
 //
-// The domain is what every name SGC hands out ends in; the Zone.eu account
-// is how SGC will prove to Let's Encrypt that the domain is the owner's, and
-// keep the VPN's name pointing at the house. Both of those stop working,
-// quietly, the day the key is withdrawn or the domain moves away. So SGC
-// asks Zone.eu every few hours, and says so when the answer is no.
+// The domain is what every name SGC hands out ends in; the account is how
+// SGC proves to Let's Encrypt that the domain is the owner's, and keeps the
+// VPN's name pointing at the house. Both of those stop working, quietly, the
+// day the key is withdrawn or the domain moves away. So SGC asks the
+// provider every few hours, and says so when the answer is no.
 //
-// The API key opens the whole Zone.eu account (accepted risk R4). It is
-// stored in SGC's database, carried by an export, sent to Zone.eu and to
-// nobody else, and never handed back to the page.
+// The credentials open the owner's DNS, with most providers the whole
+// account (accepted risk R4). They are stored in SGC's database, carried by
+// an export, sent to the provider and to nobody else, and never handed back
+// to the page.
 //
 // All of this runs in the web process. The root side has no part in it.
 package domaincontrol
@@ -20,39 +22,43 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/Troglobitten/sgc/internal/audit"
+	"github.com/Troglobitten/sgc/internal/dnsprovider"
 	"github.com/Troglobitten/sgc/internal/store"
 	"github.com/Troglobitten/sgc/internal/zone"
 )
 
 const (
-	// The owner's domain, and the Zone.eu account its DNS is in. An export
-	// carries all three.
-	SettingDomain   = "domain.name"
-	SettingUsername = "zone.username"
-	SettingAPIKey   = "zone.api_key"
-	// SettingCheck is how the last question to Zone.eu ended. Bookkeeping of
-	// one installation; an export does not carry it.
+	// The owner's domain, the provider its DNS is at, and what that provider
+	// needs (a JSON object of the provider's fields). An export carries all
+	// three.
+	SettingDomain      = "domain.name"
+	SettingProvider    = "dns.provider"
+	SettingCredentials = "dns.credentials"
+	// Before 0.18.0 the provider was always Zone.eu, and its two values had
+	// settings of their own. An account kept that way (or restored from an
+	// export of then) is read as a Zone.eu account; saving the domain again
+	// moves it to the settings above.
+	legacyUsername = "zone.username"
+	legacyAPIKey   = "zone.api_key"
+	// SettingCheck is how the last question to the provider ended.
+	// Bookkeeping of one installation; an export does not carry it. (Its
+	// name is from the days of Zone.eu alone, and stays.)
 	SettingCheck = "zone.check"
 
-	// Zone.eu is asked this often while it says yes, and this often while it
-	// does not: sooner, so that the warning goes away soon after the owner
-	// has put things right, but not so often that it is a nuisance to
-	// Zone.eu (which allows 60 requests a minute).
+	// The provider is asked this often while it says yes, and this often
+	// while it does not: sooner, so that the warning goes away soon after
+	// the owner has put things right, but not so often that it is a nuisance
+	// (Zone.eu allows 60 requests a minute, Namecheap 50).
 	checkEvery = 6 * time.Hour
 	retryEvery = time.Hour
 	// Not in the first minutes after start-up: the device may still be
 	// finding its way to the internet.
 	startDelay = 2 * time.Minute
-
-	maxUsername = 100
-	maxAPIKey   = 200
 )
 
 // ChangeError is a failed request with a message fit for the owner.
@@ -64,12 +70,11 @@ type Config struct {
 	DB    *sql.DB
 	Audit *audit.Log
 	Log   *slog.Logger
-	// Endpoint is Zone.eu's API (zone.DefaultEndpoint, except in tests).
-	Endpoint string
-	// HTTP makes the requests. Its timeout bounds each of them.
-	HTTP      *http.Client
-	UserAgent string
-	Now       func() time.Time
+	// DNS is what opening a provider needs: where Zone.eu is (a stand-in in
+	// the tests, which then refuses every other provider), the HTTP client
+	// whose timeout bounds each request, the home's public address.
+	DNS dnsprovider.Options
+	Now func() time.Time
 }
 
 type Service struct {
@@ -82,22 +87,26 @@ type Service struct {
 
 func New(cfg Config) *Service { return &Service{cfg: cfg, started: cfg.Now()} }
 
-// Status is what the page shows. The API key is not in it.
+// Status is what the page shows. No secret is in it.
 type Status struct {
-	// Configured: a domain and a Zone.eu account are saved.
+	// Configured: a domain and an account are saved.
 	Configured bool   `json:"configured"`
 	Domain     string `json:"domain"`
-	Username   string `json:"username"`
-	// CheckedAt is when Zone.eu was last asked; nil if it was not yet. OK is
-	// its answer; Problem says in words what was wrong, FailingSince since
-	// when.
+	// Provider is the provider's ID ("zone"), ProviderName its name;
+	// Shown are the account's values that are not secret (a username).
+	Provider     string            `json:"provider"`
+	ProviderName string            `json:"providerName"`
+	Shown        map[string]string `json:"shown"`
+	// CheckedAt is when the provider was last asked; nil if it was not yet.
+	// OK is its answer; Problem says in words what was wrong, FailingSince
+	// since when.
 	CheckedAt    *time.Time `json:"checkedAt"`
 	OK           bool       `json:"ok"`
 	Problem      string     `json:"problem"`
 	FailingSince *time.Time `json:"failingSince"`
 }
 
-// check is how a question to Zone.eu ended, as kept in the database.
+// check is how a question to the provider ended, as kept in the database.
 type check struct {
 	At           time.Time  `json:"at"`
 	OK           bool       `json:"ok"`
@@ -105,50 +114,92 @@ type check struct {
 	FailingSince *time.Time `json:"failingSince,omitempty"`
 }
 
-type account struct {
-	domain, username, apiKey string
+func (s *Service) setting(ctx context.Context, key string) (string, error) {
+	value, _, err := store.Setting(ctx, s.cfg.DB, key)
+	return value, err
 }
 
-func (s *Service) account(ctx context.Context) (account, bool, error) {
-	var a account
-	for key, into := range map[string]*string{SettingDomain: &a.domain, SettingUsername: &a.username, SettingAPIKey: &a.apiKey} {
-		value, _, err := store.Setting(ctx, s.cfg.DB, key)
+// account reads what is saved, in either form.
+func (s *Service) account(ctx context.Context) (dnsprovider.Account, bool, error) {
+	var a dnsprovider.Account
+	var err error
+	if a.Domain, err = s.setting(ctx, SettingDomain); err != nil {
+		return a, false, err
+	}
+	if a.Provider, err = s.setting(ctx, SettingProvider); err != nil {
+		return a, false, err
+	}
+	if a.Provider != "" {
+		raw, err := s.setting(ctx, SettingCredentials)
 		if err != nil {
 			return a, false, err
 		}
-		*into = value
+		if raw != "" {
+			if err := json.Unmarshal([]byte(raw), &a.Values); err != nil {
+				// Not readable: as if nothing were saved, so that the page
+				// asks for it again instead of SGC failing at every turn.
+				s.cfg.Log.Error("the saved DNS account cannot be read", "error", err)
+				return dnsprovider.Account{}, false, nil
+			}
+		}
+	} else {
+		username, err := s.setting(ctx, legacyUsername)
+		if err != nil {
+			return a, false, err
+		}
+		apiKey, err := s.setting(ctx, legacyAPIKey)
+		if err != nil {
+			return a, false, err
+		}
+		if username != "" && apiKey != "" {
+			a.Provider, a.Values = dnsprovider.ZoneID, map[string]string{"username": username, "apiKey": apiKey}
+		}
 	}
-	return a, a.domain != "" && a.username != "" && a.apiKey != "", nil
+	return a, a.Domain != "" && a.Provider != "" && len(a.Values) > 0, nil
 }
 
-// Account returns the domain and the Zone.eu account that are saved, key
-// included, and whether any are. It is for the part of SGC that publishes
-// DNS records for a certificate, and for nothing that answers the page.
-func (s *Service) Account(ctx context.Context) (domain, username, apiKey string, configured bool, err error) {
+// Account returns the domain and the account that are saved, credentials
+// included, and whether any are. It is for the parts of SGC that publish
+// DNS records (the certificate, the VPN's name), and for nothing that
+// answers the page.
+func (s *Service) Account(ctx context.Context) (dnsprovider.Account, bool, error) {
+	return s.account(ctx)
+}
+
+// Open returns the provider of the saved account, opened, with the domain.
+func (s *Service) Open(ctx context.Context) (dnsprovider.Provider, dnsprovider.Account, bool, error) {
 	a, configured, err := s.account(ctx)
-	return a.domain, a.username, a.apiKey, configured, err
+	if err != nil || !configured {
+		return nil, a, false, err
+	}
+	p, err := dnsprovider.Open(a, s.cfg.DNS)
+	return p, a, err == nil, err
 }
 
 func (s *Service) lastCheck(ctx context.Context) (*check, error) {
-	raw, _, err := store.Setting(ctx, s.cfg.DB, SettingCheck)
+	raw, err := s.setting(ctx, SettingCheck)
 	if err != nil || raw == "" {
 		return nil, err
 	}
 	var last check
 	if err := json.Unmarshal([]byte(raw), &last); err != nil {
-		// Unreadable bookkeeping is no reason to fail: it is as if Zone.eu
-		// had not been asked yet.
+		// Unreadable bookkeeping is no reason to fail: it is as if the
+		// provider had not been asked yet.
 		return nil, nil
 	}
 	return &last, nil
 }
 
+func statusOf(a dnsprovider.Account) Status {
+	return Status{Configured: true, Domain: a.Domain, Provider: a.Provider, ProviderName: dnsprovider.Name(a.Provider), Shown: dnsprovider.Shown(a)}
+}
+
 func (s *Service) Status(ctx context.Context) (Status, error) {
 	a, configured, err := s.account(ctx)
 	if err != nil || !configured {
-		return Status{}, err
+		return Status{Shown: map[string]string{}}, err
 	}
-	status := Status{Configured: true, Domain: a.domain, Username: a.username}
+	status := statusOf(a)
 	last, err := s.lastCheck(ctx)
 	if err != nil || last == nil {
 		return status, err
@@ -157,10 +208,10 @@ func (s *Service) Status(ctx context.Context) (Status, error) {
 	return status, nil
 }
 
-// Save takes a domain and a Zone.eu account, asks Zone.eu whether they
-// belong together, and keeps them only if the answer is yes. An error means
-// nothing was changed.
-func (s *Service) Save(ctx context.Context, actor, remote, domain, username, apiKey string) error {
+// Save takes a domain and an account at a provider, asks the provider
+// whether they belong together, and keeps them only if the answer is yes.
+// An error means nothing was changed.
+func (s *Service) Save(ctx context.Context, actor, remote, domain, provider string, values map[string]string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -168,32 +219,53 @@ func (s *Service) Save(ctx context.Context, actor, remote, domain, username, api
 	if err != nil {
 		return &ChangeError{capitalised(err.Error()) + "."}
 	}
-	username, apiKey = strings.TrimSpace(username), strings.TrimSpace(apiKey)
-	switch {
-	case username == "" || len(username) > maxUsername || !plainText(username) || strings.Contains(username, ":"):
-		return &ChangeError{"That is not a ZoneID username: it is the name you sign in with at Zone.eu."}
-	case apiKey == "" || len(apiKey) > maxAPIKey || !plainText(apiKey):
-		return &ChangeError{"That is not an API key: copy it as Zone.eu shows it, without spaces."}
+	clean, err := dnsprovider.CheckValues(provider, values)
+	if err != nil {
+		return &ChangeError{capitalised(err.Error()) + "."}
 	}
-
-	if problem := s.ask(ctx, account{domain, username, apiKey}); problem != "" {
+	a := dnsprovider.Account{Domain: domain, Provider: provider, Values: clean}
+	if problem := s.ask(ctx, a); problem != "" {
 		return &ChangeError{problem + " Nothing was saved."}
 	}
 
+	data, err := json.Marshal(clean)
+	if err != nil {
+		return err
+	}
 	ctx = context.WithoutCancel(ctx)
-	for key, value := range map[string]string{SettingDomain: domain, SettingUsername: username, SettingAPIKey: apiKey} {
-		if err := store.SetSetting(ctx, s.cfg.DB, key, value); err != nil {
+	tx, err := s.cfg.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for key, value := range map[string]string{SettingDomain: domain, SettingProvider: provider, SettingCredentials: string(data)} {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO setting (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, key, value); err != nil {
 			return err
 		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM setting WHERE key IN (?, ?)`, legacyUsername, legacyAPIKey); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
 	}
 	if err := s.keep(ctx, check{At: s.cfg.Now(), OK: true}); err != nil {
 		return err
 	}
-	s.record(ctx, actor, audit.ActionDomainSaved, domain+", with the Zone.eu account "+username, remote)
+	s.record(ctx, actor, audit.ActionDomainSaved, describe(a), remote)
 	return nil
 }
 
-// Remove forgets the domain and the Zone.eu account.
+// describe names an account for the history: never a secret.
+func describe(a dnsprovider.Account) string {
+	name := dnsprovider.Name(a.Provider)
+	if username := dnsprovider.Shown(a)["username"]; username != "" {
+		return a.Domain + ", with the " + name + " account " + username
+	}
+	return a.Domain + ", at " + name
+}
+
+// Remove forgets the domain and the account.
 func (s *Service) Remove(ctx context.Context, actor, remote string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -202,22 +274,22 @@ func (s *Service) Remove(ctx context.Context, actor, remote string) error {
 		return err
 	}
 	ctx = context.WithoutCancel(ctx)
-	if _, err := s.cfg.DB.ExecContext(ctx, `DELETE FROM setting WHERE key IN (?, ?, ?, ?)`,
-		SettingDomain, SettingUsername, SettingAPIKey, SettingCheck); err != nil {
+	if _, err := s.cfg.DB.ExecContext(ctx, `DELETE FROM setting WHERE key IN (?, ?, ?, ?, ?, ?)`,
+		SettingDomain, SettingProvider, SettingCredentials, legacyUsername, legacyAPIKey, SettingCheck); err != nil {
 		return err
 	}
-	s.record(ctx, actor, audit.ActionDomainRemoved, a.domain, remote)
+	s.record(ctx, actor, audit.ActionDomainRemoved, a.Domain, remote)
 	return nil
 }
 
-// CheckNow asks Zone.eu whether it still accepts the account for the domain,
-// and keeps the answer. Without a saved account it does nothing.
+// CheckNow asks the provider whether it still accepts the account for the
+// domain, and keeps the answer. Without a saved account it does nothing.
 func (s *Service) CheckNow(ctx context.Context) (Status, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	a, configured, err := s.account(ctx)
 	if err != nil || !configured {
-		return Status{}, err
+		return Status{Shown: map[string]string{}}, err
 	}
 	previous, err := s.lastCheck(ctx)
 	if err != nil {
@@ -235,19 +307,21 @@ func (s *Service) CheckNow(ctx context.Context) (Status, error) {
 	if err := s.keep(ctx, result); err != nil {
 		return Status{}, err
 	}
-	// The history gets the turns, not every answer.
+	// The history gets the turns, not every answer. (The action names are
+	// from the days of Zone.eu alone, and stay.)
 	wasOK := previous == nil || previous.OK
 	switch {
 	case wasOK && !result.OK:
 		s.record(ctx, audit.ActorSystem, audit.ActionZoneCheckFailed, result.Problem, "")
 	case !wasOK && result.OK:
-		s.record(ctx, audit.ActorSystem, audit.ActionZoneCheckRecovered, a.domain, "")
+		s.record(ctx, audit.ActorSystem, audit.ActionZoneCheckRecovered, a.Domain, "")
 	}
-	return Status{Configured: true, Domain: a.domain, Username: a.username,
-		CheckedAt: &result.At, OK: result.OK, Problem: result.Problem, FailingSince: result.FailingSince}, nil
+	status := statusOf(a)
+	status.CheckedAt, status.OK, status.Problem, status.FailingSince = &result.At, result.OK, result.Problem, result.FailingSince
+	return status, nil
 }
 
-// Run asks Zone.eu from time to time until ctx ends.
+// Run asks the provider from time to time until ctx ends.
 func (s *Service) Run(ctx context.Context) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
@@ -258,14 +332,14 @@ func (s *Service) Run(ctx context.Context) {
 		case <-ticker.C:
 			if s.due(ctx) {
 				if _, err := s.CheckNow(ctx); err != nil && ctx.Err() == nil {
-					s.cfg.Log.Error("ask Zone.eu about the domain", "error", err)
+					s.cfg.Log.Error("ask the DNS provider about the domain", "error", err)
 				}
 			}
 		}
 	}
 }
 
-// due says whether it is time to ask Zone.eu again.
+// due says whether it is time to ask the provider again.
 func (s *Service) due(ctx context.Context) bool {
 	now := s.cfg.Now()
 	// (A clock that was set back since start-up makes this negative, which
@@ -293,33 +367,40 @@ func (s *Service) due(ctx context.Context) bool {
 	}
 }
 
-// ask puts the question to Zone.eu and returns what is wrong, in words for
-// the owner, or "" if nothing is.
-func (s *Service) ask(ctx context.Context, a account) string {
-	client, err := zone.NewClient(s.cfg.Endpoint, a.username, a.apiKey, s.cfg.UserAgent, s.cfg.HTTP)
-	if err != nil {
-		s.cfg.Log.Error("set up the client for Zone.eu", "error", err)
-		return "SGC is set to an address for Zone.eu that is not one."
+// ask puts the question to the provider and returns what is wrong, in words
+// for the owner, or "" if nothing is.
+func (s *Service) ask(ctx context.Context, a dnsprovider.Account) string {
+	p, err := dnsprovider.Open(a, s.cfg.DNS)
+	if err == nil {
+		err = p.Check(ctx, a.Domain)
 	}
-	found, err := client.Zone(ctx, a.domain)
-	var refusal *zone.StatusError
-	switch {
-	case err == nil && found.Active:
+	if err == nil {
 		return ""
-	case err == nil:
-		return "The DNS zone of " + a.domain + " is not active at Zone.eu."
-	case errors.Is(err, zone.ErrCredentials):
-		return "Zone.eu does not accept the username and API key."
-	case errors.Is(err, zone.ErrNotFound):
-		return "Zone.eu has no DNS zone for " + a.domain + " in this account."
-	case errors.Is(err, zone.ErrRateLimited):
-		return "Zone.eu answered that too many requests were made in the last minute."
+	}
+	return Words(a, err)
+}
+
+// Words says what a provider's error means, for the owner. The errors of
+// internal/dnsprovider name no credential.
+func Words(a dnsprovider.Account, err error) string {
+	kind, _ := dnsprovider.Lookup(a.Provider)
+	name := dnsprovider.Name(a.Provider)
+	var refusal *dnsprovider.Refusal
+	switch {
+	case errors.Is(err, dnsprovider.ErrCredentials):
+		return name + " does not accept the " + kind.Credentials + "."
+	case errors.Is(err, dnsprovider.ErrNotFound):
+		return name + " has no DNS zone for " + a.Domain + " in this account."
+	case errors.Is(err, dnsprovider.ErrNotActive):
+		return "The DNS zone of " + a.Domain + " is not active at " + name + "."
+	case errors.Is(err, dnsprovider.ErrRateLimited):
+		return name + " answered that too many requests were made. SGC asks again later."
 	case errors.As(err, &refusal):
-		return capitalised(refusal.Error()) + "."
+		return capitalised(refusal.Message) + "."
+	case errors.Is(err, dnsprovider.ErrUnreachable):
+		return name + " could not be reached. Does this device reach the internet?"
 	default:
-		// The client's errors name the address, never the key.
-		s.cfg.Log.Warn("ask Zone.eu about the domain", "error", err)
-		return "Zone.eu could not be reached. Does this device reach the internet?"
+		return capitalised(strings.TrimSuffix(err.Error(), ".")) + "."
 	}
 }
 
@@ -335,16 +416,6 @@ func (s *Service) record(ctx context.Context, actor, action, detail, remote stri
 	if err := s.cfg.Audit.Record(context.WithoutCancel(ctx), actor, action, detail, remote); err != nil {
 		s.cfg.Log.Error("write audit log", "action", action, "error", err)
 	}
-}
-
-// plainText: visible characters only, none of them a space.
-func plainText(text string) bool {
-	for _, r := range text {
-		if r > unicode.MaxASCII || !unicode.IsGraphic(r) || unicode.IsSpace(r) {
-			return false
-		}
-	}
-	return true
 }
 
 func capitalised(text string) string {

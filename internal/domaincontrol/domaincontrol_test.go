@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Troglobitten/sgc/internal/audit"
+	"github.com/Troglobitten/sgc/internal/dnsprovider"
 	"github.com/Troglobitten/sgc/internal/layout"
 	"github.com/Troglobitten/sgc/internal/store"
 	"github.com/Troglobitten/sgc/internal/zone/zonetest"
@@ -45,7 +46,7 @@ func newEnv(t *testing.T) *env {
 	t.Cleanup(e.server.Close)
 	e.service = New(Config{
 		DB: db, Audit: audit.New(db), Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Endpoint: e.server.URL + "/v2/", HTTP: &http.Client{Timeout: 5 * time.Second}, UserAgent: "sgc/test",
+		DNS: dnsprovider.Options{ZoneEndpoint: e.server.URL + "/v2/", StandIn: true, HTTP: &http.Client{Timeout: 5 * time.Second}, UserAgent: "sgc/test"},
 		Now: func() time.Time { return e.now },
 	})
 	return e
@@ -85,13 +86,13 @@ func TestSavingADomainAsksZoneFirst(t *testing.T) {
 	}
 
 	// Refused by Zone.eu, each for its own reason: nothing is kept.
-	e.refused(e.service.Save(ctx, "alex", "", "domain.tld", username, "another-key"), "does not accept the username and API key")
-	e.refused(e.service.Save(ctx, "alex", "", "other.tld", username, apiKey), "has no DNS zone for other.tld")
+	e.refused(e.service.Save(ctx, "alex", "", "domain.tld", "zone", values(username, "another-key")), "does not accept the username and API key")
+	e.refused(e.service.Save(ctx, "alex", "", "other.tld", "zone", values(username, apiKey)), "has no DNS zone for other.tld")
 	e.zone.SetActive("domain.tld", false)
-	e.refused(e.service.Save(ctx, "alex", "", "domain.tld", username, apiKey), "is not active")
+	e.refused(e.service.Save(ctx, "alex", "", "domain.tld", "zone", values(username, apiKey)), "is not active")
 	e.zone.SetActive("domain.tld", true)
 	e.zone.FailWith(http.StatusInternalServerError)
-	e.refused(e.service.Save(ctx, "alex", "", "domain.tld", username, apiKey), "answered with an error (500")
+	e.refused(e.service.Save(ctx, "alex", "", "domain.tld", "zone", values(username, apiKey)), "answered with an error (500")
 	e.zone.FailWith(0)
 	if s := e.status(); s.Configured {
 		t.Fatalf("something was kept after refusals: %+v", s)
@@ -99,29 +100,29 @@ func TestSavingADomainAsksZoneFirst(t *testing.T) {
 
 	// Refused by SGC itself, before Zone.eu is asked.
 	asked := e.zone.Requests()
-	e.refused(e.service.Save(ctx, "alex", "", "domain", username, apiKey), "at least two parts")
-	e.refused(e.service.Save(ctx, "alex", "", "domain.tld/../x", username, apiKey), "letters, digits and hyphens only")
-	e.refused(e.service.Save(ctx, "alex", "", "domain.tld", "", apiKey), "not a ZoneID username")
-	e.refused(e.service.Save(ctx, "alex", "", "domain.tld", "alex:x", apiKey), "not a ZoneID username")
-	e.refused(e.service.Save(ctx, "alex", "", "domain.tld", username, "a key with spaces"), "not an API key")
-	e.refused(e.service.Save(ctx, "alex", "", "domain.tld", username, ""), "not an API key")
+	e.refused(e.service.Save(ctx, "alex", "", "domain", "zone", values(username, apiKey)), "at least two parts")
+	e.refused(e.service.Save(ctx, "alex", "", "domain.tld/../x", "zone", values(username, apiKey)), "letters, digits and hyphens only")
+	e.refused(e.service.Save(ctx, "alex", "", "domain.tld", "zone", values("", apiKey)), "not a ZoneID username")
+	e.refused(e.service.Save(ctx, "alex", "", "domain.tld", "zone", values("alex:x", apiKey)), "not a ZoneID username")
+	e.refused(e.service.Save(ctx, "alex", "", "domain.tld", "zone", values(username, "a key with spaces")), "not an API key")
+	e.refused(e.service.Save(ctx, "alex", "", "domain.tld", "zone", values(username, "")), "not an API key")
 	if e.zone.Requests() != asked {
 		t.Error("Zone.eu was asked about input that SGC should have refused itself")
 	}
 
 	// Accepted. The domain is kept as SGC writes it.
-	if err := e.service.Save(ctx, "alex", "192.168.1.10", " Domain.TLD. ", " "+username+" ", apiKey+"\n"); err != nil {
+	if err := e.service.Save(ctx, "alex", "192.168.1.10", " Domain.TLD. ", "zone", values(" "+username+" ", apiKey+"\n")); err != nil {
 		t.Fatal(err)
 	}
 	s := e.status()
-	if !s.Configured || s.Domain != "domain.tld" || s.Username != username || !s.OK || s.CheckedAt == nil || s.Problem != "" {
+	if !s.Configured || s.Domain != "domain.tld" || s.Shown["username"] != username || s.Provider != "zone" || s.ProviderName != "Zone.eu" || !s.OK || s.CheckedAt == nil || s.Problem != "" {
 		t.Errorf("after saving: %+v", s)
 	}
 	if e.lastHistory() != "alex domain.saved domain.tld, with the Zone.eu account alex" {
 		t.Errorf("history: %s", e.lastHistory())
 	}
 	// The key is kept, and is in neither the status nor the history.
-	if kept, _, _ := store.Setting(ctx, e.db, SettingAPIKey); kept != apiKey {
+	if kept, _, _ := store.Setting(ctx, e.db, SettingCredentials); kept != `{"apiKey":"`+apiKey+`","username":"alex"}` {
 		t.Errorf("the key as kept: %q", kept)
 	}
 	entries, _ := audit.New(e.db).Recent(ctx, 20)
@@ -138,7 +139,7 @@ func TestSavingADomainAsksZoneFirst(t *testing.T) {
 	if s := e.status(); s.Configured {
 		t.Errorf("after removing: %+v", s)
 	}
-	if kept, _, _ := store.Setting(ctx, e.db, SettingAPIKey); kept != "" || e.lastHistory() != "alex domain.removed domain.tld" {
+	if kept, _, _ := store.Setting(ctx, e.db, SettingCredentials); kept != "" || e.lastHistory() != "alex domain.removed domain.tld" {
 		t.Errorf("after removing: key %q, history %s", kept, e.lastHistory())
 	}
 }
@@ -150,7 +151,7 @@ func TestWhenZoneStopsAcceptingTheKey(t *testing.T) {
 	if s, err := e.service.CheckNow(ctx); err != nil || s.Configured || e.zone.Requests() != 0 {
 		t.Fatalf("without an account: %+v, %v", s, err)
 	}
-	if err := e.service.Save(ctx, "alex", "", "domain.tld", username, apiKey); err != nil {
+	if err := e.service.Save(ctx, "alex", "", "domain.tld", "zone", values(username, apiKey)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -178,7 +179,7 @@ func TestWhenZoneStopsAcceptingTheKey(t *testing.T) {
 	}
 
 	// The owner enters the new key: all is well again.
-	if err := e.service.Save(ctx, "alex", "", "domain.tld", username, "a-new-key"); err != nil {
+	if err := e.service.Save(ctx, "alex", "", "domain.tld", "zone", values(username, "a-new-key")); err != nil {
 		t.Fatal(err)
 	}
 	if s := e.status(); !s.OK || s.Problem != "" || s.FailingSince != nil {
@@ -199,7 +200,7 @@ func TestWhenZoneStopsAcceptingTheKey(t *testing.T) {
 func TestItComesBackByItself(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
-	if err := e.service.Save(ctx, "alex", "", "domain.tld", username, apiKey); err != nil {
+	if err := e.service.Save(ctx, "alex", "", "domain.tld", "zone", values(username, apiKey)); err != nil {
 		t.Fatal(err)
 	}
 	e.zone.FailWith(http.StatusTooManyRequests)
@@ -223,7 +224,7 @@ func TestWhenZoneIsAsked(t *testing.T) {
 	if e.service.due(ctx) {
 		t.Error("due without an account")
 	}
-	if err := e.service.Save(ctx, "alex", "", "domain.tld", username, apiKey); err != nil {
+	if err := e.service.Save(ctx, "alex", "", "domain.tld", "zone", values(username, apiKey)); err != nil {
 		t.Fatal(err)
 	}
 	// Saving asked Zone.eu just now.
@@ -258,7 +259,7 @@ func TestWhenZoneIsAsked(t *testing.T) {
 
 	// Right after start-up it waits a little, even if a check is long due.
 	late := newEnv(t)
-	if err := late.service.Save(ctx, "alex", "", "domain.tld", username, apiKey); err != nil {
+	if err := late.service.Save(ctx, "alex", "", "domain.tld", "zone", values(username, apiKey)); err != nil {
 		t.Fatal(err)
 	}
 	restarted := New(late.service.cfg)
@@ -270,5 +271,54 @@ func TestWhenZoneIsAsked(t *testing.T) {
 	late.now = late.now.Add(startDelay)
 	if !restarted.due(ctx) {
 		t.Error("not due once start-up is over")
+	}
+}
+
+func values(username, apiKey string) map[string]string {
+	return map[string]string{"username": username, "apiKey": apiKey}
+}
+
+// An account saved before 0.18.0 (or restored from an export of then) is a
+// Zone.eu account with two settings of its own; saving moves it.
+func TestAnAccountFromBefore018(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	for key, value := range map[string]string{SettingDomain: "domain.tld", legacyUsername: username, legacyAPIKey: apiKey} {
+		if err := store.SetSetting(ctx, e.db, key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if s := e.status(); !s.Configured || s.Provider != "zone" || s.Shown["username"] != username {
+		t.Fatalf("an old account reads as %+v", s)
+	}
+	a, configured, err := e.service.Account(ctx)
+	if err != nil || !configured || a.Values["apiKey"] != apiKey {
+		t.Fatalf("Account = %+v, %v, %v", a, configured, err)
+	}
+	if s, _ := e.service.CheckNow(ctx); !s.OK {
+		t.Fatalf("Zone.eu does not take the old account: %+v", s)
+	}
+	if err := e.service.Save(ctx, "alex", "", "domain.tld", "zone", values(username, apiKey)); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{legacyUsername, legacyAPIKey} {
+		if _, found, _ := store.Setting(ctx, e.db, key); found {
+			t.Errorf("%s is still kept after saving", key)
+		}
+	}
+	if s := e.status(); !s.Configured || s.Provider != "zone" {
+		t.Errorf("after saving: %+v", s)
+	}
+}
+
+// Another provider is refused while Zone.eu is a stand-in: the page cannot
+// make a test set-up reach a real provider.
+func TestOtherProvidersAreRefusedInATestSetUp(t *testing.T) {
+	e := newEnv(t)
+	e.refused(e.service.Save(context.Background(), "alex", "", "domain.tld", "cloudflare", map[string]string{"apiToken": "a-made-up-token"}), "stand-in")
+	e.refused(e.service.Save(context.Background(), "alex", "", "domain.tld", "made-up", map[string]string{}), "does not know")
+	e.refused(e.service.Save(context.Background(), "alex", "", "domain.tld", "zone", map[string]string{"username": username, "apiKey": apiKey, "extra": "x"}), "does not use")
+	if e.zone.Requests() != 0 || e.status().Configured {
+		t.Error("something was asked or kept")
 	}
 }

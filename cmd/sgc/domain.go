@@ -9,6 +9,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/netip"
+	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -16,10 +18,12 @@ import (
 
 	"github.com/Troglobitten/sgc"
 	"github.com/Troglobitten/sgc/internal/audit"
+	"github.com/Troglobitten/sgc/internal/dnsprovider"
 	"github.com/Troglobitten/sgc/internal/doctor"
 	"github.com/Troglobitten/sgc/internal/domaincontrol"
 	"github.com/Troglobitten/sgc/internal/layout"
 	"github.com/Troglobitten/sgc/internal/store"
+	"github.com/Troglobitten/sgc/internal/vpncontrol"
 )
 
 // Environment variable naming another address for Zone.eu's API. The tests
@@ -28,27 +32,61 @@ import (
 // key is sent to whatever address this names.
 const zoneEndpointVariable = "SGC_ZONE_API"
 
-// newDomainControl keeps the owner's domain and Zone.eu account, and asks
-// Zone.eu about them.
+// newDomainControl keeps the owner's domain and the account at their DNS
+// provider, and asks the provider about them.
 func newDomainControl(db *sql.DB, auditLog *audit.Log, log *slog.Logger) *domaincontrol.Service {
-	endpoint, standIn := zoneEndpoint()
-	if standIn {
-		log.Warn("talking to a stand-in instead of Zone.eu", "address", endpoint)
+	options := dnsOptions()
+	if options.StandIn {
+		log.Warn("talking to a stand-in instead of Zone.eu; no other DNS provider is used", "address", options.ZoneEndpoint)
 	}
 	return domaincontrol.New(domaincontrol.Config{
-		DB:        db,
-		Audit:     auditLog,
-		Log:       log,
-		Endpoint:  endpoint,
-		HTTP:      &http.Client{Timeout: 20 * time.Second},
-		UserAgent: "sgc/" + sgc.Version(),
-		Now:       time.Now,
+		DB:    db,
+		Audit: auditLog,
+		Log:   log,
+		DNS:   options,
+		Now:   time.Now,
 	})
 }
 
-// checkDomain reports how SGC's last question to Zone.eu ended. It does not
-// ask Zone.eu itself: the doctor runs as root, and the key stays with the
-// service. What it shows is therefore as old as that last question.
+// dnsOptions is what opening the owner's DNS provider needs, for every part
+// that does (the domain, the certificate, the VPN's name). With a stand-in
+// for Zone.eu in the environment (the tests), no other provider is opened.
+func dnsOptions() dnsprovider.Options {
+	endpoint, standIn := zoneEndpoint()
+	return dnsprovider.Options{
+		HTTP:         &http.Client{Timeout: 20 * time.Second},
+		UserAgent:    "sgc/" + sgc.Version(),
+		ZoneEndpoint: endpoint,
+		StandIn:      standIn,
+		PublicIP:     homePublicIP(standIn),
+	}
+}
+
+// homePublicIP asks what the home's address on the internet is: the
+// services in vpncontrol.PublicIPServices, or the stand-in that
+// publicIPVariable names while Zone.eu is a stand-in too.
+func homePublicIP(standIn bool) func(ctx context.Context) (netip.Addr, error) {
+	client := &http.Client{Timeout: 15 * time.Second}
+	if url := os.Getenv(publicIPVariable); url != "" && standIn {
+		return func(ctx context.Context) (netip.Addr, error) { return vpncontrol.AskPublicIP(ctx, client, url) }
+	}
+	return func(ctx context.Context) (netip.Addr, error) {
+		var last error
+		for _, url := range vpncontrol.PublicIPServices {
+			addr, err := vpncontrol.AskPublicIP(ctx, client, url)
+			if err == nil {
+				return addr, nil
+			}
+			last = err
+		}
+		return netip.Addr{}, last
+	}
+}
+
+// checkDomain reports how SGC's last question to the DNS provider ended. It
+// does not ask the provider itself: the doctor runs as root, and the key
+// stays with the service. What it shows is therefore as old as that last
+// question.
 func checkDomain(stateDir string) doctor.Check {
 	return func(ctx context.Context) []doctor.Result {
 		var status domaincontrol.Status
@@ -61,22 +99,24 @@ func checkDomain(stateDir string) doctor.Check {
 			}
 			return one(doctor.Warn("The state of the domain could not be read: "+reason, ""))
 		}
+		provider := status.ProviderName
+		kind, _ := dnsprovider.Lookup(status.Provider)
 		switch {
 		case !status.Configured:
 			return one(doctor.Good("No domain is set up yet (that is done on SGC's System page, under Domain)"))
 		case status.CheckedAt == nil:
-			return one(doctor.Good("The domain is " + status.Domain + "; SGC has not asked Zone.eu about it yet"))
+			return one(doctor.Good("The domain is " + status.Domain + "; SGC has not asked " + provider + " about it yet"))
 		case status.OK:
-			return one(doctor.Good("Zone.eu accepted the saved API key for " + status.Domain + " when SGC last asked"))
+			return one(doctor.Good(provider + " accepted the saved " + kind.Credentials + " for " + status.Domain + " when SGC last asked"))
 		default:
 			since := ""
 			if status.FailingSince != nil {
 				since = " (since " + status.FailingSince.Local().Format("2 January 15:04") + ")"
 			}
 			return one(doctor.Bad("The domain "+status.Domain+": "+status.Problem+since,
-				"If the API key was replaced or withdrawn at Zone.eu: make a new one in your ZoneID account there, and enter it on SGC's System page, under Domain.\n"+
+				"If the "+kind.Credentials+" were replaced or withdrawn at "+provider+": make new ones there, and enter them on SGC's System page, under Domain.\n"+
 					"If this device does not reach the internet, that is the thing to put right first.\n"+
-					"SGC asks Zone.eu again every hour; \"Ask Zone.eu now\" on that page does it at once."))
+					"SGC asks "+provider+" again every hour; \"Ask "+provider+" now\" on that page does it at once."))
 		}
 	}
 }

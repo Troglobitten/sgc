@@ -237,7 +237,8 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 	background.Go(func() { maintenanceWindow.Run(runCtx) })
 
 	domainControl := newDomainControl(db, auditLog, log)
-	// Asks Zone.eu every few hours whether it still accepts the saved key.
+	// Asks the DNS provider every few hours whether it still accepts the
+	// saved key.
 	background.Go(func() { domainControl.Run(runCtx) })
 
 	certControl := newCertControl(db, auditLog, log, domainControl)

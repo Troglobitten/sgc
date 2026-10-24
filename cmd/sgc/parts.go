@@ -5,13 +5,11 @@ import (
 	"database/sql"
 	"log/slog"
 	"net/http"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
 	"time"
 
-	"github.com/Troglobitten/sgc"
 	"github.com/Troglobitten/sgc/internal/adguard"
 	"github.com/Troglobitten/sgc/internal/announce"
 	"github.com/Troglobitten/sgc/internal/audit"
@@ -30,7 +28,6 @@ import (
 	"github.com/Troglobitten/sgc/internal/proxycontrol"
 	"github.com/Troglobitten/sgc/internal/services"
 	"github.com/Troglobitten/sgc/internal/vpncontrol"
-	"github.com/Troglobitten/sgc/internal/zone"
 )
 
 // publicIPVariable names a stand-in for the services that tell the home's
@@ -102,8 +99,8 @@ func newParts(d partsDeps) *parts {
 	})
 	lan := netinfo.Reader{}.Find
 	domainOf := func(ctx context.Context) (string, bool, error) {
-		domain, _, _, configured, err := d.domain.Account(ctx)
-		return domain, configured, err
+		account, configured, err := d.domain.Account(ctx)
+		return account.Domain, configured, err
 	}
 	if d.alert == nil {
 		d.alert = func(ctx context.Context, title, body string) { d.log.Warn(title, "detail", body) }
@@ -176,26 +173,16 @@ func newParts(d partsDeps) *parts {
 		Log:           d.log,
 	})
 
-	zoneEndpointAddress, zoneStandIn := zoneEndpoint()
-	var publicIP func(ctx context.Context) (netip.Addr, error)
+	_, zoneStandIn := zoneEndpoint()
 	if url := os.Getenv(publicIPVariable); url != "" && zoneStandIn {
 		d.log.Warn("asking a stand-in for the home's public address", "address", url)
-		client := &http.Client{Timeout: 10 * time.Second}
-		publicIP = func(ctx context.Context) (netip.Addr, error) { return vpncontrol.AskPublicIP(ctx, client, url) }
 	}
 	p.endpoint = vpncontrol.NewEndpoint(vpncontrol.EndpointConfig{
 		DB:       d.db,
 		Audit:    d.audit,
 		Settings: func(ctx context.Context) vpncontrol.Settings { return p.vpn.Settings(ctx) },
-		Zone: func(ctx context.Context) (*zone.Client, string, bool, error) {
-			domain, username, apiKey, configured, err := d.domain.Account(ctx)
-			if err != nil || !configured {
-				return nil, "", false, err
-			}
-			client, err := zone.NewClient(zoneEndpointAddress, username, apiKey, "sgc/"+sgc.Version(), &http.Client{Timeout: 20 * time.Second})
-			return client, domain, err == nil, err
-		},
-		PublicIP: publicIP,
+		DNS:      d.domain.Open,
+		PublicIP: homePublicIP(zoneStandIn),
 		HTTP:     &http.Client{Timeout: 15 * time.Second},
 		// Problems with the public name are told while they last, by the
 		// notifications' own look (cmd/sgc/watch.go).
