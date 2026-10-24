@@ -693,6 +693,7 @@ const laterActions: Record<string, string> = {
   'backup.made': 'A backup was made',
   'backup.failed': 'A backup failed',
   'admin.reset': 'The admin’s password was set anew from the command line',
+  'admin.password_changed': '{who} changed their password; every other sign-in ended',
 }
 
 // "laptop (ED25519 SHA256:...) for the account alex" -> "laptop"

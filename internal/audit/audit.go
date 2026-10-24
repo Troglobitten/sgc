@@ -172,6 +172,8 @@ const (
 
 	// The admin's password was set anew from the command line.
 	ActionAdminReset = "admin.reset"
+	// ActionAdminPasswordChanged: the admin changed their password in the page.
+	ActionAdminPasswordChanged = "admin.password_changed"
 )
 
 // ActorConsole is recorded for actions taken with the command-line tool.

@@ -21,6 +21,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/audit"
 	"github.com/Troglobitten/sgc/internal/auth"
 	"github.com/Troglobitten/sgc/internal/backup"
+	"github.com/Troglobitten/sgc/internal/backups"
 	"github.com/Troglobitten/sgc/internal/health"
 	"github.com/Troglobitten/sgc/internal/release"
 	"github.com/Troglobitten/sgc/internal/update"
@@ -113,6 +114,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/setup", s.handleSetup)
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	mux.HandleFunc("POST /api/logout", s.requireSession(s.handleLogout))
+	mux.HandleFunc("POST /api/account/password", s.requireSession(s.handleAccountPassword))
 	mux.HandleFunc("GET /api/health", s.requireSession(s.handleHealth))
 	mux.HandleFunc("GET /api/audit", s.requireSession(s.handleAudit))
 	mux.HandleFunc("POST /api/device/restart", s.requireSession(s.handleRestart))
@@ -434,6 +436,13 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.internalError(w, r, err)
 		return
+	}
+	// Entries from before 0.18.0 hold the backup key's whole public half;
+	// they are shown with its fingerprint, as newer ones are kept.
+	for i := range entries {
+		if entries[i].Action == audit.ActionBackupKeyCreated && strings.HasPrefix(entries[i].Detail, "age1") {
+			entries[i].Detail = backups.KeyFingerprint(entries[i].Detail)
+		}
 	}
 	writeJSON(w, http.StatusOK, entries)
 }

@@ -406,6 +406,9 @@ func (s *Service) AddDevice(ctx context.Context, actor, remote string, personID 
 	if err != nil {
 		return Device{}, err
 	}
+	if allTraffic && person.Network != people.NetworkFull {
+		return Device{}, allTrafficRefused(person.Name)
+	}
 	if s.deviceCount(ctx) >= maxDevices {
 		return Device{}, problem.Newf("SGC keeps at most %d devices.", maxDevices)
 	}
@@ -452,6 +455,32 @@ func (s *Service) device(ctx context.Context, id int64) (Device, error) {
 	return Device{}, problem.New("That device does not exist (any more).")
 }
 
+// allTrafficRefused is why a device of someone who reaches only chosen
+// services cannot send all its traffic through home: the gateway lets such a
+// device reach those services and nothing else, so everything else it sent
+// home would go nowhere (no internet while the VPN is on), and a guest's
+// browsing would leave through the owner's address. The owner's decision of
+// 2026-10-24: only people who reach the whole home network may.
+func allTrafficRefused(person string) error {
+	return problem.Newf("Only people who reach the whole home network can send all their traffic through home. %s reaches chosen services only: their devices send through the VPN only what is for home, and keep using their own internet connection for the rest.", person)
+}
+
+// AllTrafficDevices names a person's devices that send all their traffic
+// through home, for the check before the person is set to "services only".
+func (s *Service) AllTrafficDevices(ctx context.Context, personID int64) ([]string, error) {
+	all, err := s.Devices(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, d := range all {
+		if d.PersonID == personID && d.AllTraffic {
+			names = append(names, d.Name)
+		}
+	}
+	return names, nil
+}
+
 // UpdateDevice renames a device, switches it on or off, or changes what
 // it sends through home. (The last needs its QR code scanned again.)
 func (s *Service) UpdateDevice(ctx context.Context, actor, remote string, id int64, name string, allTraffic, enabled bool) (Device, error) {
@@ -462,6 +491,18 @@ func (s *Service) UpdateDevice(ctx context.Context, actor, remote string, id int
 	name = strings.TrimSpace(name)
 	if !validDeviceName(name) {
 		return Device{}, problem.New("Give the device a name of 1 to 40 characters.")
+	}
+	// Turning it on is refused for someone who reaches only services; a
+	// device that has it from before keeps it until it is switched to home
+	// only (and can still be switched on and off meanwhile).
+	if allTraffic && !before.AllTraffic {
+		person, err := s.cfg.People.Get(ctx, before.PersonID)
+		if err != nil {
+			return Device{}, err
+		}
+		if person.Network != people.NetworkFull {
+			return Device{}, allTrafficRefused(person.Name)
+		}
 	}
 	if _, err := s.cfg.DB.ExecContext(ctx, "UPDATE vpn_device SET name = ?, all_traffic = ?, enabled = ? WHERE id = ?", name, allTraffic, enabled, id); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {

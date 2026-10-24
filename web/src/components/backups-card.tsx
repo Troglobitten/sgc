@@ -16,6 +16,11 @@ const selectClass = 'h-8 w-full rounded-lg border border-input bg-transparent px
  * Backups every day to another device, encrypted to a backup key of which
  * SGC keeps only the public half.
  */
+/** The start and end of a key's public half, as SGC names it (internal/backups.KeyFingerprint). */
+function keyFingerprint(publicKey: string): string {
+  return publicKey.length <= 20 ? publicKey : `${publicKey.slice(0, 13)}…${publicKey.slice(-6)}`
+}
+
 export function BackupsCard({ onError }: { onError: (error: unknown) => void }) {
   const [status, setStatus] = useState<BackupStatus | null>(null)
   const [draft, setDraft] = useState<BackupSettings | null>(null)
@@ -24,6 +29,8 @@ export function BackupsCard({ onError }: { onError: (error: unknown) => void }) 
   const [message, setMessage] = useState<string | null>(null)
   const [secret, setSecret] = useState<string | null>(null)
   const [keyPassword, setKeyPassword] = useState('')
+  // Making a new key while there is one: the form, with what that means.
+  const [replacing, setReplacing] = useState(false)
   const [offeredKey, setOfferedKey] = useState<string | null>(null)
 
   useEffect(() => {
@@ -77,6 +84,7 @@ export function BackupsCard({ onError }: { onError: (error: unknown) => void }) 
       const made = await api.makeBackupKey(keyPassword)
       setSecret(made.secret)
       setKeyPassword('')
+      setReplacing(false)
       const next = await api.backups()
       setStatus(next)
       setDraft((d) => (d ? { ...d, publicKey: next.settings.publicKey } : d))
@@ -121,16 +129,38 @@ export function BackupsCard({ onError }: { onError: (error: unknown) => void }) 
               <Button size="sm" onClick={() => setSecret(null)}>I have kept it</Button>
             </div>
           </div>
-        ) : !status.hasKey ? (
+        ) : !status.hasKey || replacing ? (
           <form onSubmit={makeKey} className="flex flex-col gap-2 rounded-lg bg-muted/50 p-3">
-            <p className="text-sm">First, the backup key. Enter your admin password to make it.</p>
+            {status.hasKey ? (
+              <p className="text-sm">
+                A new backup key replaces the one in use. Backups made until now stay locked to the old key:
+                keep the old key for as long as you keep those backups. Enter your admin password to make it.
+              </p>
+            ) : (
+              <p className="text-sm">First, the backup key. Enter your admin password to make it.</p>
+            )}
             <div className="flex flex-wrap gap-2">
               <Input type="password" autoComplete="current-password" placeholder="Admin password" value={keyPassword}
                 className="max-w-56" onChange={(e) => setKeyPassword(e.target.value)} />
-              <Button type="submit" size="sm" disabled={!keyPassword || busy !== null}>Make the backup key</Button>
+              <Button type="submit" size="sm" disabled={!keyPassword || busy !== null}>
+                {status.hasKey ? 'Make a new backup key' : 'Make the backup key'}
+              </Button>
+              {status.hasKey && (
+                <Button type="button" size="sm" variant="ghost" onClick={() => { setReplacing(false); setKeyPassword('') }}>
+                  Cancel
+                </Button>
+              )}
             </div>
           </form>
-        ) : null}
+        ) : (
+          <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            Backup key in use: <code>{keyFingerprint(status.settings.publicKey)}</code> (its locking half; the opening half is
+            the one you kept)
+            <Button size="xs" variant="outline" onClick={() => setReplacing(true)} disabled={busy !== null}>
+              Make a new key
+            </Button>
+          </p>
+        )}
 
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="flex flex-col gap-1.5">

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { RotateCw, TriangleAlert } from 'lucide-react'
 
 import { AppShell, type ShellProps } from '@/components/app-shell'
+import { AccountCard } from '@/components/account-card'
 import { CertificateCard } from '@/components/certificate-card'
 import { DnsCard } from '@/components/dns-card'
 import { DomainCard } from '@/components/domain-card'
@@ -37,9 +38,11 @@ import { api, ApiError, errorMessage } from '@/lib/api'
 export function SystemPage({
   shell,
   minPassphraseLength,
+  minPasswordLength,
 }: {
   shell: ShellProps
   minPassphraseLength: number
+  minPasswordLength: number
 }) {
   const [problem, setProblem] = useState<string | null>(null)
   const [restarting, setRestarting] = useState(false)
@@ -72,6 +75,7 @@ export function SystemPage({
         <div className="grid gap-3 md:grid-cols-2">
           <FirewallCard onError={handleError} />
           <SshCard onError={handleError} />
+          <AccountCard username={shell.username} minPasswordLength={minPasswordLength} />
         </div>
       </Section>
 

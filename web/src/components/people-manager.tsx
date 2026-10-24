@@ -132,7 +132,7 @@ function PersonCard({
     event.preventDefault()
     setError(null)
     try {
-      const device = await api.addDevice(person.id, newDevice.trim(), allTraffic)
+      const device = await api.addDevice(person.id, newDevice.trim(), allTraffic && person.network === 'full')
       setNewDevice('')
       onChanged()
       setRevealing(device)
@@ -196,7 +196,7 @@ function PersonCard({
                     />
                     <span className="font-medium">{d.name}</span>
                     <span className="text-xs text-muted-foreground">
-                      {d.address} · {d.allTraffic ? 'all traffic through home' : 'home network only'}
+                      {d.address} · {d.allTraffic ? "uses home's internet connection too" : 'home only, its own internet'}
                       {!d.enabled && ' · switched off'}
                     </span>
                   </span>
@@ -217,6 +217,19 @@ function PersonCard({
                     </Button>
                   </span>
                 </div>
+                {d.allTraffic && person.network !== 'full' && (
+                  <div className="flex flex-col gap-1.5 rounded-md bg-amber-500/10 p-2 text-xs text-amber-800 dark:text-amber-300">
+                    <p>
+                      This device sends all its traffic through home, but {person.name} reaches chosen services only, so
+                      it has no internet while the VPN is on. Set it to home only, then give it its new settings (QR
+                      code).
+                    </p>
+                    <Button size="xs" variant="outline" className="self-start"
+                      onClick={() => api.updateDevice(d.id, d.name, false, d.enabled).then(onChanged, (e) => setError(errorMessage(e)))}>
+                      Set to home only
+                    </Button>
+                  </div>
+                )}
                 <p className="text-xs text-muted-foreground">
                   {d.lastSeen ? `last seen ${formatTimeAgo(d.lastSeen)}` : 'never connected'}
                   {d.endpoint && ` from ${d.endpoint.replace(/:\d+$/, '')}`}
@@ -232,13 +245,20 @@ function PersonCard({
         {vpn.enabled && person.active && (
           <form onSubmit={addDevice} className="flex flex-wrap items-center gap-2">
             <Input placeholder="phone, laptop…" value={newDevice} maxLength={40} className="max-w-44" onChange={(e) => setNewDevice(e.target.value)} />
-            <label className="flex items-center gap-2 text-sm">
-              <Switch checked={allTraffic} onCheckedChange={setAllTraffic} size="sm" />
-              all traffic through home
-            </label>
+            {person.network === 'full' && (
+              <label className="flex items-center gap-2 text-sm">
+                <Switch checked={allTraffic} onCheckedChange={setAllTraffic} size="sm" />
+                use home's internet connection too
+              </label>
+            )}
             <Button type="submit" size="sm" variant="outline" disabled={!newDevice.trim()}>
               Add a device
             </Button>
+            <p className="w-full text-xs text-muted-foreground">
+              {person.network === 'full'
+                ? "What the device reaches at home is set for the person above. The switch is about the rest: on, all the device's traffic goes through home, as on a public Wi-Fi; off, only what is for home goes through the VPN and the device keeps its own internet."
+                : `${person.name} reaches chosen services only: their devices send through the VPN only what is for home and keep their own internet connection for the rest.`}
+            </p>
           </form>
         )}
         <FormError message={error} />
@@ -349,6 +369,11 @@ function PersonForm({
             <Label htmlFor="person-password">{existing ? 'New password (empty: keep it)' : 'Password'}</Label>
             <Input id="person-password" type="password" autoComplete="new-password" value={input.password} onChange={(e) => set({ password: e.target.value })} />
           </div>
+          <p className="text-xs text-muted-foreground sm:col-span-2">
+            They can change it themselves: on SGC's sign-in page, the address of this page with <code>/gate</code> at
+            the end (https://sgc.your-domain/gate), under "Change my password". That also signs them out everywhere
+            else.
+          </p>
         </div>
       )}
       <div className="flex flex-wrap items-center gap-2 text-sm">

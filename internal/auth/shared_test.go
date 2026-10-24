@@ -64,6 +64,58 @@ func TestResetAdminPasswordEndsEverySignInOfTheAdmin(t *testing.T) {
 	}
 }
 
+func TestChangeAdminPassword(t *testing.T) {
+	ctx := context.Background()
+	s, c := newTestService(t)
+	setUp(t, s)
+	here, _ := s.Login(ctx, goodUser, goodPassword, addr, "this browser")
+	there, _ := s.Login(ctx, goodUser, goodPassword, "192.168.1.11", "another browser")
+	now := c.now().Unix()
+	s.db.ExecContext(ctx, `INSERT INTO person (name, created_at, updated_at) VALUES ('kim', ?, ?)`, now, now)
+	s.db.ExecContext(ctx, `INSERT INTO gate_pass (token_hash, host, person_id, admin, created_at, expires_at) VALUES ('a', 'media.domain.tld', NULL, ?, ?, ?)`, goodUser, now, now+3600)
+	s.db.ExecContext(ctx, `INSERT INTO gate_pass (token_hash, host, person_id, admin, created_at, expires_at) VALUES ('p', 'media.domain.tld', 1, '', ?, ?)`, now, now+3600)
+
+	const next = "a new and different password"
+	for _, refused := range []struct {
+		current, next string
+		want          error
+	}{
+		{"not the password", next, ErrWrongPassword},
+		{goodPassword, "short", ErrWeakPassword},
+		{goodPassword, goodPassword, ErrSamePassword},
+	} {
+		if err := s.ChangeAdminPassword(ctx, refused.current, refused.next, addr, here.Token); !errors.Is(err, refused.want) {
+			t.Errorf("ChangeAdminPassword(%q, %q) = %v, want %v", refused.current, refused.next, err, refused.want)
+		}
+	}
+	if err := s.ChangeAdminPassword(ctx, goodPassword, next, addr, here.Token); err != nil {
+		t.Fatal(err)
+	}
+	if still, _ := s.Authenticate(ctx, here.Token); still == nil {
+		t.Error("the sign-in the change was made from ended")
+	}
+	if still, _ := s.Authenticate(ctx, there.Token); still != nil {
+		t.Error("another sign-in survived the change")
+	}
+	var adminPasses, personPasses int
+	s.db.QueryRowContext(ctx, "SELECT count(*) FROM gate_pass WHERE person_id IS NULL").Scan(&adminPasses)
+	s.db.QueryRowContext(ctx, "SELECT count(*) FROM gate_pass WHERE person_id IS NOT NULL").Scan(&personPasses)
+	if adminPasses != 0 || personPasses != 1 {
+		t.Errorf("passes left: the admin's %d (want 0), people's %d (want 1)", adminPasses, personPasses)
+	}
+	if _, err := s.Login(ctx, goodUser, next, addr, "test"); err != nil {
+		t.Errorf("the new password: %v", err)
+	}
+	// Guessing the current password is limited like signing in.
+	for range maxFailures {
+		s.ChangeAdminPassword(ctx, "a wrong guess", "another new password!", "192.168.1.66", here.Token)
+	}
+	var locked *TooManyAttemptsError
+	if err := s.ChangeAdminPassword(ctx, next, "another new password!", "192.168.1.66", here.Token); !errors.As(err, &locked) {
+		t.Errorf("after repeated wrong guesses: %v, want a lock-out", err)
+	}
+}
+
 func TestResetAdminPasswordWithoutAnAdmin(t *testing.T) {
 	s, _ := newTestService(t)
 	if _, err := s.ResetAdminPassword(context.Background(), "a new and different password"); err == nil {

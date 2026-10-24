@@ -154,7 +154,9 @@ function AdminApp() {
   if (page === 'people') return <PeoplePage shell={shell} />
   if (page === 'logs') return <LogsPage shell={shell} />
   if (page === 'system') {
-    return <SystemPage shell={shell} minPassphraseLength={state.minPassphraseLength} />
+    return (
+      <SystemPage shell={shell} minPassphraseLength={state.minPassphraseLength} minPasswordLength={state.minPasswordLength} />
+    )
   }
   return <DashboardPage shell={shell} onOpenGuide={() => setGuiding(true)} />
 }
