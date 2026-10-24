@@ -59,7 +59,8 @@ $sshArguments = Get-SshArguments
 
 function Reset-AndPrepare {
     # A clean machine with the test release and the test script on it.
-    & "$PSScriptRoot\..\vm\Reset-TestVM.ps1" | Out-Null
+    # *> rather than Out-Null: the reset says "ready" with Write-Host.
+    & "$PSScriptRoot\..\vm\Reset-TestVM.ps1" *> $null
     $script:address = Get-TestVMAddress
     Invoke-TestVMCommand -Address $script:address -Command 'rm -rf /tmp/release ~/cases.sh ~/sgc-test-*'
     # Debian installs its updates by itself once a day, and after a reset it
