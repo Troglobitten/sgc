@@ -743,8 +743,15 @@ func (s *Service) Apply(ctx context.Context) error {
 		s.mu.Unlock()
 	}()
 	if !cfg.Enabled {
+		status, err := s.cfg.Helper.VPNStatus(ctx)
+		if err != nil {
+			// Off, and the root side cannot be asked right now: tried again
+			// at the next round, without an entry in the owner's history for
+			// what is most likely a moment at start-up.
+			return problem.Newf("The VPN's state could not be read: %v", err)
+		}
 		// Nothing to take down on a device where the VPN never ran.
-		if status, err := s.cfg.Helper.VPNStatus(ctx); err == nil && !status.On && !status.Running {
+		if !status.On && !status.Running {
 			s.mu.Lock()
 			s.applied = hash
 			s.mu.Unlock()

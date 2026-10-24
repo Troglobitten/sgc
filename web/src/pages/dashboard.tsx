@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 
 import { AppShell, type ShellProps } from '@/components/app-shell'
+import { GuideChecklist } from '@/components/guide-checklist'
 import { HealthDot, ServiceIcon } from '@/components/service-icon'
 import { Logo } from '@/components/logo'
 import { UpdateCard } from '@/components/update-card'
@@ -34,7 +35,7 @@ import { daysUntil, formatDuration, formatGigabytes, formatTimeAgo, percentOf } 
 const healthInterval = 3_000
 const activityInterval = 15_000
 
-export function DashboardPage({ shell }: { shell: ShellProps }) {
+export function DashboardPage({ shell, onOpenGuide }: { shell: ShellProps; onOpenGuide: () => void }) {
   const [health, setHealth] = useState<Health | null>(null)
   const [activity, setActivity] = useState<AuditEntry[] | null>(null)
   const [firewall, setFirewall] = useState<FirewallStatus | null>(null)
@@ -140,6 +141,7 @@ export function DashboardPage({ shell }: { shell: ShellProps }) {
 
   return (
     <AppShell page="dashboard" {...shell}>
+      <GuideChecklist onContinue={onOpenGuide} />
       {problem && (
         <p
           role="alert"

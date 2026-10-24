@@ -63,6 +63,7 @@ var transientSettings = []string{
 	"vpn.endpoint_state",          // what this device last saw of the home's public address
 	"backups.last",                // how this device's last scheduled backup went
 	"eol.state",                   // what this device last learnt about end-of-life dates
+	"guide.state",                 // where the owner is in the guided setup; a restored device needs none
 }
 
 func cleanupStatements() []string {

@@ -69,6 +69,9 @@ type Server struct {
 	Names       Names
 	Services    Services
 	Icons       Icons
+	// Guide is the guided setup's state (internal/guide); nil in tests
+	// that do not need it.
+	Guide       Guide
 	Proxy       Proxy
 	Announcer   Announcer
 	People      People
@@ -150,6 +153,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/services", s.requireSession(s.handleServiceAdd))
 	mux.HandleFunc("POST /api/services/settings", s.requireSession(s.handleServiceSettings))
 	mux.HandleFunc("POST /api/icons/update", s.requireSession(s.handleIconsUpdate))
+	mux.HandleFunc("GET /api/guide", s.requireSession(s.handleGuide))
+	mux.HandleFunc("POST /api/guide", s.requireSession(s.handleGuideSave))
 	mux.HandleFunc("POST /api/services/{id}", s.requireSession(s.handleServiceUpdate))
 	mux.HandleFunc("POST /api/services/{id}/remove", s.requireSession(s.handleServiceRemove))
 	mux.HandleFunc("POST /api/services/{id}/approve", s.requireSession(s.handleServiceApprove))
@@ -357,6 +362,13 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.record(r, req.Username, audit.ActionSetupCompleted, "admin account created")
+	// A fresh device: the guided setup begins (not after a restore, which
+	// does not come through here).
+	if s.Guide != nil {
+		if err := s.Guide.Start(r.Context()); err != nil {
+			s.Log.Error("start the guided setup", "error", err)
+		}
+	}
 
 	// Sign the new admin in straight away.
 	session, err := s.Auth.Login(r.Context(), req.Username, req.Password, addr, r.UserAgent())

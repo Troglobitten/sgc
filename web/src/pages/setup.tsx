@@ -21,14 +21,16 @@ export function SetupPage({
   /** The secret from the one-time link, or '' if the page was opened without it. */
   token: string
   minPasswordLength: number
-  onDone: () => void
+  /** fresh: a new admin account was made (the guided setup follows); false after a restore */
+  onDone: (fresh: boolean) => void
 }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [repeat, setRepeat] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  // A fresh install can also be restored from an export instead.
+  // First the choice: start fresh, or restore an export.
+  const [choice, setChoice] = useState<'ask' | 'fresh'>('ask')
   const [restoring, setRestoring] = useState(false)
 
   if (!token) {
@@ -47,7 +49,31 @@ export function SetupPage({
   }
 
   if (restoring) {
-    return <RestorePage token={token} onDone={onDone} onCreateInstead={() => setRestoring(false)} />
+    return <RestorePage token={token} onDone={() => onDone(false)} onCreateInstead={() => setRestoring(false)} />
+  }
+
+  if (choice === 'ask') {
+    return (
+      <AuthCard title="Set up SGC" subtitle="How do you want to start?">
+        <div className="flex flex-col gap-3">
+          <Button size="lg" className="h-auto flex-col items-start gap-1 py-3 text-left whitespace-normal" onClick={() => setChoice('fresh')}>
+            <span>Start fresh</span>
+            <span className="text-xs font-normal opacity-80">
+              Make the admin account. A guided setup follows, one step at a time, in the order that works.
+            </span>
+          </Button>
+          <Button size="lg" variant="outline" className="h-auto flex-col items-start gap-1 py-3 text-left whitespace-normal"
+            onClick={() => setRestoring(true)}>
+            <span>Restore an export</span>
+            <span className="text-xs font-normal text-muted-foreground">
+              Bring back everything from an export: the account, the settings, the VPN's devices. An export
+              from an older version of SGC works too.
+            </span>
+          </Button>
+          <p className="text-xs text-muted-foreground">This link works once and stops working after setup.</p>
+        </div>
+      </AuthCard>
+    )
   }
 
   // A message about what was wrong is out of date as soon as the user edits
@@ -80,7 +106,7 @@ export function SetupPage({
     setBusy(true)
     try {
       await api.setup(token, username, password)
-      onDone()
+      onDone(true)
     } catch (err) {
       setError(errorMessage(err))
       setBusy(false)
@@ -131,8 +157,8 @@ export function SetupPage({
         <Button type="submit" size="lg" disabled={busy}>
           {busy ? 'Creating account…' : 'Create account'}
         </Button>
-        <Button type="button" variant="ghost" disabled={busy} onClick={() => setRestoring(true)}>
-          Restore from an export instead
+        <Button type="button" variant="ghost" disabled={busy} onClick={() => setChoice('ask')}>
+          Back
         </Button>
         <p className="text-xs text-muted-foreground">
           This link works once and stops working after setup.

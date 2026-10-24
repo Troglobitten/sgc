@@ -7,6 +7,7 @@ import { api, errorMessage, type State } from '@/lib/api'
 import { pageForPath, pages, type Page } from '@/lib/pages'
 import { DashboardPage } from '@/pages/dashboard'
 import { GatePage } from '@/pages/gate'
+import { GuidePage } from '@/pages/guide'
 import { LoginPage } from '@/pages/login'
 import { LogsPage } from '@/pages/logs'
 import { PeoplePage } from '@/pages/people'
@@ -45,6 +46,10 @@ function AdminApp() {
   const [setupToken, setSetupToken] = useState(readSetupToken)
   const [page, setPage] = useState<Page>(readPage)
   const [hostname, setHostname] = useState('')
+  // The guided setup: opened right after the account is made on a fresh
+  // device, and from the dashboard's list while it is not through.
+  const [guiding, setGuiding] = useState(false)
+  const closeGuide = useCallback(() => setGuiding(false), [])
 
   // Pasting the setup link into a tab that already shows SGC only changes the
   // part after the "#". The browser does not reload the page for that, so the
@@ -123,7 +128,16 @@ function AdminApp() {
 
   if (state.setupRequired) {
     return (
-      <SetupPage token={setupToken} minPasswordLength={state.minPasswordLength} onDone={refresh} />
+      <SetupPage
+        token={setupToken}
+        minPasswordLength={state.minPasswordLength}
+        onDone={(fresh) => {
+          // A new account: the guide follows (it closes at once if there is
+          // none, as after a restore).
+          if (fresh) setGuiding(true)
+          refresh()
+        }}
+      />
     )
   }
   if (!state.signedIn) return <LoginPage onDone={refresh} />
@@ -135,11 +149,12 @@ function AdminApp() {
     onNavigate: navigate,
     onSignedOut: refresh,
   }
+  if (guiding) return <GuidePage shell={shell} onClose={closeGuide} />
   if (page === 'services') return <ServicesPage shell={shell} />
   if (page === 'people') return <PeoplePage shell={shell} />
   if (page === 'logs') return <LogsPage shell={shell} />
   if (page === 'system') {
     return <SystemPage shell={shell} minPassphraseLength={state.minPassphraseLength} />
   }
-  return <DashboardPage shell={shell} />
+  return <DashboardPage shell={shell} onOpenGuide={() => setGuiding(true)} />
 }
