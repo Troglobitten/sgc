@@ -10,10 +10,10 @@
           ]
         }
       },
-      "config-b0bb5ae67ed8a634": {
+      "config-12a7abe57a361224": {
         "headers": {
           "customRequestHeaders": {
-            "X-SGC-Config": "b0bb5ae67ed8a634"
+            "X-SGC-Config": "12a7abe57a361224"
           }
         }
       },
@@ -46,13 +46,7 @@
       "to-adguard-page": {
         "redirectRegex": {
           "regex": "^https://[^/]+.*$",
-          "replacement": "https://sgc.domain.tld:8443/adguard/"
-        }
-      },
-      "to-sgc-page": {
-        "redirectRegex": {
-          "regex": "^https://[^/]+(/.*)?$",
-          "replacement": "https://sgc.domain.tld:8443${1}"
+          "replacement": "https://sgc.domain.tld/adguard/"
         }
       },
       "unknown-name": {
@@ -79,26 +73,6 @@
         ],
         "priority": 10000,
         "rule": "Host(`media.domain.tld`) && PathPrefix(`/.sgc-gate/`)",
-        "service": "sgc-internal",
-        "tls": {}
-      },
-      "gateway": {
-        "entryPoints": [
-          "websecure"
-        ],
-        "middlewares": [
-          "to-sgc-page"
-        ],
-        "rule": "Host(`sgc.domain.tld`)",
-        "service": "noop@internal",
-        "tls": {}
-      },
-      "gateway-announce": {
-        "entryPoints": [
-          "websecure"
-        ],
-        "priority": 10000,
-        "rule": "Host(`sgc.domain.tld`) && Path(`/api/announce`)",
         "service": "sgc-internal",
         "tls": {}
       },
@@ -183,6 +157,16 @@
   },
   "tcp": {
     "routers": {
+      "gateway": {
+        "entryPoints": [
+          "websecure"
+        ],
+        "rule": "HostSNI(`sgc.domain.tld`)",
+        "service": "gateway",
+        "tls": {
+          "passthrough": true
+        }
+      },
       "tcp-minecraft": {
         "entryPoints": [
           "25565-tcp"
@@ -191,7 +175,24 @@
         "service": "tcp-minecraft"
       }
     },
+    "serversTransports": {
+      "with-visitor": {
+        "proxyProtocol": {
+          "version": 2
+        }
+      }
+    },
     "services": {
+      "gateway": {
+        "loadBalancer": {
+          "servers": [
+            {
+              "address": "127.0.0.1:8445"
+            }
+          ],
+          "serversTransport": "with-visitor"
+        }
+      },
       "tcp-minecraft": {
         "loadBalancer": {
           "servers": [

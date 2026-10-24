@@ -65,6 +65,9 @@ type serveOptions struct {
 	devHTTP         bool
 	// internalListen is SGC's second listener, for Traefik ("" for none).
 	internalListen string
+	// gatewayListen is where Traefik hands over connections for the
+	// gateway's name, unopened ("" for none).
+	gatewayListen string
 }
 
 // serve runs the web UI and API until ctx is cancelled, which is how systemd
@@ -85,6 +88,7 @@ func serve(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags.StringVar(&opts.osUpdatesRunDir, "os-updates-run-dir", osupdate.DefaultPaths().RunDir, "folder in which the root side keeps its report on updates for the device")
 	flags.BoolVar(&opts.devHTTP, "dev-insecure-http", false, "development only: plain http, reachable from this machine only")
 	flags.StringVar(&opts.internalListen, "internal-listen", proxy.SGCInternal, "address of the listener for the proxy (this machine only; empty for none)")
+	flags.StringVar(&opts.gatewayListen, "gateway-listen", proxy.SGCGateway, "address where the proxy hands over connections for the gateway's name (this machine only; empty for none)")
 	if err := flags.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -373,6 +377,7 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 		return fail("listen", err)
 	}
 
+	var tlsConfig *tls.Config
 	if opts.devHTTP {
 		log.Warn("development mode: plain http, this machine only", "address", listener.Addr().String())
 	} else {
@@ -381,7 +386,7 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 			listener.Close()
 			return fail("prepare certificate", err)
 		}
-		listener = tls.NewListener(listener, &tls.Config{
+		tlsConfig = &tls.Config{
 			// The certificate from Let's Encrypt for a name under the
 			// domain (the gateway's), the self-signed one for everything
 			// else: by address, and until there is a real one. That way
@@ -395,7 +400,8 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 				return &cert, nil
 			},
 			MinVersion: tls.VersionTLS12,
-		})
+		}
+		listener = tls.NewListener(listener, tlsConfig)
 	}
 
 	// The second listener: what Traefik asks SGC for. It may only ever be
@@ -419,6 +425,27 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 				ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelDebug),
 			}
 			go internalServer.Serve(internal)
+		}
+	}
+
+	// The third: connections for the gateway's name, which Traefik passes on
+	// unopened (proxy.SGCGateway), so that https://sgc.domain is this page
+	// without a port. On this machine only, and nothing is taken without a
+	// PROXY protocol header: that is where the visitor's own address comes
+	// from, for the lock-out, the history and "inside". The same server as
+	// port 8443, so every rule of the page holds here too, the firewall's
+	// confirmation included (each visitor's connection is a new one here).
+	// Not in development mode, which has no TLS. Failing to listen is
+	// reported, not fatal: port 8443 still works.
+	if opts.gatewayListen != "" && tlsConfig != nil {
+		if host, _, err := net.SplitHostPort(opts.gatewayListen); err != nil || !net.ParseIP(host).IsLoopback() {
+			listener.Close()
+			return fail("read --gateway-listen", fmt.Errorf("%q is not an address on this machine", opts.gatewayListen))
+		}
+		if plain, err := net.Listen("tcp", opts.gatewayListen); err != nil {
+			log.Error("listen for the gateway's name", "address", opts.gatewayListen, "error", err)
+		} else {
+			go httpServer.Serve(tls.NewListener(withVisitorAddress(plain), tlsConfig))
 		}
 	}
 

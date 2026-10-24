@@ -418,7 +418,10 @@ export interface NamesStatus {
   name: string
   domain: string
   fqdn: string
+  /** without a port while the proxy is on */
   url: string
+  /** with :8443: does not depend on the proxy */
+  directUrl: string
   lan: { interface: string; address: string; network: string; gateway: string } | null
   lanProblem: string
   dns: { names: DnsName[]; problem: string; rewritesOff: boolean; syncedAt: string | null }

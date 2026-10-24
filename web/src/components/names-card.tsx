@@ -80,6 +80,13 @@ export function NamesCard({ onError }: { onError: (error: unknown) => void }) {
                 <ExternalLink className="size-3.5" aria-hidden="true" />
               </a>
             </p>
+            {status.url !== status.directUrl && (
+              <p className="text-xs text-muted-foreground">
+                The proxy passes that name on to SGC. If the proxy is not running, the page is still
+                at {status.directUrl.replace('https://', '')}
+                {status.lan && <>, and at {status.lan.address}:8443</>}.
+              </p>
+            )}
             <p className="text-xs text-muted-foreground">
               The names work on devices that use this device for DNS (the router hands it out,
               or the device is set to it). Give this device a fixed address in your router, so

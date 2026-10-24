@@ -327,35 +327,16 @@ func (s *Server) handleAnnounce(w http.ResponseWriter, r *http.Request) {
 // --- The second listener, for Traefik only (127.0.0.1:8444) -------------------
 
 // InternalHandler serves what Traefik asks SGC for: the friendly error
-// pages, announcements that came through the proxy, and the login gate.
-// Only the device itself reaches it.
+// pages and the login gate. Only the device itself reaches it.
+// Announcements through the proxy no longer come here: the gateway's name is
+// passed through to SGC's own page (proxy.SGCGateway), where the address is
+// the visitor's own, from the PROXY protocol header, as on port 8443.
 func (s *Server) InternalHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /proxy-error/{status}", s.handleProxyError)
 	mux.HandleFunc("/proxy-unknown", s.handleProxyUnknown)
-	mux.HandleFunc("POST /api/announce", func(w http.ResponseWriter, r *http.Request) {
-		// Traefik puts the address the request came from last in
-		// X-Forwarded-For, replacing whatever the client sent (it trusts
-		// no forwarded headers from outside).
-		ip := forwardedFor(r)
-		if ip == "" {
-			http.Error(w, "no client address", http.StatusBadRequest)
-			return
-		}
-		s.announce(w, r, ip)
-	})
 	s.gateRoutes(mux)
 	return mux
-}
-
-func forwardedFor(r *http.Request) string {
-	header := r.Header.Get("X-Forwarded-For")
-	parts := strings.Split(header, ",")
-	last := strings.TrimSpace(parts[len(parts)-1])
-	if net.ParseIP(last) == nil {
-		return ""
-	}
-	return last
 }
 
 func (s *Server) handleProxyError(w http.ResponseWriter, r *http.Request) {
