@@ -2,6 +2,19 @@
 
 What changed in each version of SGC, newest first. The section for a version is what SGC shows before you update to it, so it is written for the person running SGC, not for developers.
 
+## 0.17.0
+
+What you asked for after trying 0.16.
+
+- **SGC's page opens at `https://sgc.your-domain`, without a port.** The proxy passes that name on to SGC itself, so it is SGC's own page with its own certificate, and SGC still sees which device you are on. With the proxy off (or not running) the page is where it always was, at `:8443` and at the device's address.
+- **Icons without asking anyone outside.** SGC keeps a copy of the dashboard-icons collection on the device (about 20 MB, fetched once there is a service, looked at for news daily, or when you press "Update icons" on the Services page). Until now SGC asked a public CDN for each icon by your service's name.
+- **A guided setup for a new device.** Setup starts with a choice: start fresh, or restore an export. Starting fresh takes you through the domain, the certificate, the device's name, the proxy, your SSH key, updates and, last, the firewall, one step at a time; any step can be skipped, and the dashboard keeps a list of what is left. (Devices that are already set up are not affected.)
+- **Switching the proxy or the VPN on while the firewall is on** now offers to bring the firewall's rules up to date right there, with the usual confirmation, instead of on the System page.
+- **The block for a server's compose file** can be shown again at any time on the Services page; the token itself is still shown only once.
+- On a phone, the page links no longer make the page scroll sideways.
+
+After updating, the proxy takes up the new way of passing on SGC's name by itself within a few seconds; nothing to do.
+
 ## 0.16.1
 
 Fixes for things the page refused in 0.16.0.
