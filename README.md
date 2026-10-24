@@ -36,7 +36,7 @@ less install.sh
 sudo bash install.sh
 ```
 
-It then has SGC install AdGuard Home, the DNS server, and start it (see [DNS](#dns-adguard-home) below), and log2ram, which stays switched off (see [Logs in memory](#logs-in-memory-for-a-device-on-an-sd-card)). At the end the installer prints a one-time link. Open it in a browser on your network to create the admin account; you then land on the dashboard. Until SGC has a certificate from Let's Encrypt (a later milestone) it uses a self-signed one, so the browser shows a warning; the installer prints the certificate's fingerprint so you can check you are talking to your own device.
+It then has SGC install AdGuard Home, the DNS server, and start it (see [DNS](#dns-adguard-home) below), and log2ram, which stays switched off (see [Logs in memory](#logs-in-memory-for-a-device-on-an-sd-card)). At the end the installer prints a one-time link. Open it in a browser on your network and choose: **start fresh** (create the admin account; a guided setup then takes you through the domain, the certificate, this device's name, the proxy, an SSH key, the device's updates and, last, the firewall, one step at a time, each one skippable) or **restore an export** (from this device before a reinstall, or another SGC; exports from older versions of SGC restore too). Until SGC has a certificate from Let's Encrypt it uses a self-signed one, so the browser shows a warning; the installer prints the certificate's fingerprint so you can check you are talking to your own device.
 
 If the link has expired, `sudo sgc setup-link` prints a new one.
 
@@ -182,7 +182,7 @@ An SD card wears out from being written to, and logs are written all the time. W
 
 ### Names
 
-Once the domain is set up, this device has a name under it: `sgc.domain.tld` (change it on the System page, Names). SGC puts its names into AdGuard Home, pointing at this device's address in the home network; give the device a fixed address in your router so they stay right. SGC's page opens at `https://sgc.domain.tld:8443` with the real certificate. By address it keeps its own certificate, so there is always a way in. SGC removes only names it made itself: rewrites you add in AdGuard Home are left alone.
+Once the domain is set up, this device has a name under it: `sgc.domain.tld` (change it on the System page, Names). SGC puts its names into AdGuard Home, pointing at this device's address in the home network; give the device a fixed address in your router so they stay right. SGC's page opens at `https://sgc.domain.tld` with the real certificate once the proxy is on (the proxy passes that name on to SGC unopened), and at `https://sgc.domain.tld:8443` in any case. By address (`https://192.168.1.x:8443`) it keeps its own certificate, so there is always a way in, also when the proxy does not run. SGC removes only names it made itself: rewrites you add in AdGuard Home are left alone.
 
 The names work on devices that use this device for DNS: set the router to hand it out, or set a device to it by hand.
 
@@ -192,9 +192,9 @@ On the Services page, switch the proxy on (Traefik; it needs the domain and the 
 
 Game servers and other services that are not web pages work too, in one of two ways: **direct** (the name points at the device itself; the default) or **through the gateway** (a port of this device passes the connection on; switching one on restarts the proxy for a few seconds).
 
-The dashboard shows the services with their icons, grouped by category, and whether each answers (SGC tries every 30 seconds). A service that has not answered for 14 days looks abandoned and can be removed. Icons come from the service itself, or, if it has none, from the public dashboard-icons catalogue by name; that tells the catalogue's CDN the names of your services, which you can switch off.
+The dashboard shows the services with their icons, grouped by category, and whether each answers (SGC tries every 30 seconds). A service that has not answered for 14 days looks abandoned and can be removed. Icons come from the service itself, or, if it has none, from a copy of the [dashboard-icons](https://github.com/homarr-labs/dashboard-icons) collection (by homarr-labs, Apache License 2.0) that SGC keeps on the device: about 20 MB, fetched once there is a service and looked at for news daily, so nobody outside learns the names of your services. The pack is rebuilt weekly by this repository's `Icons` workflow; every icon is drawn anew by SGC at 64 pixels.
 
-While the firewall is on, it lets the proxy's ports in from the home network once you bring its rules up to date (the firewall card offers it).
+While the firewall is on, switching the proxy (or the VPN) on offers to bring the firewall's rules up to date right there, with the usual confirmation.
 
 ### Servers that announce their services
 
