@@ -1,5 +1,7 @@
 // The browser side of SGC's JSON API (see internal/web/server.go).
 
+import type { GuideState } from '@/lib/guide'
+
 import {
   backupSettingsBody,
   backupTargetBody,
@@ -838,6 +840,10 @@ export const api = {
   testBackupTarget: (target: BackupTarget) =>
     request<{ ok: boolean; hostKey?: string; message?: string }>('POST', '/api/backups/test', backupTargetBody(target)),
   backUpNow: () => request<BackupRun>('POST', '/api/backups/run', {}),
+  /** the guided setup's state (internal/guide) */
+  guide: () => request<GuideState>('GET', '/api/guide'),
+  saveGuide: (state: GuideState) =>
+    request<GuideState>('POST', '/api/guide', { active: state.active, skipped: [...state.skipped] }),
   eol: () => request<EolState>('GET', '/api/eol'),
   checkEol: () => request<EolState>('POST', '/api/eol/check', {}),
   updateProxy: () => request<ProxyStatus>('POST', '/api/proxy/update', {}),

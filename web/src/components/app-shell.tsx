@@ -13,6 +13,7 @@ import {
 import { api } from '@/lib/api'
 import { pageNames, pages, type Page } from '@/lib/pages'
 import { usePolled } from '@/lib/poll'
+import { cn } from '@/lib/utils'
 
 // The bell is a convenience: a failed look at it says nothing, the pages
 // report their own problems.
@@ -56,10 +57,12 @@ export function AppShell({
         <span className="rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">
           {version}
         </span>
-        {/* On a phone the page links get a row of their own. */}
+        {/* On a phone the page links get a row of their own: five columns, the
+            icon over the word, so that the row is never wider than the screen
+            (it was, once Logs came in 0.16.0). */}
         <nav
           aria-label="Pages"
-          className="order-last flex w-full items-center gap-1 sm:order-none sm:ml-2 sm:w-auto"
+          className="order-last grid w-full grid-cols-5 gap-1 sm:order-none sm:ml-2 sm:flex sm:w-auto sm:items-center"
         >
           {pageNames.map((name) => (
             <PageLink key={name} name={name} current={name === page} onNavigate={onNavigate} />
@@ -152,10 +155,13 @@ function PageLink({
       href={path}
       onClick={open}
       aria-current={current ? 'page' : undefined}
-      className={buttonVariants({ variant: current ? 'secondary' : 'ghost', size: 'sm' })}
+      className={cn(
+        buttonVariants({ variant: current ? 'secondary' : 'ghost', size: 'sm' }),
+        'h-auto min-w-0 flex-col gap-0.5 px-1 py-1 text-[11px] sm:h-8 sm:flex-row sm:gap-1.5 sm:px-2.5 sm:py-0 sm:text-sm',
+      )}
     >
       <Icon />
-      {label}
+      <span className="max-w-full truncate">{label}</span>
     </a>
   )
 }

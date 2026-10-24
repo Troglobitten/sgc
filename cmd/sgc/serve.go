@@ -31,6 +31,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/firewall"
 	"github.com/Troglobitten/sgc/internal/fwcontrol"
 	"github.com/Troglobitten/sgc/internal/gateway"
+	"github.com/Troglobitten/sgc/internal/guide"
 	"github.com/Troglobitten/sgc/internal/health"
 	"github.com/Troglobitten/sgc/internal/helper"
 	"github.com/Troglobitten/sgc/internal/layout"
@@ -321,6 +322,7 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 		Names:            named.gateway,
 		Services:         named.catalog,
 		Icons:            named.icons,
+		Guide:            guide.Store{DB: db},
 		Proxy:            named.proxy,
 		Announcer:        named.announcer,
 		People:           named.people,
