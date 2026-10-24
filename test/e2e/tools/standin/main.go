@@ -16,6 +16,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -25,6 +26,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"math/big"
 	"net"
@@ -36,6 +40,8 @@ import (
 	"golang.org/x/net/webdav"
 
 	"github.com/Troglobitten/sgc/internal/certcontrol/acmetest"
+	"github.com/Troglobitten/sgc/internal/iconpack"
+	"github.com/Troglobitten/sgc/internal/services"
 	"github.com/Troglobitten/sgc/internal/zone/zonetest"
 )
 
@@ -52,6 +58,7 @@ func main() {
 	publicIP := flag.String("public-ip", "203.0.113.7", "the address /ip answers with")
 	dav := flag.String("webdav", "127.0.0.1:9300", "address of the WebDAV folder")
 	ntfy := flag.String("ntfy", "127.0.0.1:9400", "address of the ntfy server")
+	icons := flag.String("icons", "127.0.0.1:9500", "address where the icon pack is published")
 	flag.Parse()
 
 	fail := func(err error) {
@@ -104,6 +111,13 @@ func main() {
 		}
 		w.Write([]byte(`{"id":"standin"}`))
 	}), false)
+	// The icon pack, as published on GitHub: a small one, made at the start
+	// by SGC's own builder, with an icon for the test's service "web".
+	packDir := filepath.Join(*state, "icons")
+	if err := makeIconPack(packDir); err != nil {
+		fail(err)
+	}
+	go serve(*icons, http.StripPrefix("/icons/", http.FileServer(http.Dir(packDir))), false)
 	// Two authorities, as with Let's Encrypt: what SGC tries with the first
 	// it then asks of the second.
 	go serve(*trial, acmetest.New(dnsInUse), true)
@@ -111,6 +125,33 @@ func main() {
 	fmt.Printf("standing in for Zone.eu (API on %s, name servers on %s, zone %s) and for Let's Encrypt (test authority on %s, authority on %s)\n",
 		*listen, dnsInUse, *domain, *trial, *authority)
 	fail(<-failed)
+}
+
+// makeIconPack builds a pack of three made-up icons into dir, the way
+// .github/workflows/icons.yml builds the real one from the collection.
+func makeIconPack(dir string) error {
+	source, err := os.MkdirTemp("", "sgc-standin-icons")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(source)
+	os.MkdirAll(filepath.Join(source, "png"), 0o755)
+	os.WriteFile(filepath.Join(source, "metadata.json"), []byte(`{"web": {"aliases": ["Web Page"]}}`), 0o644)
+	os.WriteFile(filepath.Join(source, "LICENSE"), []byte("made-up licence of the stand-in pack\n"), 0o644)
+	for name, c := range map[string]color.NRGBA{"web": {200, 30, 30, 255}, "media": {30, 30, 200, 255}, "other": {30, 160, 30, 255}} {
+		img := image.NewNRGBA(image.Rect(0, 0, 48, 48))
+		for y := range 48 {
+			for x := range 48 {
+				img.Set(x, y, c)
+			}
+		}
+		var b bytes.Buffer
+		png.Encode(&b, img)
+		os.WriteFile(filepath.Join(source, "png", name+".png"), b.Bytes(), 0o644)
+	}
+	os.RemoveAll(dir)
+	_, err = iconpack.Build(source, "5715d1f00000000000000000000000000000000a", dir, time.Now(), services.Redraw)
+	return err
 }
 
 // ensureCertificate makes the certificate the two authorities show to

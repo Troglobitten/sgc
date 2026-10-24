@@ -208,6 +208,40 @@ func TestIconsAreDrawnAnew(t *testing.T) {
 	}
 }
 
+type fakeCollection map[string][]byte
+
+func (f fakeCollection) Lookup(names ...string) []byte {
+	for _, n := range names {
+		if data, ok := f[n]; ok {
+			return data
+		}
+	}
+	return nil
+}
+
+func TestIconsFromTheCollection(t *testing.T) {
+	collection := fakeCollection{
+		"home-assistant": pngOf(t, 128, 128),
+		"evil":           []byte(`<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`),
+	}
+	f := NewIconFetcher(collection)
+	// A game server: nothing to ask the service itself, only the collection.
+	ha := Service{Name: "ha", Title: "Home Assistant", Kind: "tcp"}
+	icon, source := f.find(context.Background(), ha, true)
+	if icon == nil || source != SourceCollection {
+		t.Fatalf("by its title: %d bytes from %q", len(icon), source)
+	}
+	if img, err := png.Decode(bytes.NewReader(icon)); err != nil || img.Bounds().Dx() != iconSize {
+		t.Errorf("the collection's icon was not drawn anew at %d pixels: %v", iconSize, err)
+	}
+	if icon, _ := f.find(context.Background(), ha, false); icon != nil {
+		t.Error("an icon from the collection with the owner's switch off")
+	}
+	if icon, _ := f.find(context.Background(), Service{Name: "evil", Kind: "tcp"}, true); icon != nil {
+		t.Error("what the collection handed over was used without being an image SGC reads")
+	}
+}
+
 func TestIconLinksInAPage(t *testing.T) {
 	page := `<html><head><link rel="mask-icon" href="/mask.svg"><link rel="icon" href="/x.svg" type="image/svg+xml">
 		<link rel="icon" href="/small.png"><link rel="icon" sizes="32x32" href="/32.png"><link rel="apple-touch-icon" href="/touch.png">

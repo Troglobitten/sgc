@@ -320,6 +320,7 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 		Certificate:      certControl,
 		Names:            named.gateway,
 		Services:         named.catalog,
+		Icons:            named.icons,
 		Proxy:            named.proxy,
 		Announcer:        named.announcer,
 		People:           named.people,

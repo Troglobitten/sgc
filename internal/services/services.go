@@ -31,7 +31,8 @@ import (
 const (
 	// SettingApproveNew: an announced service waits for the owner's approval.
 	SettingApproveNew = "services.approve_new"
-	// SettingIconCatalogue: look icons up in the public catalogue.
+	// SettingIconCatalogue: use the icon collection kept on the device
+	// (internal/iconpack; until 0.17.0 the public catalogue on a CDN).
 	SettingIconCatalogue = "services.icon_catalogue"
 	// SettingAbandonedDays: after how many days down a service "looks abandoned".
 	SettingAbandonedDays = "services.abandoned_days"

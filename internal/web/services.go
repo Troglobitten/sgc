@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/Troglobitten/sgc/internal/announce"
+	"github.com/Troglobitten/sgc/internal/iconpack"
 	"github.com/Troglobitten/sgc/internal/proxycontrol"
 	"github.com/Troglobitten/sgc/internal/services"
 )
@@ -29,6 +30,13 @@ type Services interface {
 	FetchIcon(ctx context.Context, id int64)
 	Settings(ctx context.Context) (services.Settings, error)
 	SetSettings(ctx context.Context, actor, remote string, s services.Settings) error
+}
+
+// Icons is the icon collection kept on the device (internal/iconpack).
+type Icons interface {
+	Status() iconpack.Status
+	// Kick looks for a new pack now.
+	Kick()
 }
 
 // Proxy is the owner's switch for the proxy (internal/proxycontrol).
@@ -50,6 +58,8 @@ type Announcer interface {
 type servicesResponse struct {
 	Services []services.Service `json:"services"`
 	Settings services.Settings  `json:"settings"`
+	// Icons is nil where there is no collection (tests).
+	Icons *iconpack.Status `json:"icons"`
 }
 
 func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +73,27 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, servicesResponse{Services: list, Settings: settings})
+	answer := servicesResponse{Services: list, Settings: settings}
+	if s.Icons != nil {
+		status := s.Icons.Status()
+		answer.Icons = &status
+	}
+	writeJSON(w, http.StatusOK, answer)
+}
+
+// handleIconsUpdate is the page's "Update icons": a look for a new pack now.
+// The answer is the services as usual; the pack's state follows in them.
+func (s *Server) handleIconsUpdate(w http.ResponseWriter, r *http.Request) {
+	var req struct{}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if s.Icons == nil {
+		writeError(w, http.StatusNotFound, "there is no icon collection here")
+		return
+	}
+	s.Icons.Kick()
+	s.handleServices(w, r)
 }
 
 func (s *Server) handleServiceAdd(w http.ResponseWriter, r *http.Request) {
@@ -170,6 +200,10 @@ func (s *Server) handleServiceSettings(w http.ResponseWriter, r *http.Request) {
 	if err := s.Services.SetSettings(r.Context(), sessionFrom(r).Username, remoteIP(r), req); err != nil {
 		s.problemError(w, r, err)
 		return
+	}
+	// Switched on: the pack is fetched now, not tomorrow.
+	if req.IconCatalogue && s.Icons != nil && !s.Icons.Status().Installed {
+		s.Icons.Kick()
 	}
 	s.handleServices(w, r)
 }

@@ -471,9 +471,23 @@ export interface ServicesSettings {
   abandonedDays: number
 }
 
+/** The icon collection kept on the device (internal/iconpack). */
+export interface IconsStatus {
+  installed: boolean
+  version: string
+  count: number
+  built: string | null
+  size: number
+  checkedAt: string | null
+  problem: string
+  updating: boolean
+  source: string
+}
+
 export interface ServicesResponse {
   services: Service[]
   settings: ServicesSettings
+  icons: IconsStatus | null
 }
 
 /** The proxy, Traefik (internal/proxycontrol). */
@@ -770,6 +784,8 @@ export const api = {
   removeService: (id: number) => request<void>('POST', `/api/services/${id}/remove`, {}),
   approveService: (id: number) => request<void>('POST', `/api/services/${id}/approve`, {}),
   refreshServiceIcon: (id: number) => request<void>('POST', `/api/services/${id}/icon`, {}),
+  /** looks for a new icon pack now */
+  updateIcons: () => request<ServicesResponse>('POST', '/api/icons/update', {}),
   setServicesSettings: (settings: ServicesSettings) =>
     request<ServicesResponse>('POST', '/api/services/settings', servicesSettingsBody(settings)),
   proxy: () => request<ProxyStatus>('GET', '/api/proxy'),

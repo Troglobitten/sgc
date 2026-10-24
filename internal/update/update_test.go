@@ -384,6 +384,23 @@ func TestUpdateSourceAddressRules(t *testing.T) {
 	}
 }
 
+// The icon pack is published as a release of SGC's repository tagged "icons"
+// (.github/workflows/icons.yml), marked so that GitHub never calls it the
+// latest. Should it ever be, it must not look like an update.
+func TestTheIconReleaseIsNeverAnUpdate(t *testing.T) {
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"tag_name":"icons","name":"Icon pack","prerelease":true,
+			"published_at":"2026-10-24T04:17:00Z","body":"The service icons SGC keeps on the device."}`)
+	}))
+	defer github.Close()
+	source := GitHubSource("owner/repo", "t")
+	source.latestURL, source.client = github.URL, github.Client()
+
+	if latest, err := source.Latest(context.Background()); err == nil || !strings.Contains(err.Error(), "unexpected version") {
+		t.Errorf("Latest = %+v, %v; want it refused as not a version", latest, err)
+	}
+}
+
 func TestGitHubAnswerIsUnderstood(t *testing.T) {
 	// The fields SGC relies on, as GitHub returns them.
 	answer := `{"tag_name":"v0.5.1","name":"SGC 0.5.1","draft":false,"prerelease":false,

@@ -68,6 +68,7 @@ type Server struct {
 	Certificate Certificates
 	Names       Names
 	Services    Services
+	Icons       Icons
 	Proxy       Proxy
 	Announcer   Announcer
 	People      People
@@ -148,6 +149,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/services", s.requireSession(s.handleServices))
 	mux.HandleFunc("POST /api/services", s.requireSession(s.handleServiceAdd))
 	mux.HandleFunc("POST /api/services/settings", s.requireSession(s.handleServiceSettings))
+	mux.HandleFunc("POST /api/icons/update", s.requireSession(s.handleIconsUpdate))
 	mux.HandleFunc("POST /api/services/{id}", s.requireSession(s.handleServiceUpdate))
 	mux.HandleFunc("POST /api/services/{id}/remove", s.requireSession(s.handleServiceRemove))
 	mux.HandleFunc("POST /api/services/{id}/approve", s.requireSession(s.handleServiceApprove))
