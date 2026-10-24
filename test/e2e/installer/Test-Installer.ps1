@@ -26,11 +26,15 @@
 
     The real release key is never involved. Requires the test machine from
     test/e2e/vm.
+
+    On the screen: one line per step and the checks that failed. The full
+    output is in a log under %LOCALAPPDATA%\sgc-dev\logs, named at the start.
 #>
 [CmdletBinding()]
 param()
 
 . "$PSScriptRoot\..\vm\Common.ps1"
+. "$PSScriptRoot\Progress.ps1"
 
 $repo        = (Resolve-Path "$PSScriptRoot\..\..\..").Path
 $releaseDir  = Join-Path $StateDir 'test-release'
@@ -43,9 +47,13 @@ $version     = (Get-Content (Join-Path $repo 'VERSION') -Raw).Trim()
 # life). All throwaway values made by the test.
 $carried = 'sgc-test-export.age', 'sgc-test-passphrase', 'sgc-test-password', 'sgc-test-ssh-key2', 'sgc-test-serial'
 
-Write-Host "Building a test release of $version ..."
-wsl -d $WslDistro --exec bash (ConvertTo-WslPath "$PSScriptRoot\make-test-release.sh") (ConvertTo-WslPath $releaseDir)
-if ($LASTEXITCODE -ne 0) { throw 'Building the test release failed.' }
+Start-TestLog -Name installer -Script $PSCommandPath
+Start-Phase "Building test releases of $version (about 5 minutes)"
+if ((Invoke-Logged wsl -d $WslDistro --exec bash (ConvertTo-WslPath "$PSScriptRoot\make-test-release.sh") (ConvertTo-WslPath $releaseDir)) -ne 0) {
+    Write-Host ''
+    throw "Building the test release failed (see $TestLog)."
+}
+Stop-Phase
 
 $sshArguments = Get-SshArguments
 
@@ -68,13 +76,12 @@ function Reset-AndPrepare {
 $failed = 0
 function Invoke-Cases {
     param([string]$Mode)
-    Write-Host ""
-    Invoke-TestVMCommand -Address $script:address -Command "bash ~/cases.sh $Mode $version"
-    if ($LASTEXITCODE -ne 0) { $script:failed++ }
+    if (-not (Invoke-Step -Address $script:address -Mode $Mode -Arguments $version)) { $script:failed++ }
 }
 
-Write-Host "Resetting the test machine ..."
+Start-Phase 'Resetting the test machine'
 Reset-AndPrepare
+Stop-Phase
 
 Invoke-Cases refused
 Invoke-Cases accepted
@@ -153,10 +160,10 @@ Invoke-Cases maintenance
 
 # The machine is now going down. Wait until it has actually stopped answering
 # before waiting for it to come back.
-Write-Host ""
-Write-Host "Waiting for the machine to go down and come back ..."
+Start-Phase 'Waiting for the machine to go down and come back'
 Wait-TestVMSshDown -Address $address
 $address = Wait-TestVMSsh
+Stop-Phase
 
 Invoke-Cases after-restart
 Invoke-Cases after-window-restart
@@ -166,17 +173,19 @@ Invoke-Cases after-window-restart
 Invoke-Cases cli
 
 # The promise of the export: wipe the machine, install again, restore.
-Write-Host ""
-Write-Host "Wiping the test machine ..."
+Start-Phase 'Wiping the test machine'
 Reset-AndPrepare
 foreach ($file in $carried) {
     & scp @sshArguments -q (Join-Path $carryDir $file) "${VmUser}@${address}:$file"
     if ($LASTEXITCODE -ne 0) { throw "Could not copy $file to the test machine." }
 }
+Stop-Phase
 Invoke-Cases restore
 
 Remove-Item -Recurse -Force $carryDir
 
-Write-Host ""
-if ($failed -gt 0) { throw "Installer test FAILED." }
-Write-Host "Installer test passed."
+if ($failed -gt 0) {
+    Write-TestEnd -Message "Installer test FAILED: $failed step(s)" -Passed $false
+    throw "Installer test FAILED."
+}
+Write-TestEnd -Message 'Installer test passed.' -Passed $true

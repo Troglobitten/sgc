@@ -27,6 +27,7 @@
 param([string]$PreviousTag)
 
 . "$PSScriptRoot\..\vm\Common.ps1"
+. "$PSScriptRoot\Progress.ps1"
 
 $repo       = (Resolve-Path "$PSScriptRoot\..\..\..").Path
 $releaseDir = Join-Path $StateDir 'upgrade-release'
@@ -36,14 +37,21 @@ if (-not $PreviousTag) {
     if (-not $PreviousTag) { throw 'No release tag found to update from.' }
 }
 
-Write-Host "Building $PreviousTag as it was published, and the current source ..."
-$output = wsl -d $WslDistro --exec bash (ConvertTo-WslPath "$PSScriptRoot\make-upgrade-release.sh") $PreviousTag (ConvertTo-WslPath $releaseDir)
-if ($LASTEXITCODE -ne 0) { $output | Write-Host; throw 'Building failed.' }
-$output | Select-Object -SkipLast 1 | Write-Host
-$previous, $new = ($output | Select-Object -Last 1).Trim() -split ' '
+Start-TestLog -Name upgrade -Script $PSCommandPath
+Start-Phase "Building $PreviousTag as it was published, and the current source (about 5 minutes)"
+# Both streams into the log (see Invoke-Logged in Progress.ps1); the build's
+# last word is the two versions, "<previous> <new>".
+$built = & { $ErrorActionPreference = 'Continue'; wsl -d $WslDistro --exec bash (ConvertTo-WslPath "$PSScriptRoot\make-upgrade-release.sh") $PreviousTag (ConvertTo-WslPath $releaseDir) 2>&1 }
+$builtCode = $LASTEXITCODE
+$built | ForEach-Object { Write-Log "$_" }
+if ($builtCode -ne 0) { Write-Host ''; throw "Building failed (see $TestLog)." }
+Stop-Phase
+$versions = @($built | ForEach-Object { "$_".Trim() } | Where-Object { $_ -match '^\d+\.\d+\.\d+ \d+\.\d+\.\d+$' })
+if ($versions.Count -eq 0) { throw "The build did not say which versions it made (see $TestLog)." }
+$previous, $new = $versions[-1] -split ' '
 
 $sshArguments = Get-SshArguments
-Write-Host "Resetting the test machine ..."
+Start-Phase "Resetting the test machine (updating $previous to $new)"
 & "$PSScriptRoot\..\vm\Reset-TestVM.ps1" | Out-Null
 $address = Get-TestVMAddress
 Invoke-TestVMCommand -Address $address -Command 'rm -rf /tmp/release ~/cases.sh ~/sgc-test-*'
@@ -52,13 +60,12 @@ Invoke-TestVMCommand -Address $address -Command 'sudo systemctl stop apt-daily.t
 & scp @sshArguments -q -r $releaseDir "${VmUser}@${address}:/tmp/release"
 & scp @sshArguments -q "$PSScriptRoot\cases.sh" "${VmUser}@${address}:cases.sh"
 if ($LASTEXITCODE -ne 0) { throw 'Copying the releases to the test machine failed.' }
+Stop-Phase
 
 $failed = 0
 function Invoke-Cases {
     param([string]$Mode, [string]$Version, [string]$NewVersion = '')
-    Write-Host ""
-    Invoke-TestVMCommand -Address $script:address -Command "bash ~/cases.sh $Mode $Version $NewVersion"
-    if ($LASTEXITCODE -ne 0) { $script:failed++ }
+    if (-not (Invoke-Step -Address $script:address -Mode $Mode -Arguments "$Version $NewVersion")) { $script:failed++ }
 }
 
 # The previous release, installed and set up as its owner would have it.
@@ -87,14 +94,16 @@ Invoke-Cases notify $new
 Invoke-Cases backups $new
 Invoke-Cases restart $new
 
-Write-Host ""
-Write-Host "Waiting for the machine to go down and come back ..."
+Start-Phase 'Waiting for the machine to go down and come back'
 Wait-TestVMSshDown -Address $address
 $address = Wait-TestVMSsh
+Stop-Phase
 
 Invoke-Cases after-restart $new
 Invoke-Cases cli $new
 
-Write-Host ""
-if ($failed -gt 0) { throw "Upgrade test FAILED." }
-Write-Host "Upgrade test passed: $previous updated itself to $new, and everything works on the updated machine."
+if ($failed -gt 0) {
+    Write-TestEnd -Message "Upgrade test FAILED: $failed step(s)" -Passed $false
+    throw "Upgrade test FAILED."
+}
+Write-TestEnd -Message "Upgrade test passed: $previous updated itself to $new, and everything works on the updated machine." -Passed $true
