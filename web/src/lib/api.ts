@@ -711,6 +711,9 @@ export const api = {
   login: (username: string, password: string) =>
     request<void>('POST', '/api/login', { username, password }),
   logout: () => request<void>('POST', '/api/logout', {}),
+  /** the admin's own password; every other sign-in ends */
+  changeAccountPassword: (current: string, next: string) =>
+    request<void>('POST', '/api/account/password', { current, next }),
   health: () => request<Health>('GET', '/api/health'),
   audit: (limit = 20) => request<AuditEntry[]>('GET', `/api/audit?limit=${limit}`),
   restartDevice: () => request<void>('POST', '/api/device/restart', { confirm: true }),

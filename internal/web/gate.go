@@ -380,7 +380,16 @@ func (s *Server) handleGatePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "sign in first")
 		return
 	}
-	if err := s.People.ChangePassword(r.Context(), person.ID, req.Current, req.Next, remoteIP(r)); err != nil {
+	keep := ""
+	if cookie, err := r.Cookie(personCookie); err == nil {
+		keep = cookie.Value
+	}
+	if err := s.People.ChangePassword(r.Context(), person.ID, req.Current, req.Next, remoteIP(r), keep); err != nil {
+		var locked *auth.TooManyAttemptsError
+		if errors.As(err, &locked) {
+			s.authError(w, r, err)
+			return
+		}
 		s.problemError(w, r, err)
 		return
 	}

@@ -52,6 +52,42 @@ var DecoyHash = sync.OnceValue(func() string {
 	return h
 })
 
+// ChangeAdminPassword is the admin changing their own password in the page:
+// the current one first (wrong ones count towards the sign-in's lock-out),
+// then every other sign-in ends, the gate's passes for the admin included,
+// as after a reset. The session the change is made from (keepToken) stays.
+func (s *Service) ChangeAdminPassword(ctx context.Context, current, next, remoteAddr, keepToken string) error {
+	if err := s.VerifyAdminPassword(ctx, current, remoteAddr); err != nil {
+		return err
+	}
+	if err := validateCredentials("admin", next); err != nil {
+		return err
+	}
+	if next == current {
+		return ErrSamePassword
+	}
+	hash, err := hashPassword(next, s.params)
+	if err != nil {
+		return err
+	}
+	keep := sha256.Sum256([]byte(keepToken))
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "UPDATE admin SET password_hash = ? WHERE id = 1", hash); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM session WHERE token_hash != ?", keep[:]); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM gate_pass WHERE person_id IS NULL"); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // ResetAdminPassword gives the admin a new password and ends every
 // sign-in: what `sudo sgc reset-admin` does. It returns the admin's name.
 //

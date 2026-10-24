@@ -45,6 +45,15 @@ export function GatePage() {
       </AuthCard>
     )
   }
+  // Opened directly, not signed in: a sign-in all the same, so that a person
+  // can come here to change their password (before 0.18.0 there was no form).
+  if (!state.service && !state.person) {
+    return (
+      <AuthCard title="Sign in" subtitle="With the login the owner of this network gave you">
+        <SignIn onDone={setState} rd={rd} />
+      </AuthCard>
+    )
+  }
   if (!state.service) {
     return (
       <AuthCard title="Sign in" subtitle="SGC's login">

@@ -264,6 +264,17 @@ func validate(s *Settings) error {
 	return nil
 }
 
+// KeyFingerprint is how the backup key is named where people read: the
+// start and the end of its public half ("age1sh3pxyyk9f…ks395s"). The public
+// half can only lock backups, never open them, but a whole key in the
+// history looks like a secret that got out (the owner's report, 2026-10-24).
+func KeyFingerprint(public string) string {
+	if len(public) <= 20 {
+		return public
+	}
+	return public[:13] + "…" + public[len(public)-6:]
+}
+
 // NewKey makes the backup key and returns its secret half: the one time it
 // is shown. Backups made before can only be opened with the old key.
 func (s *Service) NewKey(ctx context.Context, actor, remote string) (string, error) {
@@ -283,7 +294,7 @@ func (s *Service) NewKey(ctx context.Context, actor, remote string) (string, err
 	if err := store.SetSetting(ctx, s.cfg.DB, SettingSettings, string(data)); err != nil {
 		return "", err
 	}
-	s.record(ctx, actor, audit.ActionBackupKeyCreated, public, remote)
+	s.record(ctx, actor, audit.ActionBackupKeyCreated, KeyFingerprint(public), remote)
 	return secret, nil
 }
 

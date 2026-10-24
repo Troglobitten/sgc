@@ -90,6 +90,48 @@ func TestWebDAV(t *testing.T) {
 	}
 }
 
+// The key can be replaced, and the history names it by a fingerprint only:
+// neither half of a key is ever there in full.
+func TestANewBackupKey(t *testing.T) {
+	s, _ := service(t)
+	ctx := context.Background()
+	first, err := s.NewKey(ctx, "alex", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := s.Status(ctx)
+	second, err := s.NewKey(ctx, "alex", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _ := s.Status(ctx)
+	if first == second || before.Settings.PublicKey == after.Settings.PublicKey || !after.HasKey {
+		t.Fatal("making a new key did not replace the old one")
+	}
+	entries, err := audit.New(s.cfg.DB).Recent(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := 0
+	for _, e := range entries {
+		if e.Action != audit.ActionBackupKeyCreated {
+			continue
+		}
+		seen++
+		for _, whole := range []string{first, second, before.Settings.PublicKey, after.Settings.PublicKey} {
+			if strings.Contains(e.Detail, whole) {
+				t.Errorf("the history holds a whole key: %q", e.Detail)
+			}
+		}
+		if !strings.Contains(e.Detail, "…") {
+			t.Errorf("the history does not name the key by its fingerprint: %q", e.Detail)
+		}
+	}
+	if seen != 2 {
+		t.Errorf("%d entries for two new keys", seen)
+	}
+}
+
 func TestWhatIsRefused(t *testing.T) {
 	s, _ := service(t)
 	ctx := context.Background()

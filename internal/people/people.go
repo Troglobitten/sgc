@@ -519,10 +519,20 @@ func (s *Service) Logout(ctx context.Context, token string) error {
 	return err
 }
 
-// ChangePassword lets a signed-in person set a new password, with the old one.
-func (s *Service) ChangePassword(ctx context.Context, personID int64, old, next, remote string) error {
+// ChangePassword lets a signed-in person set a new password, with the old
+// one. Wrong old ones count towards the sign-in's lock-out. Afterwards every
+// other sign-in of theirs ends, and the passes the gate gave them, so that a
+// password that got out stops working everywhere; the sign-in the change is
+// made from (keepToken) stays.
+func (s *Service) ChangePassword(ctx context.Context, personID int64, old, next, remote, keepToken string) error {
+	if wait := s.limiter.RetryAfter(remote); wait > 0 {
+		return &auth.TooManyAttemptsError{RetryAfter: wait}
+	}
 	if len([]rune(next)) < auth.MinPasswordLength {
 		return problem.Newf("A password of at least %d characters.", auth.MinPasswordLength)
+	}
+	if next == old {
+		return problem.New("The new password is the one you have now.")
 	}
 	var hash, name string
 	if err := s.cfg.DB.QueryRowContext(ctx, "SELECT password_hash, name FROM person WHERE id = ?", personID).Scan(&hash, &name); err != nil {
@@ -536,7 +546,22 @@ func (s *Service) ChangePassword(ctx context.Context, personID int64, old, next,
 	if err != nil {
 		return err
 	}
-	if _, err := s.cfg.DB.ExecContext(ctx, "UPDATE person SET password_hash = ?, updated_at = ? WHERE id = ?", newHash, s.cfg.Now().Unix(), personID); err != nil {
+	s.limiter.Succeed(remote)
+	tx, err := s.cfg.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "UPDATE person SET password_hash = ?, updated_at = ? WHERE id = ?", newHash, s.cfg.Now().Unix(), personID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM person_session WHERE person_id = ? AND token_hash != ?", personID, auth.HashToken(keepToken)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM gate_pass WHERE person_id = ?", personID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
 		return err
 	}
 	s.record(ctx, name, audit.ActionPersonPasswordChanged, "", remote)

@@ -3,8 +3,10 @@ package web
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/Troglobitten/sgc/internal/auth"
 	"github.com/Troglobitten/sgc/internal/people"
@@ -21,7 +23,7 @@ type People interface {
 	Login(ctx context.Context, username, password, remote, userAgent string) (*people.Session, error)
 	Authenticate(ctx context.Context, token string) (*people.Person, error)
 	Logout(ctx context.Context, token string) error
-	ChangePassword(ctx context.Context, personID int64, old, next, remote string) error
+	ChangePassword(ctx context.Context, personID int64, old, next, remote, keepToken string) error
 }
 
 // VPN is the VPN with people's devices (internal/vpncontrol).
@@ -34,6 +36,7 @@ type VPN interface {
 	DeviceConfig(ctx context.Context, actor, remote string, id int64, password string) (string, string, error)
 	Usage(ctx context.Context, id int64, resolution string) ([]vpncontrol.UsagePoint, error)
 	Totals(ctx context.Context) (map[int64]vpncontrol.UsagePoint, error)
+	AllTrafficDevices(ctx context.Context, personID int64) ([]string, error)
 }
 
 // VPNEndpoint keeps the VPN's public name current (internal/vpncontrol).
@@ -73,6 +76,19 @@ func (s *Server) handlePersonUpdate(w http.ResponseWriter, r *http.Request) {
 	var in people.Input
 	if !readJSON(w, r, &in) {
 		return
+	}
+	// "Services only" with a device that sends everything through home would
+	// leave that device without internet (see vpncontrol.allTrafficRefused).
+	if in.Network == people.NetworkServices && s.VPN != nil {
+		names, err := s.VPN.AllTrafficDevices(r.Context(), id)
+		if err != nil {
+			s.internalError(w, r, err)
+			return
+		}
+		if len(names) > 0 {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("These devices send all their traffic through home, which only people who reach the whole home network can: %s. Set them to home only first (each then needs its new settings: its QR code again).", strings.Join(names, ", ")))
+			return
+		}
 	}
 	updated, err := s.People.Update(r.Context(), sessionFrom(r).Username, remoteIP(r), id, in)
 	if err != nil {

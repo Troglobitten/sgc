@@ -142,6 +142,51 @@ func TestChangesReachTheRootSideOneAtATime(t *testing.T) {
 	}
 }
 
+// Sending everything through home is for people who reach the whole home
+// network (the owner's decision of 2026-10-24). A device of someone else
+// that has it from before can still be switched on and off, and keeps the
+// person from being set to "services only" until it is set to home only.
+func TestAllTrafficThroughHome(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	w.on(t)
+	owner, _ := w.people.Add(ctx, "alex", "", people.Input{Name: "Owner", Network: people.NetworkFull})
+	guest, _ := w.people.Add(ctx, "alex", "", people.Input{Name: "Guest", Network: people.NetworkServices, AllServices: true})
+
+	laptop, err := w.vpn.AddDevice(ctx, "alex", "", owner.ID, "laptop", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, _, _ := w.vpn.DeviceConfig(ctx, "alex", "", laptop.ID, "the admin's password")
+	if !strings.Contains(text, "AllowedIPs = 0.0.0.0/0, ::/0") {
+		t.Errorf("all traffic through home:\n%s", text)
+	}
+
+	phone, err := w.vpn.AddDevice(ctx, "alex", "", guest.ID, "phone", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.vpn.UpdateDevice(ctx, "alex", "", phone.ID, "phone", true, true); err == nil {
+		t.Error("a guest's device was set to send everything home")
+	}
+	// One from before 0.18.0, when this was not refused.
+	if _, err := w.vpn.cfg.DB.ExecContext(ctx, "UPDATE vpn_device SET all_traffic = 1 WHERE id = ?", phone.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.vpn.UpdateDevice(ctx, "alex", "", phone.ID, "phone", true, false); err != nil {
+		t.Errorf("a device from before could not be switched off: %v", err)
+	}
+	if names, _ := w.vpn.AllTrafficDevices(ctx, guest.ID); len(names) != 1 || names[0] != "phone" {
+		t.Errorf("AllTrafficDevices = %v", names)
+	}
+	if _, err := w.vpn.UpdateDevice(ctx, "alex", "", phone.ID, "phone", false, true); err != nil {
+		t.Fatal(err)
+	}
+	if names, _ := w.vpn.AllTrafficDevices(ctx, guest.ID); len(names) != 0 {
+		t.Errorf("after setting it to home only: %v", names)
+	}
+}
+
 func TestDevicesAndWhatTheyReach(t *testing.T) {
 	w := newWorld(t)
 	ctx := context.Background()
@@ -157,7 +202,11 @@ func TestDevicesAndWhatTheyReach(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tablet, _ := w.vpn.AddDevice(ctx, "alex", "", guest.ID, "tablet", true)
+	// Someone who reaches chosen services only cannot send everything home.
+	if _, err := w.vpn.AddDevice(ctx, "alex", "", guest.ID, "tablet", true); err == nil || !strings.Contains(err.Error(), "whole home network") {
+		t.Fatalf("a guest's device sending all its traffic home: %v", err)
+	}
+	tablet, _ := w.vpn.AddDevice(ctx, "alex", "", guest.ID, "tablet", false)
 	if phone.Address != "10.86.0.2" || tablet.Address != "10.86.0.3" {
 		t.Errorf("addresses: %s, %s", phone.Address, tablet.Address)
 	}
@@ -226,9 +275,11 @@ func TestDevicesAndWhatTheyReach(t *testing.T) {
 	if filename != "Owner-phone.conf" {
 		t.Errorf("file name %q", filename)
 	}
+	// The guest's tablet keeps its own internet: only what is for home goes
+	// through the VPN.
 	tabletText, _, _ := w.vpn.DeviceConfig(ctx, "alex", "", tablet.ID, "the admin's password")
-	if !strings.Contains(tabletText, "AllowedIPs = 0.0.0.0/0, ::/0") {
-		t.Errorf("all traffic through home:\n%s", tabletText)
+	if !strings.Contains(tabletText, "AllowedIPs = 10.86.0.0/24, 192.168.1.0/24, 192.168.1.50/32") {
+		t.Errorf("the guest's device, home only:\n%s", tabletText)
 	}
 	// The private key in the file belongs to the public key WireGuard gets.
 	for _, line := range strings.Split(text, "\n") {

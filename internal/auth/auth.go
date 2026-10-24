@@ -27,6 +27,7 @@ var (
 	ErrInvalidUsername = errors.New("a username is 1 to 32 characters: lowercase letters, digits, dot, dash or underscore, starting with a letter")
 	ErrWeakPassword    = fmt.Errorf("a password must be at least %d characters", MinPasswordLength)
 	ErrPasswordTooLong = fmt.Errorf("a password can be at most %d characters", maxPasswordLength)
+	ErrSamePassword    = errors.New("the new password is the one you have now")
 )
 
 // TooManyAttemptsError is returned while an address is locked out.
