@@ -52,7 +52,7 @@ $previous, $new = $versions[-1] -split ' '
 
 $sshArguments = Get-SshArguments
 Start-Phase "Resetting the test machine (updating $previous to $new)"
-& "$PSScriptRoot\..\vm\Reset-TestVM.ps1" | Out-Null
+& "$PSScriptRoot\..\vm\Reset-TestVM.ps1" *> $null
 $address = Get-TestVMAddress
 Invoke-TestVMCommand -Address $address -Command 'rm -rf /tmp/release ~/cases.sh ~/sgc-test-*'
 # Keeps Debian's own daily run from starting in the middle (see Test-Installer.ps1).
