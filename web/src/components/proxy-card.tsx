@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { CircleCheck, TriangleAlert } from 'lucide-react'
 
 import { FormError } from '@/components/auth-card'
+import { FirewallFollowUp } from '@/components/firewall-follow-up'
 import { Card, CardContent } from '@/components/ui/card'
 import { Switch } from '@/components/ui/switch'
 import { api, errorMessage } from '@/lib/api'
@@ -85,6 +86,7 @@ export function ProxyCard({ onError }: { onError: (error: unknown) => void }) {
           </p>
         )}
         <FormError message={error} />
+        {on && <FirewallFollowUp watch={status?.running} />}
       </CardContent>
     </Card>
   )

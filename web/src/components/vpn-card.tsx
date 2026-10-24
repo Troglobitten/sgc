@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { CircleCheck, TriangleAlert } from 'lucide-react'
 
 import { FormError } from '@/components/auth-card'
+import { FirewallFollowUp } from '@/components/firewall-follow-up'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -127,6 +128,7 @@ export function VpnCard({
           </div>
         )}
         <FormError message={error} />
+        {status.enabled && <FirewallFollowUp watch={`${status.up}:${status.port}`} />}
       </CardContent>
     </Card>
   )
