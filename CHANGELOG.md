@@ -2,6 +2,14 @@
 
 What changed in each version of SGC, newest first. The section for a version is what SGC shows before you update to it, so it is written for the person running SGC, not for developers.
 
+## 0.16.1
+
+Fixes for things the page refused in 0.16.0.
+
+- Switching the VPN on said "the request could not be read". It works now.
+- The same happened when you changed a person or a service: both work now.
+- When SGC refuses a request, the message now says what was wrong, so that a report of it points straight at the cause.
+
 ## 0.16.0
 
 Everything SGC was meant to do is now there: names for your devices, the proxy, the VPN, people, the login gate, notifications, logs and backups. This is a large release; take a fresh export before you update (System page, Export).

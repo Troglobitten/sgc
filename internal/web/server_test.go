@@ -633,7 +633,21 @@ func TestMalformedRequestsAreRefused(t *testing.T) {
 
 	t.Run("unknown fields", func(t *testing.T) {
 		body := map[string]any{"username": "a", "password": "b", "admin": true}
-		e.expectStatus(e.call("POST", "/api/login", body, nil), http.StatusBadRequest)
+		var answer struct{ Error string }
+		e.expectStatus(e.call("POST", "/api/login", body, &answer), http.StatusBadRequest)
+		// Says which field, so that a report points at the cause.
+		if !strings.Contains(answer.Error, `"admin"`) {
+			t.Errorf("the refusal does not name the field: %q", answer.Error)
+		}
+	})
+
+	t.Run("a value of the wrong kind", func(t *testing.T) {
+		body := map[string]any{"username": "a", "password": 12345}
+		var answer struct{ Error string }
+		e.expectStatus(e.call("POST", "/api/login", body, &answer), http.StatusBadRequest)
+		if !strings.Contains(answer.Error, `"password" has the wrong kind of value`) || strings.Contains(answer.Error, "12345") {
+			t.Errorf("the refusal: %q (it must name the field and not the value)", answer.Error)
+		}
 	})
 
 	t.Run("oversized body", func(t *testing.T) {

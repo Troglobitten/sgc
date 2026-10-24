@@ -1,5 +1,16 @@
 // The browser side of SGC's JSON API (see internal/web/server.go).
 
+import {
+  backupSettingsBody,
+  backupTargetBody,
+  logQueryBody,
+  notificationChannelsBody,
+  personBody,
+  serviceBody,
+  servicesSettingsBody,
+  vpnSettingsBody,
+} from '@/lib/bodies'
+
 export interface State {
   version: string
   setupRequired: boolean
@@ -750,14 +761,14 @@ export const api = {
   names: () => request<NamesStatus>('GET', '/api/names'),
   setGatewayName: (name: string) => request<NamesStatus>('POST', '/api/names/gateway', { name }),
   services: () => request<ServicesResponse>('GET', '/api/services'),
-  addService: (input: ServiceInput) => request<Service>('POST', '/api/services', input),
+  addService: (input: ServiceInput) => request<Service>('POST', '/api/services', serviceBody(input)),
   updateService: (id: number, input: ServiceInput) =>
-    request<Service>('POST', `/api/services/${id}`, input),
+    request<Service>('POST', `/api/services/${id}`, serviceBody(input)),
   removeService: (id: number) => request<void>('POST', `/api/services/${id}/remove`, {}),
   approveService: (id: number) => request<void>('POST', `/api/services/${id}/approve`, {}),
   refreshServiceIcon: (id: number) => request<void>('POST', `/api/services/${id}/icon`, {}),
   setServicesSettings: (settings: ServicesSettings) =>
-    request<ServicesResponse>('POST', '/api/services/settings', settings),
+    request<ServicesResponse>('POST', '/api/services/settings', servicesSettingsBody(settings)),
   proxy: () => request<ProxyStatus>('GET', '/api/proxy'),
   /** switching on downloads and installs Traefik first where it is missing */
   setProxyEnabled: (enabled: boolean) =>
@@ -771,11 +782,13 @@ export const api = {
     request<AnnounceToken[]>('POST', `/api/tokens/${id}/remove`, { keep }),
   repinToken: (id: number) => request<AnnounceToken[]>('POST', `/api/tokens/${id}/repin`, {}),
   people: () => request<Person[]>('GET', '/api/people'),
-  addPerson: (input: PersonInput) => request<Person>('POST', '/api/people', input),
-  updatePerson: (id: number, input: PersonInput) => request<Person>('POST', `/api/people/${id}`, input),
+  addPerson: (input: PersonInput) => request<Person>('POST', '/api/people', personBody(input)),
+  updatePerson: (id: number, input: PersonInput) =>
+    request<Person>('POST', `/api/people/${id}`, personBody(input)),
   removePerson: (id: number) => request<void>('POST', `/api/people/${id}/remove`, {}),
   vpn: () => request<VpnStatus>('GET', '/api/vpn'),
-  setVpnSettings: (settings: VpnSettings) => request<VpnStatus>('POST', '/api/vpn/settings', settings),
+  setVpnSettings: (settings: VpnSettings) =>
+    request<VpnStatus>('POST', '/api/vpn/settings', vpnSettingsBody(settings)),
   addDevice: (personId: number, name: string, allTraffic: boolean) =>
     request<VpnDevice>('POST', '/api/vpn/devices', { personId, name, allTraffic, enabled: true }),
   updateDevice: (id: number, name: string, allTraffic: boolean, enabled: boolean) =>
@@ -794,16 +807,17 @@ export const api = {
   notificationSettings: () => request<NotificationSettings>('GET', '/api/notifications/settings'),
   /** an empty password or token keeps the one SGC has */
   saveNotificationSettings: (channels: NotificationChannels) =>
-    request<NotificationSettings>('POST', '/api/notifications/settings', channels),
+    request<NotificationSettings>('POST', '/api/notifications/settings', notificationChannelsBody(channels)),
   testNotification: (channel: 'email' | 'ntfy') => request<void>('POST', '/api/notifications/test', { channel }),
-  logs: (query: LogQuery) => request<LogAnswer>('POST', '/api/logs', query),
+  logs: (query: LogQuery) => request<LogAnswer>('POST', '/api/logs', logQueryBody(query)),
   backups: () => request<BackupStatus>('GET', '/api/backups'),
   /** an empty password keeps the one SGC has */
-  saveBackups: (settings: BackupSettings) => request<BackupStatus>('POST', '/api/backups/settings', settings),
+  saveBackups: (settings: BackupSettings) =>
+    request<BackupStatus>('POST', '/api/backups/settings', backupSettingsBody(settings)),
   /** the secret half is in this answer only */
   makeBackupKey: (password: string) => request<{ secret: string }>('POST', '/api/backups/key', { password }),
   testBackupTarget: (target: BackupTarget) =>
-    request<{ ok: boolean; hostKey?: string; message?: string }>('POST', '/api/backups/test', target),
+    request<{ ok: boolean; hostKey?: string; message?: string }>('POST', '/api/backups/test', backupTargetBody(target)),
   backUpNow: () => request<BackupRun>('POST', '/api/backups/run', {}),
   eol: () => request<EolState>('GET', '/api/eol'),
   checkEol: () => request<EolState>('POST', '/api/eol/check', {}),

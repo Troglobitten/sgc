@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"mime"
@@ -671,10 +673,44 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBody))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(v); err != nil {
-		writeError(w, http.StatusBadRequest, "the request could not be read")
+		writeError(w, http.StatusBadRequest, "SGC could not read this request: "+requestProblem(err)+
+			". If it came from SGC's own page, that is a fault in SGC; please report it with this message.")
 		return false
 	}
 	return true
+}
+
+// requestProblem says what was wrong with a request's JSON, so that a report
+// of "it was refused" points at the cause (0.16.0's page sent fields SGC did
+// not expect, and all the owner saw was "could not be read"). It names
+// fields, never values.
+func requestProblem(err error) string {
+	var syntax *json.SyntaxError
+	var wrongType *json.UnmarshalTypeError
+	var tooLarge *http.MaxBytesError
+	switch {
+	case errors.As(err, &tooLarge):
+		return "it is too large"
+	case errors.As(err, &wrongType):
+		return fmt.Sprintf("%q has the wrong kind of value", shorten(wrongType.Field, 60))
+	case errors.As(err, &syntax), errors.Is(err, io.ErrUnexpectedEOF):
+		return "it is not valid JSON"
+	case errors.Is(err, io.EOF):
+		return "it is empty"
+	}
+	// encoding/json has no type for this one; its text is `json: unknown
+	// field "name"`.
+	if field, ok := strings.CutPrefix(err.Error(), "json: unknown field "); ok {
+		return "it has a field SGC does not expect, " + shorten(field, 60)
+	}
+	return "it is not in the form SGC expects"
+}
+
+func shorten(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
