@@ -134,7 +134,7 @@ export function CertificateCard({ onError }: { onError: (error: unknown) => void
           <p className="text-sm">
             One certificate for every name under your domain, from Let&apos;s Encrypt, so that
             browsers show a padlock without a warning. SGC proves that the domain is yours by
-            publishing a piece of text in its DNS at Zone.eu, and removes it again.
+            publishing a piece of text in its DNS, and removes it again.
           </p>
         )}
         {!status.running && certificate && !certificate.forDomain && status.domain !== '' && (

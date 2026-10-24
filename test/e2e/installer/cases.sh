@@ -522,8 +522,9 @@ log_has_no_private_key() {
     [[ "$log" != *"PRIVATE KEY"* ]]
 }
 
-# domain_request <domain> <username> <API key>: the request that saves them.
-domain_request() { printf '{"domain":"%s","username":"%s","apiKey":"%s"}' "$1" "$2" "$3"; }
+# domain_request <domain> <username> <API key>: the request that saves them,
+# as a Zone.eu account.
+domain_request() { printf '{"domain":"%s","provider":"zone","values":{"username":"%s","apiKey":"%s"}}' "$1" "$2" "$3"; }
 
 # The made-up key is nowhere in what SGC wrote to its log.
 # shellcheck disable=SC2317  # called indirectly through check()
@@ -1392,6 +1393,9 @@ domain)
     expect_status "a domain that is not in the account is refused" 400 POST /api/domain "$(domain_request other.tld "$zone_user" "$zone_key")"
     check "in words" body_has 'has no DNS zone for other.tld'
     expect_status "what is no domain name is refused" 400 POST /api/domain "$(domain_request 'domain.tld/../x' "$zone_user" "$zone_key")"
+    expect_status "another DNS provider is refused while Zone.eu is a stand-in" 400 POST /api/domain \
+        '{"domain":"domain.tld","provider":"cloudflare","values":{"apiToken":"a-made-up-token"}}'
+    check "in words" body_has 'stand-in for Zone.eu'
     expect_status "the state is available" 200 GET /api/domain
     check "nothing was saved" body_has '"configured":false'
 
@@ -1403,7 +1407,7 @@ domain)
     check "the history does not carry the key" sh -c "! grep -q '$zone_key' /tmp/sgc-test-body"
     check "nor does SGC's log" log_lacks_the_key
     output="$(sudo sgc doctor 2>&1)"
-    if grep -q 'ok    Zone.eu accepted the saved API key for domain.tld when SGC last asked' <<<"$output"; then pass "the doctor says that Zone.eu accepted the key"; else
+    if grep -q 'ok    Zone.eu accepted the saved username and API key for domain.tld when SGC last asked' <<<"$output"; then pass "the doctor says that Zone.eu accepted the key"; else
         fail "the doctor does not say that Zone.eu accepted the key"
         indent <<<"$output"
     fi
@@ -1422,7 +1426,7 @@ domain)
         fail "the doctor does not report the refused key (exit code $code)"
         indent <<<"$output"
     fi
-    if grep -q 'make a new one in your ZoneID account' <<<"$output"; then pass "and says what to do"; else fail "it does not say what to do"; fi
+    if grep -q 'make new ones there, and enter them' <<<"$output"; then pass "and says what to do"; else fail "it does not say what to do"; fi
 
     echo "Zone.eu out of reach"
     sudo systemctl stop sgc-test-standin.service
@@ -2010,7 +2014,7 @@ cli)
         "The firewall is on, and its rules are loaded" "The firewall's rules load at every start-up" \
         "SSH accepts keys only, and nobody logs in as root" "The 1 key(s) added in SGC's page are in place for the account tester" \
         "Updates for the device install by themselves" "AdGuard Home [0-9.]* runs and answers DNS questions" "The logs are in memory ([0-9]* MB of 128 MB used)" \
-        "Zone.eu accepted the saved API key for domain.tld when SGC last asked" \
+        "Zone.eu accepted the saved username and API key for domain.tld when SGC last asked" \
         "The certificate for \*\.domain\.tld is valid for [0-9]* more days, and SGC renews it by itself" \
         "The ports SGC needs, now or later, are free"; do
         if echo "$output" | grep -q "ok    $line"; then pass "it says: $line"; else

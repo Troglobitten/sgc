@@ -84,7 +84,7 @@ type Config struct {
 	LAN    func() (netinfo.LAN, error)
 	// VerifyAdmin checks the admin's password again (for showing a key).
 	VerifyAdmin func(ctx context.Context, password, remote string) error
-	// Endpoint keeps the public name at Zone.eu (endpoint.go); nil in tests.
+	// Endpoint keeps the public name at the DNS provider (endpoint.go); nil in tests.
 	Endpoint *Endpoint
 	// Changed is called after the VPN changed (names, the proxy's allow
 	// lists, the firewall's port).

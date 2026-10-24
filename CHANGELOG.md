@@ -2,6 +2,16 @@
 
 What changed in each version of SGC, newest first. The section for a version is what SGC shows before you update to it, so it is written for the person running SGC, not for developers.
 
+## 0.18.0
+
+What you asked for after trying 0.17.
+
+- **Other DNS providers.** Besides Zone.eu, your domain's DNS can now be at Cloudflare, Porkbun or Namecheap. Pick the provider on the System page, under Domain; the page says what to do at the provider first. Your Zone.eu account carries on as it is. At Namecheap, whose API can only replace all of a domain's records at once, SGC keeps every other record as it was and checks afterwards; keep a copy of your records when you try it the first time.
+- **The backup key no longer shows in recent activity.** Only a short fingerprint of it does (also for the entry that showed it before). And **"Make a new key"** on the System page, under Backups, replaces the backup key; keep the old one for as long as you keep backups made with it.
+- **"All traffic through home" is now only offered for people with the whole home network,** and is called "use home's internet connection too". People who reach services only keep their own internet with the VPN on: only the services and SGC's DNS go through it. A device set up the old way shows a note with a button to put it right.
+- **Change your password in the page:** yours on the System page (Your account), and people theirs at `https://sgc.your-domain/gate`. It ends that account's other sign-ins.
+- **Software and its end of life** now explains that Debian's date covers the kernel (with WireGuard), the firewall and SSH, and shows AdGuard Home and Traefik with their newest releases, warning when SGC brings an older one.
+
 ## 0.17.0
 
 What you asked for after trying 0.16.

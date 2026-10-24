@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -28,17 +29,23 @@ func TestDomainOperations(t *testing.T) {
 		t.Errorf("status = %+v", status)
 	}
 	var answer map[string]any
-	e.expectStatus(e.call("POST", "/api/domain", map[string]any{"domain": "domain.tld", "username": "alex", "apiKey": "a-made-up-api-key"}, &answer), http.StatusOK)
+	e.expectStatus(e.call("POST", "/api/domain", map[string]any{"domain": "domain.tld", "provider": "zone", "values": map[string]string{"username": "alex", "apiKey": "a-made-up-api-key"}}, &answer), http.StatusOK)
 	// What comes back says nothing of the key, under any name.
-	for field, value := range answer {
-		if text, _ := value.(string); strings.Contains(strings.ToLower(field), "key") || strings.Contains(text, "a-made-up-api-key") {
-			t.Errorf("the answer carries the key: %s = %v", field, value)
-		}
+	if raw, _ := json.Marshal(answer); strings.Contains(string(raw), "a-made-up-api-key") {
+		t.Errorf("the answer carries the key: %s", raw)
 	}
+	// It lists the providers, for the form.
+	if kinds, _ := answer["kinds"].([]any); len(kinds) < 4 {
+		t.Errorf("the providers in the answer: %v", answer["kinds"])
+	}
+	// The request of a page from before 0.18.0 is a Zone.eu account.
+	e.expectStatus(e.call("POST", "/api/domain", map[string]any{"domain": "domain.tld", "username": "alex", "apiKey": "a-made-up-api-key"}, nil), http.StatusOK)
+	// Both kinds at once are not.
+	e.expectStatus(e.call("POST", "/api/domain", map[string]any{"domain": "domain.tld", "provider": "cloudflare", "values": map[string]string{"apiToken": "x"}, "apiKey": "y"}, nil), http.StatusBadRequest)
 	e.expectStatus(e.call("POST", "/api/domain/check", map[string]any{}, nil), http.StatusOK)
 	e.expectStatus(e.call("POST", "/api/domain/remove", map[string]any{}, nil), http.StatusBadRequest)
 	e.expectStatus(e.call("POST", "/api/domain/remove", map[string]any{"confirm": true}, nil), http.StatusOK)
-	want := "save domain.tld for alex by " + testUser + ", check, remove by " + testUser
+	want := "save domain.tld at zone for alex by " + testUser + ", save domain.tld at zone for alex by " + testUser + ", check, remove by " + testUser
 	if got := strings.Join(e.domain.calls, ", "); got != want {
 		t.Errorf("calls = %s, want %s", got, want)
 	}

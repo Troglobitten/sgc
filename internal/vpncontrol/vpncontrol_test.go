@@ -16,13 +16,13 @@ import (
 
 	"github.com/Troglobitten/sgc/internal/audit"
 	"github.com/Troglobitten/sgc/internal/auth"
+	"github.com/Troglobitten/sgc/internal/dnsprovider"
 	"github.com/Troglobitten/sgc/internal/helper"
 	"github.com/Troglobitten/sgc/internal/netinfo"
 	"github.com/Troglobitten/sgc/internal/people"
 	"github.com/Troglobitten/sgc/internal/services"
 	"github.com/Troglobitten/sgc/internal/store"
 	"github.com/Troglobitten/sgc/internal/wireguard"
-	"github.com/Troglobitten/sgc/internal/zone"
 	"github.com/Troglobitten/sgc/internal/zone/zonetest"
 )
 
@@ -350,9 +350,10 @@ func TestThePublicName(t *testing.T) {
 	endpoint := NewEndpoint(EndpointConfig{
 		DB: w.vpn.cfg.DB, Audit: w.vpn.cfg.Audit, Log: w.vpn.cfg.Log,
 		Settings: w.vpn.Settings,
-		Zone: func(context.Context) (*zone.Client, string, bool, error) {
-			client, err := zone.NewClient(server.URL+"/v2/", "alex", "a-made-up-key", "sgc/test", &http.Client{Timeout: 5 * time.Second})
-			return client, "domain.tld", true, err
+		DNS: func(context.Context) (dnsprovider.Provider, dnsprovider.Account, bool, error) {
+			account := dnsprovider.Account{Domain: "domain.tld", Provider: "zone", Values: map[string]string{"username": "alex", "apiKey": "a-made-up-key"}}
+			client, err := dnsprovider.Open(account, dnsprovider.Options{ZoneEndpoint: server.URL + "/v2/", StandIn: true, HTTP: &http.Client{Timeout: 5 * time.Second}})
+			return client, account, err == nil, err
 		},
 		PublicIP: func(context.Context) (netip.Addr, error) { return address, nil },
 	})

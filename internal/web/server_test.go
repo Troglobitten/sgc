@@ -264,12 +264,12 @@ type fakeDomain struct {
 
 func (f *fakeDomain) Status(context.Context) (domaincontrol.Status, error) { return f.status, nil }
 
-func (f *fakeDomain) Save(_ context.Context, actor, remote, domain, username, apiKey string) error {
+func (f *fakeDomain) Save(_ context.Context, actor, remote, domain, provider string, values map[string]string) error {
 	if f.err != nil {
 		return f.err
 	}
-	f.calls = append(f.calls, "save "+domain+" for "+username+" by "+actor)
-	f.status = domaincontrol.Status{Configured: true, Domain: domain, Username: username, OK: true}
+	f.calls = append(f.calls, "save "+domain+" at "+provider+" for "+values["username"]+" by "+actor)
+	f.status = domaincontrol.Status{Configured: true, Domain: domain, Provider: provider, Shown: map[string]string{"username": values["username"]}, OK: true}
 	return nil
 }
 

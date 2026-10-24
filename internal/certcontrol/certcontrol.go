@@ -3,8 +3,9 @@
 //
 // It is one certificate for every name under the domain ("*.domain.tld").
 // Let's Encrypt gives it to whoever can publish a piece of text it names in
-// the domain's DNS; SGC publishes that text through the owner's Zone.eu
-// account (internal/zone) and removes it again.
+// the domain's DNS; SGC publishes that text through the owner's account at
+// the company that holds the domain's DNS (internal/dnsprovider) and removes
+// it again.
 //
 // Before the first real certificate SGC goes through the same steps with
 // Let's Encrypt's test authority. What can go wrong almost always goes wrong
@@ -22,7 +23,7 @@
 // a little after the name servers it can ask show the new one.
 //
 // The ACME protocol itself is the lego library's. This package tells it what
-// to ask for, hands it the Zone.eu records, and keeps the results: the
+// to ask for, hands it the DNS records, and keeps the results: the
 // certificate with its private key, and the accounts at the authorities, are
 // settings in the database and travel with an export, so that a restored
 // device has its certificate without asking for a new one.
@@ -57,8 +58,8 @@ import (
 	"github.com/miekg/dns"
 
 	"github.com/Troglobitten/sgc/internal/audit"
+	"github.com/Troglobitten/sgc/internal/dnsprovider"
 	"github.com/Troglobitten/sgc/internal/store"
-	"github.com/Troglobitten/sgc/internal/zone"
 )
 
 const (
@@ -102,22 +103,19 @@ type ChangeError struct{ Message string }
 
 func (e *ChangeError) Error() string { return e.Message }
 
-// Account is the owner's domain and the Zone.eu account its DNS is in.
-type Account struct {
-	Domain, Username, APIKey string
-}
+// Account is the owner's domain and the account its DNS is in.
+type Account = dnsprovider.Account
 
 type Config struct {
 	DB    *sql.DB
 	Audit *audit.Log
 	Log   *slog.Logger
-	// Account returns the domain and Zone.eu account that are set up, and
+	// Account returns the domain and the account that are set up, and
 	// whether any are (internal/domaincontrol).
 	Account func(ctx context.Context) (Account, bool, error)
-	// ZoneEndpoint is Zone.eu's API; ZoneHTTP makes the requests to it.
-	ZoneEndpoint string
-	ZoneHTTP     *http.Client
-	UserAgent    string
+	// DNS is what opening the account's provider needs.
+	DNS       dnsprovider.Options
+	UserAgent string
 	// Directory is the authority's address (Let's Encrypt), TrialDirectory
 	// that of its test authority. AuthorityHTTP makes the requests to both.
 	Directory      string
@@ -129,8 +127,9 @@ type Config struct {
 	// ResolvConf is the system's list of DNS servers ("" for the usual
 	// place). It is read anew for every attempt.
 	ResolvConf string
-	// How long to wait for a record to show at the name servers, and how
-	// often to look.
+	// How long to wait for a record to show at the name servers (0: as long
+	// as the provider needs, dnsprovider.Kind.Propagation), and how often to
+	// look.
 	PropagationTimeout  time.Duration
 	PropagationInterval time.Duration
 	// Settle is how much longer to wait once the name servers SGC can ask
@@ -252,10 +251,12 @@ type terms struct {
 }
 
 type openRecord struct {
-	Domain string `json:"domain"`
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Value  string `json:"value"`
+	// Provider is where the record was made; before 0.18.0 always Zone.eu.
+	Provider string `json:"provider,omitempty"`
+	Domain   string `json:"domain"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Value    string `json:"value"`
 }
 
 type renewal struct {
@@ -457,7 +458,7 @@ func (s *Service) attempt(ctx context.Context, kind, actor string, account Accou
 
 	result := Attempt{Kind: kind, StartedAt: started, FinishedAt: s.cfg.Now(), OK: err == nil, Log: log}
 	if err != nil {
-		result.Message = words(err)
+		result.Message = words(err, account)
 		s.cfg.Log.Error("get the certificate", "kind", kind, "error", err)
 	}
 	if err := s.writeJSON(ctx, SettingAttempt, result); err != nil {
@@ -500,19 +501,19 @@ func issuerName(leaf *x509.Certificate) string {
 
 // issue gets a certificate for the account's domain and keeps it.
 func (s *Service) issue(ctx context.Context, kind string, account Account) (*x509.Certificate, error) {
-	zoneClient, err := zone.NewClient(s.cfg.ZoneEndpoint, account.Username, account.APIKey, s.cfg.UserAgent, s.cfg.ZoneHTTP)
+	provider, err := dnsprovider.Open(account, s.cfg.DNS)
 	if err != nil {
 		return nil, err
 	}
-	// What an attempt that was cut short left at Zone.eu goes first.
-	if err := s.removeOpenRecords(ctx, zoneClient); err != nil {
+	// What an attempt that was cut short left goes first.
+	if err := s.removeOpenRecords(ctx, account, provider); err != nil {
 		return nil, err
 	}
 	names := []string{"*." + account.Domain}
 
 	if kind == KindFirst {
 		s.say("Trying with the certificate authority's test authority first.")
-		if _, err := s.obtain(ctx, s.cfg.TrialDirectory, account, zoneClient, names); err != nil {
+		if _, err := s.obtain(ctx, s.cfg.TrialDirectory, account, provider, names); err != nil {
 			return nil, &phaseError{trial: true, err: err}
 		}
 		s.say("The test authority issued a certificate, which is thrown away: the set-up works.")
@@ -526,7 +527,7 @@ func (s *Service) issue(ctx context.Context, kind string, account Account) (*x50
 		s.phase("real")
 	}
 	s.say("Asking the certificate authority for the certificate.")
-	resource, err := s.obtain(ctx, s.cfg.Directory, account, zoneClient, names)
+	resource, err := s.obtain(ctx, s.cfg.Directory, account, provider, names)
 	if err != nil {
 		return nil, &phaseError{err: err}
 	}
@@ -625,8 +626,8 @@ func (s *Service) client(ctx context.Context, directory string) (*lego.Client, e
 // An authority can forget an account: Let's Encrypt's test authority is
 // emptied now and then, and an account can be closed. SGC's account is
 // nothing but a key, so it then opens a new one and goes on, once.
-func (s *Service) obtain(ctx context.Context, directory string, account Account, zoneClient *zone.Client, names []string) (*certificate.Resource, error) {
-	resource, err := s.obtainOnce(ctx, directory, account, zoneClient, names)
+func (s *Service) obtain(ctx context.Context, directory string, account Account, provider dnsprovider.Provider, names []string) (*certificate.Resource, error) {
+	resource, err := s.obtainOnce(ctx, directory, account, provider, names)
 	var problem *acme.ProblemDetails
 	if err == nil || !errors.As(err, &problem) || !strings.HasSuffix(problem.Type, ":accountDoesNotExist") {
 		return resource, err
@@ -640,11 +641,11 @@ func (s *Service) obtain(ctx context.Context, directory string, account Account,
 	if err := s.writeJSON(ctx, SettingAccounts, accounts); err != nil {
 		return nil, err
 	}
-	return s.obtainOnce(ctx, directory, account, zoneClient, names)
+	return s.obtainOnce(ctx, directory, account, provider, names)
 }
 
 // obtainOnce goes through one authority's steps for a certificate.
-func (s *Service) obtainOnce(ctx context.Context, directory string, account Account, zoneClient *zone.Client, names []string) (*certificate.Resource, error) {
+func (s *Service) obtainOnce(ctx context.Context, directory string, account Account, provider dnsprovider.Provider, names []string) (*certificate.Resource, error) {
 	client, err := s.client(ctx, directory)
 	if err != nil {
 		return nil, err
@@ -680,7 +681,7 @@ func (s *Service) obtainOnce(ctx context.Context, directory string, account Acco
 		// AdGuard Home running.
 		options = append(options, dns01.AddRecursiveNameservers(servers))
 	}
-	if err := client.Challenge.SetDNS01Provider(&records{ctx: ctx, service: s, zone: zoneClient, domain: account.Domain}, options...); err != nil {
+	if err := client.Challenge.SetDNS01Provider(&records{ctx: ctx, service: s, dns: provider, account: account}, options...); err != nil {
 		return nil, err
 	}
 	resource, err := client.Certificate.Obtain(certificate.ObtainRequest{Domains: names, Bundle: true})
@@ -769,22 +770,23 @@ func (b bound) RoundTrip(r *http.Request) (*http.Response, error) {
 type records struct {
 	ctx     context.Context
 	service *Service
-	zone    *zone.Client
-	domain  string
+	dns     dnsprovider.Provider
+	account Account
 }
 
 func (r *records) Present(domain, _, keyAuth string) error {
 	info := dns01.GetChallengeInfo(domain, keyAuth)
 	name := dns01.UnFqdn(info.EffectiveFQDN)
-	if !strings.HasSuffix(name, "."+r.domain) {
-		return fmt.Errorf("the proof for %s belongs under %s, which is not in the zone of %s", domain, name, r.domain)
+	zoneName := r.account.Domain
+	if !strings.HasSuffix(name, "."+zoneName) {
+		return fmt.Errorf("the proof for %s belongs under %s, which is not in the zone of %s", domain, name, zoneName)
 	}
-	created, err := r.zone.AddTXT(r.ctx, r.domain, name, info.Value)
+	created, err := r.dns.AddTXT(r.ctx, zoneName, name, info.Value)
 	if err != nil {
 		return err
 	}
-	r.service.say("Published the proof at Zone.eu, under " + name + ".")
-	return r.service.rememberRecord(r.ctx, openRecord{Domain: r.domain, ID: created.ID, Name: name, Value: info.Value})
+	r.service.say("Published the proof at " + dnsprovider.Name(r.account.Provider) + ", under " + name + ".")
+	return r.service.rememberRecord(r.ctx, openRecord{Provider: r.account.Provider, Domain: zoneName, ID: created.ID, Name: name, Value: info.Value})
 }
 
 func (r *records) CleanUp(domain, _, keyAuth string) error {
@@ -793,11 +795,15 @@ func (r *records) CleanUp(domain, _, keyAuth string) error {
 	// The attempt may have been told to end; what it published goes all the same.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.ctx), 30*time.Second)
 	defer cancel()
-	return r.service.forgetRecords(ctx, r.zone, func(open openRecord) bool { return open.Name == name && open.Value == info.Value })
+	return r.service.forgetRecords(ctx, r.account, r.dns, func(open openRecord) bool { return open.Name == name && open.Value == info.Value })
 }
 
 func (r *records) Timeout() (timeout, interval time.Duration) {
-	return r.service.cfg.PropagationTimeout, r.service.cfg.PropagationInterval
+	timeout = r.service.cfg.PropagationTimeout
+	if kind, ok := dnsprovider.Lookup(r.account.Provider); ok && timeout == 0 {
+		timeout = kind.Propagation
+	}
+	return timeout, r.service.cfg.PropagationInterval
 }
 
 func (s *Service) rememberRecord(ctx context.Context, record openRecord) error {
@@ -810,9 +816,12 @@ func (s *Service) rememberRecord(ctx context.Context, record openRecord) error {
 	return s.writeJSON(ctx, SettingOpenRecords, append(open, record))
 }
 
-// forgetRecords removes the records the filter picks at Zone.eu and from the
-// list. A record that cannot be removed stays on the list, for the next try.
-func (s *Service) forgetRecords(ctx context.Context, zoneClient *zone.Client, pick func(openRecord) bool) error {
+// forgetRecords removes the records the filter picks at the provider and
+// from the list. A record that cannot be removed stays on the list, for the
+// next try. A record made at another provider than the account's now, or
+// for another domain, cannot be removed with this account: it is dropped
+// from the list, and said in the log.
+func (s *Service) forgetRecords(ctx context.Context, account Account, provider dnsprovider.Provider, pick func(openRecord) bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var open, left []openRecord
@@ -825,7 +834,16 @@ func (s *Service) forgetRecords(ctx context.Context, zoneClient *zone.Client, pi
 			left = append(left, record)
 			continue
 		}
-		if err := zoneClient.DeleteTXT(ctx, record.Domain, record.ID); err != nil {
+		madeAt := record.Provider
+		if madeAt == "" {
+			madeAt = dnsprovider.ZoneID
+		}
+		if madeAt != account.Provider || record.Domain != account.Domain {
+			s.cfg.Log.Warn("a proof SGC made earlier is left where it is: the domain's account has changed since",
+				"provider", madeAt, "name", record.Name)
+			continue
+		}
+		if err := provider.DeleteTXT(ctx, record.Domain, record.ID); err != nil {
 			left, failure = append(left, record), err
 		}
 	}
@@ -835,10 +853,10 @@ func (s *Service) forgetRecords(ctx context.Context, zoneClient *zone.Client, pi
 	return failure
 }
 
-func (s *Service) removeOpenRecords(ctx context.Context, zoneClient *zone.Client) error {
-	err := s.forgetRecords(ctx, zoneClient, func(openRecord) bool { return true })
+func (s *Service) removeOpenRecords(ctx context.Context, account Account, provider dnsprovider.Provider) error {
+	err := s.forgetRecords(ctx, account, provider, func(openRecord) bool { return true })
 	if err != nil {
-		return fmt.Errorf("remove what an earlier attempt left at Zone.eu: %w", err)
+		return fmt.Errorf("remove what an earlier attempt left at %s: %w", dnsprovider.Name(account.Provider), err)
 	}
 	return nil
 }
@@ -977,28 +995,32 @@ func (l *lineLogger) Println(args ...any)               { l.line(fmt.Sprintln(ar
 func (l *lineLogger) Printf(format string, args ...any) { l.line(fmt.Sprintf(format, args...)) }
 
 // words says what went wrong in terms the owner can act on.
-func words(err error) string {
+func words(err error, account Account) string {
+	name := dnsprovider.Name(account.Provider)
+	kind, _ := dnsprovider.Lookup(account.Provider)
 	where := "Let's Encrypt"
 	var phase *phaseError
 	if errors.As(err, &phase) && phase.trial {
 		where = "Let's Encrypt's test authority"
 	}
 	var problem *acme.ProblemDetails
-	var refusal *zone.StatusError
+	var refusal *dnsprovider.Refusal
 	text := err.Error()
 	switch {
 	case errors.Is(err, context.Canceled):
 		return "SGC was stopped while the certificate was being requested."
-	case errors.Is(err, zone.ErrCredentials):
-		return "Zone.eu does not accept the username and API key, so the proof could not be published."
-	case errors.Is(err, zone.ErrNotFound):
-		return "Zone.eu has no DNS zone for the domain in this account, so the proof could not be published."
-	case errors.Is(err, zone.ErrRateLimited):
-		return "Zone.eu answered that too many requests were made in the last minute. Try again in a few minutes."
+	case errors.Is(err, dnsprovider.ErrCredentials):
+		return name + " does not accept the " + kind.Credentials + ", so the proof could not be published."
+	case errors.Is(err, dnsprovider.ErrNotFound):
+		return name + " has no DNS zone for the domain in this account, so the proof could not be published."
+	case errors.Is(err, dnsprovider.ErrNotActive):
+		return "The domain's DNS zone is not active at " + name + ", so the proof could not be published."
+	case errors.Is(err, dnsprovider.ErrRateLimited):
+		return name + " answered that too many requests were made. Try again in a few minutes."
 	case errors.As(err, &refusal):
-		return "The proof could not be published: " + refusal.Error() + "."
-	case strings.Contains(text, "reach Zone.eu"):
-		return "Zone.eu could not be reached, so the proof could not be published. Does this device reach the internet?"
+		return "The proof could not be published: " + refusal.Message + "."
+	case errors.Is(err, dnsprovider.ErrUnreachable):
+		return name + " could not be reached, so the proof could not be published. Does this device reach the internet?"
 	case errors.As(err, &problem) && strings.HasSuffix(problem.Type, ":rateLimited"):
 		return where + " has reached its limit of requests for this domain: " + oneLine(problem.Detail) + " Try again later; SGC does not retry by itself before then."
 	case errors.As(err, &problem) && strings.Contains(problem.Detail, "TXT record"):
@@ -1009,7 +1031,7 @@ func words(err error) string {
 	case errors.As(err, &problem):
 		return where + " refused: " + oneLine(problem.Detail)
 	case strings.Contains(text, "propagation") || strings.Contains(text, "time limit exceeded"):
-		return "The proof was published at Zone.eu, but its name servers did not show it in time. That can take a while after a change; try again later."
+		return "The proof was published at " + name + ", but its name servers did not show it in time. That can take a while after a change; try again later."
 	case strings.Contains(text, "dial tcp") || strings.Contains(text, "no such host") || strings.Contains(text, "connection refused") || strings.Contains(text, "i/o timeout"):
 		return where + " could not be reached. Does this device reach the internet?"
 	default:

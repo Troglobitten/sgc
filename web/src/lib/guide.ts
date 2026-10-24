@@ -15,7 +15,7 @@ export const guideSteps: { key: GuideStep; title: string; why: string }[] = [
   {
     key: 'domain',
     title: 'Your domain',
-    why: "SGC gives your devices names under your domain (nas.your-domain and so on) and gets a certificate for them. Your domain's DNS has to be at Zone.eu; SGC uses its API key for both.",
+    why: "SGC gives your devices names under your domain (nas.your-domain and so on) and gets a certificate for them. Its DNS has to be at Zone.eu, Cloudflare, Porkbun or Namecheap; SGC uses an API key there for both.",
   },
   {
     key: 'certificate',
