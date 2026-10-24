@@ -2255,7 +2255,11 @@ proxy)
     check "web.domain.tld opens the service through the proxy" through_proxy web '/' 'served by the test neighbour'
     check "the proxy shows the certificate for *.domain.tld" serves_names 443 web.domain.tld '\*\.domain\.tld'
     check "plain http is sent on to https" sh -c "curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --resolve web.domain.tld:80:127.0.0.1 http://web.domain.tld/x | grep -qE '^30[18] https://web.domain.tld/x'"
-    check "the gateway's own name sends you to SGC's page" sh -c "curl -sk -o /dev/null -w '%{http_code} %{redirect_url}' --resolve sgc.domain.tld:443:127.0.0.1 https://sgc.domain.tld/system | grep -q '^302 https://sgc.domain.tld:8443/system'"
+    # The gateway's name is passed on to SGC itself, unopened, so its page
+    # opens there without a port (/api/state is SGC's, Traefik has none).
+    check "the gateway's own name opens SGC's page, without a port" sh -c "curl -sk --resolve sgc.domain.tld:443:127.0.0.1 https://sgc.domain.tld/api/state | grep -q '\"version\"'"
+    check "plain http to it is sent on to https, without a port" sh -c "curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --resolve sgc.domain.tld:80:127.0.0.1 http://sgc.domain.tld/system | grep -qE '^30[18] https://sgc.domain.tld/system'"
+    check "SGC's listener for the proxy takes nothing without the proxy's header" sh -c "! curl -sk --max-time 5 https://127.0.0.1:8445/api/state"
     check "a name SGC does not know gets SGC's page saying so" through_proxy nothing '/' 'No service by this name'
     if wait_for 90 answers_with web.domain.tld "$lan_address"; then pass "AdGuard Home answers web.domain.tld with this device's address"; else fail "web.domain.tld is not in AdGuard Home"; fi
     check "AdGuard Home's page has a name too" answers_with adguard.domain.tld "$lan_address"
@@ -2293,10 +2297,39 @@ proxy)
         expect_status "the firewall's state is available" 200 GET /api/firewall
         check "nothing lags behind any more" body_has '"behind":\[\]'
     fi
+    # A visitor from the home network, through the proxy: SGC sees them, not
+    # Traefik (the PROXY protocol header), for the lock-out and the history.
+    sudo ip netns exec "$inside_net" curl -sk -o /dev/null --resolve "sgc.domain.tld:443:$inside_gateway" \
+        -H 'Content-Type: application/json' -d '{"username":"nobody-by-this-name","password":"not-the-password"}' https://sgc.domain.tld/api/login
+    expect_in_audit "SGC sees the visitor's own address through the proxy" "\"detail\":\"username tried: nobody-by-this-name\",\"remoteAddr\":\"$inside_peer\""
     output="$(sudo sgc doctor 2>&1)"
     if echo "$output" | grep -q 'The proxy runs: Traefik'; then pass "the doctor sees the proxy running"; else
         fail "the doctor does not see the proxy"
         indent <<<"$output"
+    fi
+    if echo "$output" | grep -q 'ok    https://sgc.domain.tld opens SGC.s page, without a port'; then pass "and that the gateway's name opens SGC's page"; else
+        fail "the doctor does not see the gateway's name open SGC's page"
+        indent <<<"$output"
+    fi
+    echo "The doctor, with SGC's listener for the proxy taken by another program"
+    sudo systemctl stop sgc
+    sudo systemd-run --quiet --unit sgc-test-squatter python3 -m http.server 8445 --bind 127.0.0.1
+    sleep 1
+    sudo systemctl start sgc
+    wait_for 30 curl -sk -o /dev/null "$api/api/state" || fail "SGC did not come back"
+    output="$(sudo sgc doctor 2>&1)"
+    if echo "$output" | grep -q 'FAIL  https://sgc.domain.tld does not open SGC.s page'; then pass "the doctor says the gateway's name does not open SGC's page"; else
+        fail "the doctor did not notice"
+        indent <<<"$output"
+    fi
+    if echo "$output" | grep -q 'The page is still at https://sgc.domain.tld:8443'; then pass "and where the page still is"; else fail "it does not say where the page still is"; fi
+    sudo systemctl stop sgc-test-squatter
+    sudo systemctl restart sgc
+    wait_for 30 curl -sk -o /dev/null "$api/api/state" || fail "SGC did not come back"
+    if wait_for 30 sh -c "curl -sk --resolve sgc.domain.tld:443:127.0.0.1 https://sgc.domain.tld/api/state | grep -q '\"version\"'"; then
+        pass "following that advice, the gateway's name opens SGC's page again"
+    else
+        fail "the gateway's name does not open SGC's page after the restart"
     fi
     expect_in_audit "the history has the proxy switched on" '"action":"proxy.switched_on"'
     ;;
@@ -2421,31 +2454,31 @@ gate)
         "{\"name\":\"web\",\"title\":\"Web\",\"kind\":\"http\",\"mode\":\"proxied\",\"upstreamIp\":\"$inside_peer\",\"upstreamPort\":8080,\"scheme\":\"http\",\"verifyTls\":false,\"listenPort\":0,\"category\":\"Test\",\"protected\":true,\"enabled\":true}"
     gate_jar="$HOME/sgc-test-gate-cookies"
     rm -f "$gate_jar"
-    gcurl() { curl -sk --max-time 10 -b "$gate_jar" -c "$gate_jar" --resolve web.domain.tld:443:127.0.0.1 --resolve sgc.domain.tld:8443:127.0.0.1 "$@"; }
+    gcurl() { curl -sk --max-time 10 -b "$gate_jar" -c "$gate_jar" --resolve web.domain.tld:443:127.0.0.1 --resolve sgc.domain.tld:443:127.0.0.1 "$@"; }
     if wait_for 30 sh -c "curl -sk -o /dev/null -w '%{http_code}' --resolve web.domain.tld:443:127.0.0.1 https://web.domain.tld/ | grep -q 302"; then
         pass "without a pass the service sends you to SGC's sign-in"
     else fail "the protected service did not send to the sign-in"; fi
-    check "to SGC's own name, with the way back" sh -c "curl -sk -o /dev/null -w '%{redirect_url}' --resolve web.domain.tld:443:127.0.0.1 'https://web.domain.tld/a?b=1' | grep -q '^https://sgc.domain.tld:8443/gate?rd=https%3A%2F%2Fweb.domain.tld%2Fa%3Fb%3D1'"
+    check "to SGC's own name, with the way back" sh -c "curl -sk -o /dev/null -w '%{redirect_url}' --resolve web.domain.tld:443:127.0.0.1 'https://web.domain.tld/a?b=1' | grep -q '^https://sgc.domain.tld/gate?rd=https%3A%2F%2Fweb.domain.tld%2Fa%3Fb%3D1'"
     expect_status "a person with a login that has the service" 200 POST /api/people \
         "{\"name\":\"Sam\",\"network\":\"services\",\"allServices\":false,\"serviceIds\":[$web_id],\"loginEnabled\":true,\"username\":\"sam\",\"password\":\"a-made-up-password\",\"expiresAt\":null,\"disabled\":false}"
     sam_id="$(json_get "d['id']")"
     expect_status "and one whose login does not" 200 POST /api/people \
         '{"name":"Lee","network":"services","allServices":false,"serviceIds":[],"loginEnabled":true,"username":"lee","password":"another-made-up-password","expiresAt":null,"disabled":false}'
-    gcurl -o /dev/null -X POST -H 'Content-Type: application/json' -d '{"username":"sam","password":"wrong-password-here"}' https://sgc.domain.tld:8443/api/gate/login
+    gcurl -o /dev/null -X POST -H 'Content-Type: application/json' -d '{"username":"sam","password":"wrong-password-here"}' https://sgc.domain.tld/api/gate/login
     check "a wrong password is refused" sh -c "! grep -q sgc_person '$gate_jar' 2>/dev/null"
-    gcurl -o /dev/null -X POST -H 'Content-Type: application/json' -d '{"username":"sam","password":"a-made-up-password"}' https://sgc.domain.tld:8443/api/gate/login
+    gcurl -o /dev/null -X POST -H 'Content-Type: application/json' -d '{"username":"sam","password":"a-made-up-password"}' https://sgc.domain.tld/api/gate/login
     check "the right one signs Sam in" grep -q sgc_person "$gate_jar"
-    back="$(gcurl -X POST -H 'Content-Type: application/json' -d '{"rd":"https://web.domain.tld/"}' https://sgc.domain.tld:8443/api/gate/ticket | python3 -c 'import json,sys; print(json.load(sys.stdin).get("redirect",""))')"
+    back="$(gcurl -X POST -H 'Content-Type: application/json' -d '{"rd":"https://web.domain.tld/"}' https://sgc.domain.tld/api/gate/ticket | python3 -c 'import json,sys; print(json.load(sys.stdin).get("redirect",""))')"
     check "SGC hands out the way back to the service" sh -c "echo '$back' | grep -q '^https://web.domain.tld/.sgc-gate/return?ticket='"
     gcurl -o /dev/null "$back"
     check "the service's name gets its own pass" grep -q 'web.domain.tld.*sgc_gate' "$gate_jar"
     check "with it Sam gets in" sh -c "curl -sk --max-time 10 -b '$gate_jar' --resolve web.domain.tld:443:127.0.0.1 https://web.domain.tld/ | grep -q 'served by the test neighbour'"
     check "the way back works once" sh -c "[ \"\$(curl -sk -o /dev/null -w '%{http_code}' --resolve web.domain.tld:443:127.0.0.1 '$back')\" = 403 ]"
-    check "a way back to another site is refused" sh -c "curl -sk -b '$gate_jar' --resolve sgc.domain.tld:8443:127.0.0.1 -X POST -H 'Content-Type: application/json' -d '{\"rd\":\"https://evil.example.com/\"}' https://sgc.domain.tld:8443/api/gate/ticket | grep -q 'not a service behind'"
+    check "a way back to another site is refused" sh -c "curl -sk -b '$gate_jar' --resolve sgc.domain.tld:443:127.0.0.1 -X POST -H 'Content-Type: application/json' -d '{\"rd\":\"https://evil.example.com/\"}' https://sgc.domain.tld/api/gate/ticket | grep -q 'not a service behind'"
     rm -f "$gate_jar"
-    gcurl -o /dev/null -X POST -H 'Content-Type: application/json' -d '{"username":"lee","password":"another-made-up-password"}' https://sgc.domain.tld:8443/api/gate/login
-    check "Lee, whose login does not have the service, gets no way back" sh -c "curl -sk -b '$gate_jar' --resolve sgc.domain.tld:8443:127.0.0.1 -X POST -H 'Content-Type: application/json' -d '{\"rd\":\"https://web.domain.tld/\"}' https://sgc.domain.tld:8443/api/gate/ticket | grep -q 'does not include'"
-    check "and a person's sign-in does not open SGC's own page" sh -c "[ \"\$(curl -sk -o /dev/null -w '%{http_code}' -b '$gate_jar' --resolve sgc.domain.tld:8443:127.0.0.1 https://sgc.domain.tld:8443/api/health)\" = 401 ]"
+    gcurl -o /dev/null -X POST -H 'Content-Type: application/json' -d '{"username":"lee","password":"another-made-up-password"}' https://sgc.domain.tld/api/gate/login
+    check "Lee, whose login does not have the service, gets no way back" sh -c "curl -sk -b '$gate_jar' --resolve sgc.domain.tld:443:127.0.0.1 -X POST -H 'Content-Type: application/json' -d '{\"rd\":\"https://web.domain.tld/\"}' https://sgc.domain.tld/api/gate/ticket | grep -q 'does not include'"
+    check "and a person's sign-in does not open SGC's own page" sh -c "[ \"\$(curl -sk -o /dev/null -w '%{http_code}' -b '$gate_jar' --resolve sgc.domain.tld:443:127.0.0.1 https://sgc.domain.tld/api/health)\" = 401 ]"
     expect_in_audit "the history has Sam passing" '"action":"gate.login"'
     expect_status "the service comes out from behind the login again" 200 POST "/api/services/$web_id" \
         "{\"name\":\"web\",\"title\":\"Web\",\"kind\":\"http\",\"mode\":\"proxied\",\"upstreamIp\":\"$inside_peer\",\"upstreamPort\":8080,\"scheme\":\"http\",\"verifyTls\":false,\"listenPort\":0,\"category\":\"Test\",\"protected\":false,\"enabled\":true}"

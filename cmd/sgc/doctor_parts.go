@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/tls"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -86,6 +88,35 @@ func servedNames(ctx context.Context, address, serverName string) ([]string, err
 	return certs[0].DNSNames, nil
 }
 
+// pageThroughProxy asks Traefik on this machine for the gateway's name and
+// expects SGC's own answer: Traefik passes that name on to SGC unopened
+// (proxy.SGCGateway). /api/state is SGC's; Traefik has nothing there.
+func pageThroughProxy(ctx context.Context, fqdn string) error {
+	client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "tcp", "127.0.0.1:443")
+		},
+		// This machine, and the answer is checked for what it says.
+		TLSClientConfig: &tls.Config{ServerName: fqdn, InsecureSkipVerify: true}, //nolint:gosec
+	}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+fqdn+"/api/state", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var state struct {
+		Version string `json:"version"`
+	}
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&state) != nil || state.Version == "" {
+		return fmt.Errorf("something else answered (%s)", resp.Status)
+	}
+	return nil
+}
+
 // checkNames: the gateway's name answers with this device's address at
 // AdGuard Home, and SGC's page shows the certificate for it.
 func checkNames(stateDir string) doctor.Check {
@@ -162,6 +193,15 @@ func checkProxy(stateDir string) doctor.Check {
 			}
 			resp.Body.Close()
 			results = append(results, doctor.Good("The proxy runs: Traefik "+proxy.InstalledVersion(paths)+" answers for the services' names"))
+			if report.Configured {
+				fqdn := gateway.FQDN(report.GatewayName, report.Domain)
+				if err := pageThroughProxy(ctx, fqdn); err != nil {
+					results = append(results, doctor.Bad("https://"+fqdn+" does not open SGC's page: "+err.Error(),
+						"The page is still at https://"+fqdn+":8443. Restarting SGC sets up its side again: sudo systemctl restart sgc\n"+traefikLog))
+				} else {
+					results = append(results, doctor.Good("https://"+fqdn+" opens SGC's page, without a port (the proxy passes it on)"))
+				}
+			}
 		}
 		if len(report.Pending) > 0 {
 			results = append(results, doctor.Warn("Announced and waiting for your approval: "+strings.Join(report.Pending, ", "), "Approve or remove them on SGC's Services page."))

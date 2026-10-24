@@ -32,14 +32,19 @@ import (
 const (
 	// TraefikAPI is where Traefik answers about itself, on this device only.
 	TraefikAPI = "127.0.0.1:8082"
-	// SGCInternal is SGC's second listener, for Traefik only: error pages,
-	// the login gate, announcements that came through the proxy.
+	// SGCInternal is SGC's second listener, for Traefik only: error pages
+	// and the login gate.
 	SGCInternal = "127.0.0.1:8444"
+	// SGCGateway is where Traefik hands connections for the gateway's own
+	// name, unopened (TLS passthrough), with a PROXY protocol header that
+	// says who the visitor is. SGC decrypts them with its own certificate,
+	// so https://sgc.domain is SGC's page itself, without a port, and every
+	// visitor's connection is a new one at SGC (which the firewall's
+	// confirmation relies on). Seen working with Traefik 3.7.16.
+	SGCGateway = "127.0.0.1:8445"
 	// GatePath is where a protected name hands the visitor's pass back to
 	// SGC (docs/design.md §10).
 	GatePath = "/.sgc-gate/"
-	// AnnouncePath is where servers announce their services.
-	AnnouncePath = "/api/announce"
 
 	maxServices  = 500
 	maxAllowList = 256
@@ -328,11 +333,9 @@ func RenderDynamic(cfg Config, certFile, keyFile string) ([]byte, error) {
 		"sgc-internal": map[string]any{"loadBalancer": map[string]any{"servers": []any{map[string]any{"url": internal}}}},
 	}
 	middlewares := map[string]any{
-		// The gateway's own name opens SGC's page, which SGC serves itself.
-		"to-sgc-page": map[string]any{"redirectRegex": map[string]any{
-			"regex": `^https://[^/]+(/.*)?$`, "replacement": "https://" + cfg.GatewayName + "." + cfg.Domain + ":" + strconv.Itoa(cfg.WebPort) + "${1}"}},
+		// AdGuard Home's page is a part of SGC's, under the gateway's name.
 		"to-adguard-page": map[string]any{"redirectRegex": map[string]any{
-			"regex": `^https://[^/]+.*$`, "replacement": "https://" + cfg.GatewayName + "." + cfg.Domain + ":" + strconv.Itoa(cfg.WebPort) + "/adguard/"}},
+			"regex": `^https://[^/]+.*$`, "replacement": "https://" + cfg.GatewayName + "." + cfg.Domain + "/adguard/"}},
 		// A friendly page when the device behind a name does not answer.
 		"friendly-errors": map[string]any{"errors": map[string]any{
 			"status": []string{"502-504"}, "service": "sgc-internal", "query": "/proxy-error/{status}"}},
@@ -347,17 +350,20 @@ func RenderDynamic(cfg Config, certFile, keyFile string) ([]byte, error) {
 		"unknown-name":   map[string]any{"replacePath": map[string]any{"path": "/proxy-unknown"}},
 	}
 	tlsOn := map[string]any{}
-	httpRouters["gateway"] = map[string]any{"rule": host(cfg.GatewayName), "entryPoints": []string{"websecure"},
-		"service": "noop@internal", "middlewares": []string{"to-sgc-page"}, "tls": tlsOn}
-	httpRouters["gateway-announce"] = map[string]any{"rule": host(cfg.GatewayName) + " && Path(`" + AnnouncePath + "`)",
-		"entryPoints": []string{"websecure"}, "service": "sgc-internal", "tls": tlsOn, "priority": 10000}
 	httpRouters["adguard"] = map[string]any{"rule": host("adguard"), "entryPoints": []string{"websecure"},
 		"service": "noop@internal", "middlewares": []string{"to-adguard-page"}, "tls": tlsOn}
 	// Any other name under the domain: SGC says that it does not know it.
 	httpRouters["unknown"] = map[string]any{"rule": "HostRegexp(`^.+$`)", "entryPoints": []string{"websecure"},
 		"service": "sgc-internal", "middlewares": []string{"unknown-name"}, "tls": tlsOn, "priority": 1}
 
-	tcpRouters, tcpServices := map[string]any{}, map[string]any{}
+	// The gateway's own name: passed on to SGC unopened (see SGCGateway).
+	// Traefik tries TCP routers before HTTP ones on the same entry point,
+	// so this name never reaches the "unknown" router.
+	tcpRouters := map[string]any{"gateway": map[string]any{
+		"rule": "HostSNI(`" + cfg.GatewayName + "." + cfg.Domain + "`)", "entryPoints": []string{"websecure"},
+		"service": "gateway", "tls": map[string]any{"passthrough": true}}}
+	tcpServices := map[string]any{"gateway": map[string]any{"loadBalancer": map[string]any{
+		"servers": []any{map[string]any{"address": SGCGateway}}, "serversTransport": "with-visitor"}}}
 	udpRouters, udpServices := map[string]any{}, map[string]any{}
 	tcpMiddlewares := map[string]any{}
 	transports := map[string]any{"skip-verify": map[string]any{"insecureSkipVerify": true}}
@@ -412,13 +418,13 @@ func RenderDynamic(cfg Config, certFile, keyFile string) ([]byte, error) {
 			"options":      map[string]any{"default": map[string]any{"minVersion": "VersionTLS12"}},
 		},
 	}
-	if len(tcpRouters) > 0 {
-		tcp := map[string]any{"routers": tcpRouters, "services": tcpServices}
-		if len(tcpMiddlewares) > 0 {
-			tcp["middlewares"] = tcpMiddlewares
-		}
-		dynamic["tcp"] = tcp
+	tcp := map[string]any{"routers": tcpRouters, "services": tcpServices,
+		// Says who the visitor is, for the gateway's name only.
+		"serversTransports": map[string]any{"with-visitor": map[string]any{"proxyProtocol": map[string]any{"version": 2}}}}
+	if len(tcpMiddlewares) > 0 {
+		tcp["middlewares"] = tcpMiddlewares
 	}
+	dynamic["tcp"] = tcp
 	if len(udpRouters) > 0 {
 		dynamic["udp"] = map[string]any{"routers": udpRouters, "services": udpServices}
 	}
@@ -476,7 +482,7 @@ func Generation(routesFile []byte) string {
 // ExpectedRouters lists the routers Traefik must report as enabled once a
 // configuration is in place, by protocol ("http", "tcp", "udp").
 func ExpectedRouters(cfg Config) map[string][]string {
-	out := map[string][]string{"http": {"gateway@file", "gateway-announce@file", "adguard@file", "unknown@file"}}
+	out := map[string][]string{"http": {"adguard@file", "unknown@file"}, "tcp": {"gateway@file"}}
 	for _, s := range cfg.Services {
 		out[s.Kind] = append(out[s.Kind], routerName(s)+"@file")
 		if s.Protected {

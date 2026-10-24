@@ -43,9 +43,13 @@ func NewControl(cfg ControlConfig) *Control { return &Control{cfg: cfg} }
 type Status struct {
 	Name   string `json:"name"`
 	Domain string `json:"domain"`
-	// FQDN and URL are "" until a domain is set up.
-	FQDN string `json:"fqdn"`
-	URL  string `json:"url"`
+	// FQDN and URL are "" until a domain is set up. URL is without a port
+	// while the proxy is on (Traefik passes the name through to SGC's page),
+	// and with :8443 otherwise. DirectURL always has the port: it does not
+	// depend on Traefik, so it is the way in when Traefik does not run.
+	FQDN      string `json:"fqdn"`
+	URL       string `json:"url"`
+	DirectURL string `json:"directUrl"`
 	// LAN is where the device is in the home network; LANProblem says why
 	// that could not be found.
 	LAN        *netinfo.LAN    `json:"lan"`
@@ -66,7 +70,11 @@ func (c *Control) Status(ctx context.Context) (Status, error) {
 	if configured {
 		status.Domain = domain
 		status.FQDN = FQDN(name, domain)
-		status.URL = "https://" + status.FQDN + ":" + strconv.Itoa(c.cfg.WebPort)
+		status.DirectURL = "https://" + status.FQDN + ":" + strconv.Itoa(c.cfg.WebPort)
+		status.URL = status.DirectURL
+		if c.cfg.ProxyOn != nil && c.cfg.ProxyOn(ctx) {
+			status.URL = "https://" + status.FQDN
+		}
 	}
 	if lan, err := c.cfg.LAN(); err != nil {
 		status.LANProblem = err.Error()
