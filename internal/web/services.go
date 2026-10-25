@@ -369,6 +369,9 @@ func (s *Server) InternalHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /proxy-error/{status}", s.handleProxyError)
 	mux.HandleFunc("/proxy-unknown", s.handleProxyUnknown)
+	// SGC's own name, asked of the proxy over a connection opened for
+	// another name (misdirected.go).
+	mux.HandleFunc("/proxy-misdirected", writeMisdirected)
 	s.gateRoutes(mux)
 	return mux
 }

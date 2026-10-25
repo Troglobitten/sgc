@@ -348,6 +348,7 @@ func RenderDynamic(cfg Config, certFile, keyFile string) ([]byte, error) {
 		// Visitors cannot pretend to be someone through this header.
 		"no-user-header": map[string]any{"headers": map[string]any{"customRequestHeaders": map[string]any{"X-SGC-User": ""}}},
 		"unknown-name":   map[string]any{"replacePath": map[string]any{"path": "/proxy-unknown"}},
+		"misdirected":    map[string]any{"replacePath": map[string]any{"path": "/proxy-misdirected"}},
 	}
 	tlsOn := map[string]any{}
 	httpRouters["adguard"] = map[string]any{"rule": host("adguard"), "entryPoints": []string{"websecure"},
@@ -356,9 +357,16 @@ func RenderDynamic(cfg Config, certFile, keyFile string) ([]byte, error) {
 	httpRouters["unknown"] = map[string]any{"rule": "HostRegexp(`^.+$`)", "entryPoints": []string{"websecure"},
 		"service": "sgc-internal", "middlewares": []string{"unknown-name"}, "tls": tlsOn, "priority": 1}
 
-	// The gateway's own name: passed on to SGC unopened (see SGCGateway).
-	// Traefik tries TCP routers before HTTP ones on the same entry point,
-	// so this name never reaches the "unknown" router.
+	// The gateway's own name: passed on to SGC unopened (see SGCGateway),
+	// by the name in the TLS handshake. Traefik tries TCP routers before HTTP
+	// ones on the same entry point, so a connection opened for this name
+	// never reaches an HTTP router. A request for it can all the same arrive
+	// at one, over a connection a browser opened for a service and reuses
+	// (the certificate covers both names): it is answered 421, and the
+	// browser sends it again over a connection of its own. Without this it
+	// got the "unknown" router's page (seen by the owner on 2026-10-25).
+	httpRouters["misdirected"] = map[string]any{"rule": host(cfg.GatewayName), "entryPoints": []string{"websecure"},
+		"service": "sgc-internal", "middlewares": []string{"misdirected"}, "tls": tlsOn, "priority": 1000}
 	tcpRouters := map[string]any{"gateway": map[string]any{
 		"rule": "HostSNI(`" + cfg.GatewayName + "." + cfg.Domain + "`)", "entryPoints": []string{"websecure"},
 		"service": "gateway", "tls": map[string]any{"passthrough": true}}}
