@@ -5,6 +5,7 @@ What changed in each version of SGC, newest first. The section for a version is 
 ## 0.19.1
 
 - **`https://sgc.your-domain` no longer shows "No service by this name" now and then.** A browser that had a connection open to one of your services sometimes reused it for SGC's page (the certificate covers both names), and the proxy could not pass that on to SGC. Both ends now answer such a request with a code that makes the browser open a connection of its own, by itself, without you noticing. The same goes the other way round: a service never opens as SGC's page by mistake.
+- A firewall or SSH change made a moment after confirming the previous one is no longer refused with "could not be switched on". SGC now waits the fraction of a second it takes for the previous change to finish.
 
 ## 0.19.0
 

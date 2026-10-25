@@ -38,9 +38,11 @@ const programTimeout = 20 * time.Second
 func startFirewallChange(request firewall.Request) error {
 	// The unit stays active while a change waits for confirmation, and
 	// starting an active unit does nothing: the new request would be lost
-	// while the caller believes it took effect.
-	if runSystemctl("is-active", "--quiet", firewallChangeUnit) == nil {
-		return errors.New("another firewall change is still waiting for confirmation")
+	// while the caller believes it took effect. A unit that is only ending
+	// is waited for (changeunit.go).
+	if err := waitForEndedChange(func() bool { return unitRunning(firewallChangeUnit) }, firewallChangeWaiting,
+		errors.New("another firewall change is still waiting for confirmation")); err != nil {
+		return err
 	}
 	if err := handOver(firewall.DefaultPaths().RequestFile, request); err != nil {
 		return err
@@ -62,6 +64,13 @@ func startChangeUnit(unit string) error {
 		return errors.New("the change was refused or could not be put into effect")
 	}
 	return nil
+}
+
+// firewallChangeWaiting reports whether a firewall change is on record as
+// waiting for confirmation.
+func firewallChangeWaiting() (bool, error) {
+	state, err := firewall.ReadState(firewall.DefaultPaths())
+	return state.Pending != nil, err
 }
 
 func confirmFirewallChange() error {

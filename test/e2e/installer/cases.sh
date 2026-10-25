@@ -898,15 +898,32 @@ firewall)
     # After every single undo the rules must really be gone. This is also
     # what catches an undo that is cut short: it once left the rules in
     # effect about every other time, while SGC reported them as undone.
-    quick=0
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-        [ "$(http POST /api/firewall/change '{"enabled":true}')" = 202 ] &&
-            [ "$(http POST /api/firewall/undo '{}')" = 200 ] &&
-            no_rules_loaded >/dev/null 2>&1 && quick=$((quick + 1))
+    # A round that goes wrong is described: which request, what it answered,
+    # and whether rules left after an undo were gone a moment later (late)
+    # or not (stuck). With the firewall's own log, because the machine is
+    # wiped before anyone can look (one round failed once, on 2026-10-25,
+    # and nothing more could be found out).
+    quick=0 quick_problems="" quick_since=$(date +%s)
+    for round in 1 2 3 4 5 6 7 8 9 10; do
+        quick_change=$(http POST /api/firewall/change '{"enabled":true}')
+        [ "$quick_change" = 202 ] || quick_problems+="round $round: switching on answered $quick_change: $(head -c 300 /tmp/sgc-test-body)"$'\n'
+        # Undone even after a refusal: whatever is waiting must not stay.
+        quick_undo=$(http POST /api/firewall/undo '{}')
+        if [ "$quick_undo" != 200 ]; then
+            quick_problems+="round $round: undo answered $quick_undo: $(head -c 300 /tmp/sgc-test-body)"$'\n'
+        elif ! no_rules_loaded >/dev/null 2>&1; then
+            sleep 2
+            if no_rules_loaded >/dev/null 2>&1; then quick_problems+="round $round: rules still loaded right after the undo, gone two seconds later"$'\n'
+            else quick_problems+="round $round: rules still loaded after the undo, and two seconds later"$'\n'; fi
+            continue
+        fi
+        [ "$quick_change" = 202 ] && [ "$quick_undo" = 200 ] && quick=$((quick + 1))
     done
     if [ "$quick" -eq 10 ]; then pass "ten times on and undone again: never refused, and the rules gone every time"; else
         fail "only $quick of ten quick changes were made and fully undone"
-        indent </tmp/sgc-test-body
+        printf '%s' "$quick_problems" | indent
+        sudo journalctl --since "@$((quick_since - 1))" --no-pager -o short-precise \
+            -u sgc-firewall-change.service -u sgc-firewall-revert.service -u sgc-helper.service | tail -n 80 | indent
     fi
     check "the firewall is off after the last undo" no_rules_loaded
     check "no unit of the firewall's is marked as failed" \
@@ -936,6 +953,23 @@ firewall)
     check "the rules load at every start-up" \
         sh -c "systemctl is-enabled --quiet sgc-firewall.service || systemctl show --property=Wants --value sgc.service | grep -q sgc-firewall.service"
     expect_in_audit "the confirmation is in the history" '"action":"firewall.change_confirmed"'
+
+    echo "A change right after a confirmation"
+    # The process that waited for the confirmation runs on for a moment
+    # after it. A change in that moment was refused as if one were still
+    # waiting (every time, when tried on 2026-10-25).
+    quick_after=0
+    for _ in 1 2 3; do
+        [ "$(http POST /api/firewall/change '{"enabled":true,"again":true}')" = 202 ] &&
+            [ "$(http POST /api/firewall/confirm '{}')" = 200 ] &&
+            [ "$(http POST /api/firewall/change '{"enabled":true,"again":true}')" = 202 ] &&
+            [ "$(http POST /api/firewall/undo '{}')" = 200 ] && quick_after=$((quick_after + 1))
+    done
+    if [ "$quick_after" -eq 3 ]; then pass "three times confirmed and changed again at once: never refused"; else
+        fail "only $quick_after of three changes right after a confirmation were accepted"
+        indent </tmp/sgc-test-body
+    fi
+    check "the confirmed rules are still in effect" rules_loaded
 
     echo "The root helper still takes no instructions about rules"
     check "a request with anything but on or off is refused" \

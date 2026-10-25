@@ -348,7 +348,6 @@ func RenderDynamic(cfg Config, certFile, keyFile string) ([]byte, error) {
 		// Visitors cannot pretend to be someone through this header.
 		"no-user-header": map[string]any{"headers": map[string]any{"customRequestHeaders": map[string]any{"X-SGC-User": ""}}},
 		"unknown-name":   map[string]any{"replacePath": map[string]any{"path": "/proxy-unknown"}},
-		"misdirected":    map[string]any{"replacePath": map[string]any{"path": "/proxy-misdirected"}},
 	}
 	tlsOn := map[string]any{}
 	httpRouters["adguard"] = map[string]any{"rule": host("adguard"), "entryPoints": []string{"websecure"},
@@ -358,15 +357,19 @@ func RenderDynamic(cfg Config, certFile, keyFile string) ([]byte, error) {
 		"service": "sgc-internal", "middlewares": []string{"unknown-name"}, "tls": tlsOn, "priority": 1}
 
 	// The gateway's own name: passed on to SGC unopened (see SGCGateway),
-	// by the name in the TLS handshake. Traefik tries TCP routers before HTTP
-	// ones on the same entry point, so a connection opened for this name
-	// never reaches an HTTP router. A request for it can all the same arrive
-	// at one, over a connection a browser opened for a service and reuses
-	// (the certificate covers both names): it is answered 421, and the
-	// browser sends it again over a connection of its own. Without this it
-	// got the "unknown" router's page (seen by the owner on 2026-10-25).
-	httpRouters["misdirected"] = map[string]any{"rule": host(cfg.GatewayName), "entryPoints": []string{"websecure"},
-		"service": "sgc-internal", "middlewares": []string{"misdirected"}, "tls": tlsOn, "priority": 1000}
+	// by the name in the TLS handshake. No HTTP router may name it: Traefik
+	// gives a connection to an HTTPS router whose rule names the connection's
+	// name before it tries any TCP router (ServeTCP in Traefik's
+	// pkg/server/router/tcp/router.go), and SGC's page would be gone. A
+	// router of its own for this name did exactly that in the whole-machine
+	// test of 2026-10-25 (TestNoHTTPRouterNamesTheGateway). The "unknown"
+	// router's HostRegexp counts as a catch-all there and comes after.
+	// A request for the gateway's name can all the same reach the HTTP
+	// routers, over a connection a browser opened for a service and reuses
+	// (the certificate covers both names). It meets the "unknown" router, and
+	// SGC answers it there with 421 (handleProxyUnknown), which makes the
+	// browser send it again over a connection of its own. Before that it got
+	// "No service by this name" (seen by the owner on 2026-10-25).
 	tcpRouters := map[string]any{"gateway": map[string]any{
 		"rule": "HostSNI(`" + cfg.GatewayName + "." + cfg.Domain + "`)", "entryPoints": []string{"websecure"},
 		"service": "gateway", "tls": map[string]any{"passthrough": true}}}
