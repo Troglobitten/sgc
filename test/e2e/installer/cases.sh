@@ -302,6 +302,9 @@ os_state_has() { [ "$(http GET /api/os-updates)" = 200 ] && grep -q "$1" /tmp/sg
 # No look and no installation is running.
 # shellcheck disable=SC2317  # called indirectly through wait_for()
 os_idle() { os_state_has '"running":""'; }
+# Idle, and nothing waiting.
+# shellcheck disable=SC2317  # called indirectly through wait_for()
+os_nothing_waiting() { os_idle && grep -q '"waiting":\[\]' /tmp/sgc-test-body; }
 # What apt's settings amount to, all its files taken together. (Read whole
 # first: "apt-config dump | grep -q" fails under pipefail whenever grep finds
 # its line early and stops reading.)
@@ -1273,10 +1276,17 @@ os-updates-auto)
     # What Debian's timer does once a day, done now.
     sudo systemctl start apt-daily-upgrade.service
     if [ -z "$(tool_would_install)" ]; then pass "nothing is left to install after it"; else fail "still waiting after the daily run: $(tool_would_install)"; fi
-    expect_status "looking again" 202 POST /api/os-updates/check '{}'
-    if wait_for 240 os_idle; then pass "the look has ended"; else fail "the look did not end"; fi
-    check "the page agrees: nothing is waiting" body_has '"waiting":\[\]'
+    # SGC notices the daily run and looks again by itself, within ten
+    # seconds (oscontrol's lookIfDue). A look asked for in that moment is
+    # rightly answered "already running": this test once asked 0.4 seconds
+    # after SGC had started its own, and failed.
+    if wait_for 60 os_nothing_waiting; then pass "SGC looks again by itself after the daily run: the page says nothing is waiting"; else
+        fail "the page still lists: $(page_list waiting)"
+    fi
     check "and knows that Debian's daily run has run" sh -c "! grep -q '\"lastRun\":null' /tmp/sgc-test-body"
+    expect_status "looking again on request" 202 POST /api/os-updates/check '{}'
+    if wait_for 240 os_idle; then pass "the look has ended"; else fail "the look did not end"; fi
+    check "the page still agrees: nothing is waiting" body_has '"waiting":\[\]'
     check "no unit of SGC's is marked as failed" sh -c "[ -z \"\$(systemctl list-units --failed --plain --no-legend 'sgc*')\" ]"
     ;;
 
