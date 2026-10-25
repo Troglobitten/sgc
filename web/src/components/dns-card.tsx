@@ -1,7 +1,8 @@
-import { useEffect, useId, useState, type ReactNode } from 'react'
-import { CircleCheck, ExternalLink, TriangleAlert } from 'lucide-react'
+import { useEffect, useId, useState } from 'react'
+import { ExternalLink } from 'lucide-react'
 
 import { FormError } from '@/components/auth-card'
+import { More, SettingCard, StatusBadge, Warning } from '@/components/setting'
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -12,7 +13,6 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { api, errorMessage, type DnsStatus, type FirewallStatus } from '@/lib/api'
@@ -60,12 +60,9 @@ export function DnsCard({ onError }: { onError: (error: unknown) => void }) {
 
   if (status === null) {
     return (
-      <Card>
-        <CardContent className="flex flex-col gap-3">
-          <h2 className="text-sm text-muted-foreground">DNS (AdGuard Home)</h2>
-          <p className="text-sm text-muted-foreground">…</p>
-        </CardContent>
-      </Card>
+      <SettingCard title="AdGuard Home">
+        <p className="text-sm text-muted-foreground">…</p>
+      </SettingCard>
     )
   }
 
@@ -102,32 +99,17 @@ export function DnsCard({ onError }: { onError: (error: unknown) => void }) {
       window.dispatchEvent(new Event(firewallChangedEvent))
     })
 
-  return (
-    <Card>
-      <CardContent className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-sm text-muted-foreground">DNS (AdGuard Home)</h2>
-          {status.enabled && (
-            <span
-              className={
-                status.running
-                  ? 'flex items-center gap-1.5 text-sm font-medium text-emerald-700 dark:text-emerald-400'
-                  : 'flex items-center gap-1.5 text-sm font-medium text-amber-700 dark:text-amber-400'
-              }
-            >
-              {status.running ? (
-                <CircleCheck className="size-4" aria-hidden="true" />
-              ) : (
-                <TriangleAlert className="size-4" aria-hidden="true" />
-              )}
-              {status.running ? 'Running' : 'Not running'}
-            </span>
-          )}
-        </div>
+  const badge = !status.enabled ? (
+    <StatusBadge tone="muted">Off</StatusBadge>
+  ) : status.running ? (
+    <StatusBadge tone="ok">Running</StatusBadge>
+  ) : (
+    <StatusBadge tone="warn">Not running</StatusBadge>
+  )
 
-        {!status.available && (
-          <Notice>The device could not be asked about AdGuard Home just now.</Notice>
-        )}
+  return (
+    <SettingCard title="AdGuard Home" status={badge}>
+        {!status.available && <Warning>The device could not be asked about AdGuard Home just now.</Warning>}
 
         <div className="flex items-center gap-2">
           <Switch
@@ -143,9 +125,8 @@ export function DnsCard({ onError }: { onError: (error: unknown) => void }) {
 
         {status.enabled ? (
           <p className="text-sm">
-            AdGuard Home {status.version} answers name lookups from your home network on this
-            device&apos;s address, and leaves out advertising and tracking. To use it, enter that
-            address as the DNS server in your router, or on single devices.
+            AdGuard Home {status.version} answers the name lookups of your home network, and leaves out advertising and
+            tracking.
           </p>
         ) : status.installed ? (
           <p className="text-sm">
@@ -160,19 +141,21 @@ export function DnsCard({ onError }: { onError: (error: unknown) => void }) {
         )}
 
         {status.enabled && !status.running && (
-          <Notice>It is switched on but not running. On the device: sudo sgc doctor says why.</Notice>
+          <Warning>
+            It is switched on but not running. On the device: <code>sudo sgc doctor</code> says why.
+          </Warning>
         )}
         {status.restorePending && (
-          <Notice>
-            The DNS settings from your export are not in place on this device yet. SGC does that
-            by itself after a restore; if this stays, try it here.
-          </Notice>
+          <Warning>
+            The DNS settings from your export are not in place on this device yet. SGC does that by itself after a
+            restore; if this stays, try it here.
+          </Warning>
         )}
         {shutOut && (
-          <Notice>
-            The firewall was switched on before AdGuard Home was there and does not let DNS in
-            yet. Until it does, only this device itself gets answers.
-          </Notice>
+          <Warning>
+            The firewall was switched on before AdGuard Home was there and does not let DNS in yet. Until it does, only
+            this device itself gets answers.
+          </Warning>
         )}
 
         {(status.running || status.restorePending || shutOut || status.updateAvailable) && (
@@ -207,6 +190,22 @@ export function DnsCard({ onError }: { onError: (error: unknown) => void }) {
           </div>
         )}
 
+        {status.enabled && (
+          <More label="How devices use it">
+            <p>
+              A device uses AdGuard Home when this device’s address is its DNS server. Best is to have your router hand
+              that address out to every device. The names SGC gives your services (nas.your-domain and so on) only
+              exist here, so a device that asks another DNS server does not find them.
+            </p>
+            <p>
+              If your router answers lookups itself and passes them on to this device, make this device the only DNS
+              server it asks. With a second one (often your provider’s, or 8.8.8.8 or 1.1.1.1), some lookups go there,
+              and SGC’s names then fail now and then, typically just after a device starts.
+            </p>
+            <p>What it blocks, whom it asks and what it logs is set in AdGuard Home’s own page.</p>
+          </More>
+        )}
+
         {asking && (
           <QuestionDialog
             status={status}
@@ -218,17 +217,7 @@ export function DnsCard({ onError }: { onError: (error: unknown) => void }) {
             }}
           />
         )}
-      </CardContent>
-    </Card>
-  )
-}
-
-function Notice({ children }: { children: ReactNode }) {
-  return (
-    <p className="flex items-start gap-2 text-sm text-amber-700 dark:text-amber-400">
-      <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-      <span>{children}</span>
-    </p>
+    </SettingCard>
   )
 }
 

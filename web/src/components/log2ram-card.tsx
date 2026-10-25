@@ -1,7 +1,7 @@
 import { useEffect, useId, useState, type ReactNode } from 'react'
-import { CircleCheck, TriangleAlert } from 'lucide-react'
 
 import { FormError } from '@/components/auth-card'
+import { More, SettingCard, StatusBadge, Warning } from '@/components/setting'
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -12,7 +12,6 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { api, errorMessage, type Log2ramStatus } from '@/lib/api'
@@ -51,15 +50,12 @@ export function Log2ramCard({ onError }: { onError: (error: unknown) => void }) 
     }
   }, [onError])
 
-  const title = 'Logs in memory (log2ram)'
+  const title = 'Logs in memory'
   if (status === null) {
     return (
-      <Card>
-        <CardContent className="flex flex-col gap-3">
-          <h2 className="text-sm text-muted-foreground">{title}</h2>
-          <p className="text-sm text-muted-foreground">…</p>
-        </CardContent>
-      </Card>
+      <SettingCard title={title}>
+        <p className="text-sm text-muted-foreground">…</p>
+      </SettingCard>
     )
   }
 
@@ -84,18 +80,16 @@ export function Log2ramCard({ onError }: { onError: (error: unknown) => void }) 
   const space = `${megabytes(status.usedBytes)} of ${megabytes(status.sizeBytes)}`
   const largest = status.largest.map((e) => `${e.name} (${megabytes(e.bytes)})`).join(', ')
 
+  const badge = status.active ? (
+    <StatusBadge tone={status.nearlyFull ? 'warn' : 'ok'}>In memory · {space}</StatusBadge>
+  ) : status.enabled ? (
+    <StatusBadge tone="muted">On from the next restart</StatusBadge>
+  ) : (
+    <StatusBadge tone="muted">Off</StatusBadge>
+  )
+
   return (
-    <Card>
-      <CardContent className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-sm text-muted-foreground">{title}</h2>
-          {status.active && (
-            <span className="flex items-center gap-1.5 text-sm font-medium text-emerald-700 dark:text-emerald-400">
-              <CircleCheck className="size-4" aria-hidden="true" />
-              In memory
-            </span>
-          )}
-        </div>
+    <SettingCard title={title} status={badge}>
 
         {!status.available && (
           <Notice>The device could not be asked about log2ram just now.</Notice>
@@ -113,19 +107,16 @@ export function Log2ramCard({ onError }: { onError: (error: unknown) => void }) 
           </Label>
         </div>
 
-        <p className="text-sm">
-          Switched on, the logs are kept in memory and written to the card once a day and at
-          shutdown, instead of all the time, which spares the card. After a power cut the log
-          entries since the last write are gone.
-          {!status.installed && ' Switching on installs log2ram from Debian first.'}
-        </p>
-
-        {status.active && <p className="text-sm">In memory now: {space} used.</p>}
+        {!status.enabled && (
+          <p className="text-sm">
+            For a device on an SD card: the logs are written to the card once a day instead of all the time, which spares
+            the card.
+          </p>
+        )}
 
         {status.restartNeeded && status.enabled && (
           <Notice>
-            Switched on. It takes effect when the device restarts (the dashboard has the
-            button).
+            Switched on. It takes effect when the device restarts (Restart, below).
           </Notice>
         )}
         {status.restartNeeded && !status.enabled && (
@@ -150,6 +141,14 @@ export function Log2ramCard({ onError }: { onError: (error: unknown) => void }) 
           <Notice>This was switched on on the device this SGC was restored from.</Notice>
         )}
 
+        <More>
+          <p>
+            Switched on, the logs are kept in memory (log2ram, from Debian) and written to the card once a day and at
+            shutdown, instead of all the time. After a power cut the log entries since the last write are gone.
+            {!status.installed && ' Switching on installs log2ram first.'}
+          </p>
+        </More>
+
         {asking && (
           <SwitchOnDialog
             status={status}
@@ -160,18 +159,12 @@ export function Log2ramCard({ onError }: { onError: (error: unknown) => void }) 
             }}
           />
         )}
-      </CardContent>
-    </Card>
+    </SettingCard>
   )
 }
 
 function Notice({ children }: { children: ReactNode }) {
-  return (
-    <p className="flex items-start gap-2 text-sm text-amber-700 dark:text-amber-400">
-      <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-      <span>{children}</span>
-    </p>
-  )
+  return <Warning>{children}</Warning>
 }
 
 /** Says what switching on means, then does it. A refusal is shown here. */

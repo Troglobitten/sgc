@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import { CircleCheck, KeyRound, LockKeyhole, LockKeyholeOpen, Trash2, TriangleAlert } from 'lucide-react'
+import { CircleCheck, KeyRound, Trash2 } from 'lucide-react'
 
 import { FormError } from '@/components/auth-card'
+import { More, SettingCard, StatusBadge, Warning } from '@/components/setting'
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -12,7 +13,6 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { api, errorMessage, type SshKey, type SshStatus } from '@/lib/api'
@@ -97,12 +97,9 @@ export function SshCard({ onError }: { onError: (error: unknown) => void }) {
 
   if (status === null) {
     return (
-      <Card>
-        <CardContent className="flex flex-col gap-3">
-          <h2 className="text-sm text-muted-foreground">SSH</h2>
-          <p className="text-sm text-muted-foreground">…</p>
-        </CardContent>
-      </Card>
+      <SettingCard title="SSH">
+        <p className="text-sm text-muted-foreground">…</p>
+      </SettingCard>
     )
   }
 
@@ -114,26 +111,15 @@ export function SshCard({ onError }: { onError: (error: unknown) => void }) {
   }
 
   return (
-    <Card>
-      <CardContent className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-sm text-muted-foreground">SSH</h2>
-          <StateBadge status={status} />
-        </div>
-
+    <SettingCard title="SSH" status={<StateBadge status={status} />}>
         {!status.available && (
-          <Notice>
-            SGC could not ask this device about its SSH server, so what follows may be out of
-            date.
-          </Notice>
+          <Warning>SGC could not ask this device about its SSH server, so what follows may be out of date.</Warning>
         )}
-        {notice && <Notice good={notice.good}>{notice.text}</Notice>}
+        {notice && (notice.good ? <Good>{notice.text}</Good> : <Warning>{notice.text}</Warning>)}
 
-        <div className="flex flex-col gap-1.5">
+        <div className="flex flex-col gap-2">
           <p className="text-sm">
-            {status.keys.length === 0
-              ? 'No keys have been added here. Keys the account keeps in its own home folder work as before.'
-              : `Keys that may log in as ${status.account}:`}
+            {status.keys.length === 0 ? 'No keys added here yet.' : `Keys that may log in as ${status.account}:`}
           </p>
           {status.keys.length > 0 && (
             <ul className="divide-y rounded-lg border">
@@ -151,6 +137,7 @@ export function SshCard({ onError }: { onError: (error: unknown) => void }) {
                   <Button
                     variant="ghost"
                     size="icon-sm"
+                    className="text-muted-foreground"
                     aria-label={`Remove ${key.label}`}
                     disabled={status.pending !== null}
                     onClick={() => {
@@ -165,10 +152,10 @@ export function SshCard({ onError }: { onError: (error: unknown) => void }) {
             </ul>
           )}
           {status.needsInstall && (
-            <Notice>
-              These keys are known from the export this SGC was restored from. They are not on
-              this device until you install them.
-            </Notice>
+            <Warning>
+              These keys come from the export this SGC was restored from. They are not on this device until you install
+              them.
+            </Warning>
           )}
           <div className="flex flex-wrap gap-2">
             <Button
@@ -198,57 +185,61 @@ export function SshCard({ onError }: { onError: (error: unknown) => void }) {
 
         <div className="flex flex-col gap-2 border-t pt-3">
           {status.keysOnly ? (
-            <p className="text-sm">
-              Only keys get in. Passwords are refused, and nobody logs in as root.
-            </p>
+            <p className="text-sm">Passwords are refused, and nobody logs in as root.</p>
           ) : (
             <>
-              <p className="text-sm">
-                With &ldquo;keys only&rdquo;, passwords are refused and nobody logs in as root.{' '}
-                {describeNow(status)}
-              </p>
+              <p className="text-sm">With “keys only”, passwords are refused and nobody logs in as root.</p>
               {status.wanted && (
-                <Notice>
-                  &ldquo;Keys only&rdquo; was on in the export this SGC was restored from. It is
-                  not switched on here until you do it.
-                </Notice>
+                <Warning>“Keys only” was on in the export this SGC was restored from. It stays off here until you switch it on.</Warning>
               )}
               {status.available && !status.loginsVisible ? (
-                <Notice>
-                  This device&apos;s SSH server is set up not to log logins. SGC cannot see that
-                  a key works, so it does not offer the switch.
-                </Notice>
+                <Warning>
+                  This device’s SSH server is set up not to log logins. SGC cannot see that a key works, so it does not
+                  offer the switch.
+                </Warning>
               ) : status.recentLogin ? (
-                <Notice good>
+                <Good>
                   <span title={status.recentLogin.fingerprint}>
-                    Seen: {status.recentLogin.account} logged in with{' '}
-                    {status.recentLogin.key || 'a key of its own'},{' '}
+                    Seen: {status.recentLogin.account} logged in with {status.recentLogin.key || 'a key of its own'},{' '}
                     {formatTimeAgo(status.recentLogin.at)}.
                   </span>
-                </Notice>
+                </Good>
               ) : (
                 <p className="text-sm text-muted-foreground">
-                  To switch, first log in over SSH with a key, so that SGC has seen one work:{' '}
-                  <code className="rounded bg-muted px-1 py-0.5 text-foreground">{command}</code>.
-                  This page notices by itself.
+                  To switch, first log in over SSH with a key, so that SGC has seen one work: <code>{command}</code>. This
+                  page notices by itself.
                 </p>
               )}
             </>
           )}
-          <Button
-            variant="outline"
-            disabled={
-              status.pending !== null ||
-              (!status.keysOnly && (!status.recentLogin || !status.loginsVisible))
-            }
-            onClick={() => {
-              setNotice(null)
-              setDialog({ kind: 'keys-only', enable: !status.keysOnly })
-            }}
-          >
-            {status.keysOnly ? 'Allow passwords again' : 'Switch to keys only'}
-          </Button>
+          <div>
+            <Button
+              variant={status.keysOnly ? 'ghost' : 'outline'}
+              disabled={
+                status.pending !== null ||
+                (!status.keysOnly && (!status.recentLogin || !status.loginsVisible))
+              }
+              onClick={() => {
+                setNotice(null)
+                setDialog({ kind: 'keys-only', enable: !status.keysOnly })
+              }}
+            >
+              {status.keysOnly ? 'Allow passwords again' : 'Switch to keys only'}
+            </Button>
+          </div>
         </div>
+
+        <More>
+          <p>
+            Keys added here are kept by SGC next to the ones the account keeps in its own home folder, which keep working.{' '}
+            {describeNow(status)}
+          </p>
+          <p>
+            “Keys only” takes effect at once and waits for a login with a key; without one within{' '}
+            {Math.round(status.proofSeconds / 60)} minutes it undoes itself. Locked out anyway? On the device itself:{' '}
+            <code>sudo sgc ssh allow-passwords</code>.
+          </p>
+        </More>
 
         {dialog?.kind === 'add' && (
           <AddKeyDialog status={status} onClose={() => setDialog(null)} onDone={done} />
@@ -296,29 +287,14 @@ export function SshCard({ onError }: { onError: (error: unknown) => void }) {
             }}
           />
         )}
-      </CardContent>
-    </Card>
+    </SettingCard>
   )
 }
 
 function StateBadge({ status }: { status: SshStatus }) {
-  if (status.keysOnly) {
-    return (
-      <span className="flex items-center gap-1.5 text-sm font-medium text-emerald-700 dark:text-emerald-400">
-        <LockKeyhole className="size-4" aria-hidden="true" />
-        Keys only
-      </span>
-    )
-  }
-  if (status.available && !status.passwordLogins) {
-    return <span className="text-sm text-muted-foreground">No passwords</span>
-  }
-  return (
-    <span className="flex items-center gap-1.5 text-sm font-medium text-amber-700 dark:text-amber-400">
-      <LockKeyholeOpen className="size-4" aria-hidden="true" />
-      Passwords allowed
-    </span>
-  )
+  if (status.keysOnly) return <StatusBadge tone="ok">Keys only</StatusBadge>
+  if (status.available && !status.passwordLogins) return <StatusBadge tone="muted">No passwords</StatusBadge>
+  return <StatusBadge tone="warn">Passwords allowed</StatusBadge>
 }
 
 // What the SSH server allows right now, in a sentence.
@@ -338,20 +314,11 @@ function shortFingerprint(fingerprint: string): string {
   return fingerprint.length > 24 ? `${fingerprint.slice(0, 15)}…${fingerprint.slice(-6)}` : fingerprint
 }
 
-function Notice({ good, children }: { good?: boolean; children: ReactNode }) {
+/** Good news, in green. */
+function Good({ children }: { children: ReactNode }) {
   return (
-    <p
-      className={
-        good
-          ? 'flex items-start gap-2 text-sm text-emerald-700 dark:text-emerald-400'
-          : 'flex items-start gap-2 text-sm text-amber-700 dark:text-amber-400'
-      }
-    >
-      {good ? (
-        <CircleCheck className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-      ) : (
-        <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-      )}
+    <p className="flex items-start gap-2 text-sm text-emerald-700 dark:text-emerald-400">
+      <CircleCheck className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
       <span className="min-w-0 [overflow-wrap:anywhere]">{children}</span>
     </p>
   )

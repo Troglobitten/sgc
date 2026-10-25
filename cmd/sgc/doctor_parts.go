@@ -147,10 +147,10 @@ func checkNames(stateDir string) doctor.Check {
 		switch {
 		case err != nil:
 			results = append(results, doctor.Bad(fqdn+" has no answer at AdGuard Home: "+err.Error(),
-				"SGC puts the name in place within a minute of starting. If it stays missing: the System page, Names, says why; SGC's log has more (sudo journalctl -u sgc --no-pager -n 50)."))
+				"SGC puts the name in place within a minute of starting. If it stays missing: the System page, Domain and names, says why; SGC's log has more (sudo journalctl -u sgc --no-pager -n 50)."))
 		case !slices.Contains(addresses, lan.Address.String()):
 			results = append(results, doctor.Bad(fmt.Sprintf("%s points at %s, not at this device (%s)", fqdn, strings.Join(addresses, ", "), lan.Address),
-				"A rewrite of your own in AdGuard Home may hold the name; the System page, Names, says so. Remove it in AdGuard Home's page."))
+				"A rewrite of your own in AdGuard Home may hold the name; the System page, Domain and names, says so. Remove it in AdGuard Home's page."))
 		default:
 			results = append(results, doctor.Good(fqdn+" points at this device in AdGuard Home"))
 		}

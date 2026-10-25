@@ -134,7 +134,7 @@ func checkCertificate(stateDir string) doctor.Check {
 			}
 			return one(doctor.Warn("The state of the certificate could not be read: "+reason, ""))
 		}
-		const where = "SGC's System page, under Certificate"
+		const where = "SGC's System page, under Domain and names"
 		c := status.Certificate
 		switch {
 		case status.Disabled != "":

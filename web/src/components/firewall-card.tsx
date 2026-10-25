@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { ShieldCheck, ShieldOff, TriangleAlert } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { FormError } from '@/components/auth-card'
+import { More, SettingCard, StatusBadge, Warning } from '@/components/setting'
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -12,7 +12,6 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { api, ApiError, errorMessage, type FirewallStatus } from '@/lib/api'
 import { firewallChangedEvent } from '@/lib/events'
 
@@ -86,12 +85,9 @@ export function FirewallCard({ onError }: { onError: (error: unknown) => void })
 
   if (status === null) {
     return (
-      <Card>
-        <CardContent className="flex flex-col gap-3">
-          <h2 className="text-sm text-muted-foreground">Firewall</h2>
-          <p className="text-sm text-muted-foreground">…</p>
-        </CardContent>
-      </Card>
+      <SettingCard title="Firewall">
+        <p className="text-sm text-muted-foreground">…</p>
+      </SettingCard>
     )
   }
 
@@ -109,78 +105,54 @@ export function FirewallCard({ onError }: { onError: (error: unknown) => void })
   const awaitingAnswer = status.pending !== null && !answered
 
   return (
-    <Card>
-      <CardContent className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-sm text-muted-foreground">Firewall</h2>
-          <span
-            className={
-              on
-                ? 'flex items-center gap-1.5 text-sm font-medium text-emerald-700 dark:text-emerald-400'
-                : 'flex items-center gap-1.5 text-sm font-medium text-amber-700 dark:text-amber-400'
-            }
-          >
-            {on ? (
-              <ShieldCheck className="size-4" aria-hidden="true" />
-            ) : (
-              <ShieldOff className="size-4" aria-hidden="true" />
-            )}
-            {on ? 'On' : 'Off'}
-          </span>
-        </div>
-
+    <SettingCard title="Firewall" status={on ? <StatusBadge tone="ok">On</StatusBadge> : <StatusBadge tone="warn">Off</StatusBadge>}>
         {on ? (
-          <p className="text-sm">
-            Only devices in your home network reach {letIn}. Everything else that arrives
-            uninvited is ignored.
-          </p>
+          <p className="text-sm">Only your home network reaches {letIn}.</p>
         ) : (
           <p className="text-sm">
             This device answers every request that reaches it. With the firewall on, SGC&apos;s
-            page and SSH answer only to devices in your home network.
+            page and SSH answer only to your home network.
           </p>
         )}
 
-        {notice && <Notice>{notice}</Notice>}
+        {notice && <Warning>{notice}</Warning>}
         {!on && status.wanted && !notice && (
-          <Notice>
-            The firewall was on in the export this SGC was restored from. It is not switched on
-            here until you do it.
-          </Notice>
+          <Warning>The firewall was on in the export this SGC was restored from. It stays off here until you switch it on.</Warning>
         )}
         {wouldLockOut && (
-          <Notice>
-            You are connecting from {status.client.address}, which is not a home-network
-            address. The firewall would keep you out, so it cannot be switched on from here. Open
-            SGC by its home-network address instead.
-          </Notice>
+          <Warning>
+            You are connecting from {status.client.address}, which is not a home-network address. The firewall would keep
+            you out, so it cannot be switched on from here. Open SGC by its home-network address instead.
+          </Warning>
         )}
 
         {on && !status.pending && status.behind.length > 0 && (
-          <Notice>
-            The rules were made before {status.behind.join(', ')}{' '}
-            {status.behind.length === 1 ? 'was' : 'were'} switched on, and do not let{' '}
-            {status.behind.length === 1 ? 'it' : 'them'} in yet.
-          </Notice>
+          <Warning>
+            <p>
+              The rules are older than {status.behind.join(', ')}, and do not let{' '}
+              {status.behind.length === 1 ? 'it' : 'them'} in yet.
+            </p>
+            <div>
+              <Button
+                variant="outline"
+                onClick={async () => {
+                  setNotice(null)
+                  try {
+                    take(await api.changeFirewall(true, true))
+                  } catch (e) {
+                    setNotice(errorMessage(e))
+                  }
+                }}
+              >
+                Bring the rules up to date
+              </Button>
+            </div>
+          </Warning>
         )}
 
         <div className="flex flex-wrap gap-2">
-          {on && !status.pending && status.behind.length > 0 && (
-            <Button
-              onClick={async () => {
-                setNotice(null)
-                try {
-                  take(await api.changeFirewall(true, true))
-                } catch (e) {
-                  setNotice(errorMessage(e))
-                }
-              }}
-            >
-              Bring the rules up to date
-            </Button>
-          )}
           <Button
-            variant="outline"
+            variant={on ? 'ghost' : 'default'}
             disabled={wouldLockOut || status.pending !== null}
             onClick={() => {
               setNotice(null)
@@ -190,6 +162,17 @@ export function FirewallCard({ onError }: { onError: (error: unknown) => void })
             {on ? 'Switch off' : 'Switch on'}
           </Button>
         </div>
+
+        <More>
+          <p>
+            “Your home network” is every private address (192.168.x.x, 10.x.x.x and the like). Every change takes effect
+            at once and undoes itself after {status.confirmSeconds} seconds unless this page confirms that it can still
+            reach SGC, so a mistake cannot lock you out.
+          </p>
+          <p>
+            Locked out anyway? On the device itself: <code>sudo sgc firewall off</code>.
+          </p>
+        </More>
 
         {asking && (
           <ChangeDialog
@@ -215,17 +198,7 @@ export function FirewallCard({ onError }: { onError: (error: unknown) => void })
             }}
           />
         )}
-      </CardContent>
-    </Card>
-  )
-}
-
-function Notice({ children }: { children: ReactNode }) {
-  return (
-    <p className="flex items-start gap-2 text-sm text-amber-700 dark:text-amber-400">
-      <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-      <span>{children}</span>
-    </p>
+    </SettingCard>
   )
 }
 

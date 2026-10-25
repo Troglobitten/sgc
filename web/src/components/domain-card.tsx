@@ -1,7 +1,7 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
-import { CircleCheck, TriangleAlert } from 'lucide-react'
+import { useEffect, useState, type FormEvent } from 'react'
 
 import { FormError } from '@/components/auth-card'
+import { Facts, More, SettingCard, StatusBadge, Warning } from '@/components/setting'
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -12,7 +12,6 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { api, errorMessage, type DnsProviderKind, type DomainStatus } from '@/lib/api'
@@ -51,15 +50,12 @@ export function DomainCard({ onError }: { onError: (error: unknown) => void }) {
     }
   }, [onError])
 
-  const title = status?.configured ? `Domain (${status.providerName})` : 'Domain'
+  const title = 'Domain'
   if (status === null) {
     return (
-      <Card>
-        <CardContent className="flex flex-col gap-3">
-          <h2 className="text-sm text-muted-foreground">{title}</h2>
-          <p className="text-sm text-muted-foreground">…</p>
-        </CardContent>
-      </Card>
+      <SettingCard title={title}>
+        <p className="text-sm text-muted-foreground">…</p>
+      </SettingCard>
     )
   }
 
@@ -78,28 +74,16 @@ export function DomainCard({ onError }: { onError: (error: unknown) => void }) {
   const provider = status.providerName
   const username = status.shown?.username
 
+  const badge = !status.configured ? (
+    <StatusBadge tone="muted">Not set up</StatusBadge>
+  ) : status.checkedAt === null ? undefined : status.ok ? (
+    <StatusBadge tone="ok">Connected</StatusBadge>
+  ) : (
+    <StatusBadge tone="warn">Problem</StatusBadge>
+  )
+
   return (
-    <Card>
-      <CardContent className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-sm text-muted-foreground">{title}</h2>
-          {status.configured && status.checkedAt !== null && (
-            <span
-              className={
-                status.ok
-                  ? 'flex items-center gap-1.5 text-sm font-medium text-emerald-700 dark:text-emerald-400'
-                  : 'flex items-center gap-1.5 text-sm font-medium text-amber-700 dark:text-amber-400'
-              }
-            >
-              {status.ok ? (
-                <CircleCheck className="size-4" aria-hidden="true" />
-              ) : (
-                <TriangleAlert className="size-4" aria-hidden="true" />
-              )}
-              {status.ok ? 'Connected' : 'Problem'}
-            </span>
-          )}
-        </div>
+    <SettingCard title={title} status={badge}>
 
         {!status.configured || editing ? (
           <>
@@ -120,23 +104,25 @@ export function DomainCard({ onError }: { onError: (error: unknown) => void }) {
           </>
         ) : (
           <>
-            <p className="text-sm">
-              <span className="font-medium">{status.domain}</span>, at {provider}
-              {username ? <>, with the account {username}</> : null}. What opens the account is
-              saved and is not shown again.
-            </p>
-            {status.checkedAt !== null && status.ok && (
-              <p className="text-sm text-muted-foreground">
-                {provider} accepted it when last asked, {formatTimeAgo(status.checkedAt)}.
-              </p>
-            )}
+            <Facts
+              items={[
+                ['Domain', <span key="domain" className="font-medium">{status.domain}</span>],
+                ['DNS at', username ? `${provider}, account ${username}` : provider],
+                [
+                  'Last asked',
+                  status.checkedAt === null
+                    ? 'not yet'
+                    : `${formatTimeAgo(status.checkedAt)}${status.ok ? `: ${provider} accepted the key` : ''}`,
+                ],
+              ]}
+            />
             {failing && (
-              <Notice>
+              <Warning>
                 {status.problem}
                 {status.failingSince !== null && ` Since ${formatTimeAgo(status.failingSince)}.`}{' '}
                 While this lasts, certificates cannot be renewed. If the key was replaced or
                 withdrawn at {provider}, enter the new one with “Change”.
-              </Notice>
+              </Warning>
             )}
             <div className="flex flex-wrap gap-2">
               <Button variant="outline" onClick={askNow} disabled={asking}>
@@ -145,10 +131,18 @@ export function DomainCard({ onError }: { onError: (error: unknown) => void }) {
               <Button variant="outline" onClick={() => setEditing(true)}>
                 Change
               </Button>
-              <Button variant="ghost" onClick={() => setRemoving(true)}>
+              <Button variant="ghost" className="text-muted-foreground" onClick={() => setRemoving(true)}>
                 Remove
               </Button>
             </div>
+            <More>
+              <p>
+                SGC uses the account to get the certificate for your names and to keep the VPN’s name pointing at your
+                home. It asks {provider} every few hours whether the key still works, and says so here and on the
+                dashboard when it does not. The key is saved on this device, travels in an export, and is never shown
+                again.
+              </p>
+            </More>
           </>
         )}
 
@@ -163,19 +157,10 @@ export function DomainCard({ onError }: { onError: (error: unknown) => void }) {
             }}
           />
         )}
-      </CardContent>
-    </Card>
+    </SettingCard>
   )
 }
 
-function Notice({ children }: { children: ReactNode }) {
-  return (
-    <p className="flex items-start gap-2 text-sm text-amber-700 dark:text-amber-400">
-      <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-      <span>{children}</span>
-    </p>
-  )
-}
 
 /**
  * The domain, the provider, and what that provider asks for. Secrets are

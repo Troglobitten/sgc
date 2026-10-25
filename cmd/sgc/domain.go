@@ -103,7 +103,7 @@ func checkDomain(stateDir string) doctor.Check {
 		kind, _ := dnsprovider.Lookup(status.Provider)
 		switch {
 		case !status.Configured:
-			return one(doctor.Good("No domain is set up yet (that is done on SGC's System page, under Domain)"))
+			return one(doctor.Good("No domain is set up yet (that is done on SGC's System page, under Domain and names)"))
 		case status.CheckedAt == nil:
 			return one(doctor.Good("The domain is " + status.Domain + "; SGC has not asked " + provider + " about it yet"))
 		case status.OK:
@@ -114,7 +114,7 @@ func checkDomain(stateDir string) doctor.Check {
 				since = " (since " + status.FailingSince.Local().Format("2 January 15:04") + ")"
 			}
 			return one(doctor.Bad("The domain "+status.Domain+": "+status.Problem+since,
-				"If the "+kind.Credentials+" were replaced or withdrawn at "+provider+": make new ones there, and enter them on SGC's System page, under Domain.\n"+
+				"If the "+kind.Credentials+" were replaced or withdrawn at "+provider+": make new ones there, and enter them on SGC's System page, under Domain and names.\n"+
 					"If this device does not reach the internet, that is the thing to put right first.\n"+
 					"SGC asks "+provider+" again every hour; \"Ask "+provider+" now\" on that page does it at once."))
 		}

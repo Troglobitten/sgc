@@ -288,7 +288,7 @@ function Finished({
             <button type="button" className="underline-offset-4 hover:underline" onClick={() => onNavigate('system')}>
               Backups, notifications and logs in memory
             </button>{' '}
-            on the System page (logs in memory spare an SD card).
+            on the System page (logs in memory, under This device, spare an SD card).
           </li>
         </ul>
         <div className="flex flex-wrap gap-2">

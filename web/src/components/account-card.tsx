@@ -2,8 +2,8 @@ import { useState, type FormEvent } from 'react'
 import { CircleCheck } from 'lucide-react'
 
 import { FormError } from '@/components/auth-card'
+import { More, SettingCard } from '@/components/setting'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { api, errorMessage } from '@/lib/api'
@@ -46,9 +46,7 @@ export function AccountCard({ username, minPasswordLength }: { username: string;
   }
 
   return (
-    <Card>
-      <CardContent className="flex flex-col gap-3">
-        <h2 className="text-sm text-muted-foreground">Your account</h2>
+    <SettingCard title="Your account">
         <p className="text-sm">
           Signed in as <span className="font-medium">{username}</span>, the admin.
         </p>
@@ -94,10 +92,11 @@ export function AccountCard({ username, minPasswordLength }: { username: string;
             Change my password
           </Button>
         )}
-        <p className="text-xs text-muted-foreground">
-          Lost it? On the device, over SSH: <code>sudo sgc reset-admin</code> gives you a new one.
-        </p>
-      </CardContent>
-    </Card>
+        <More label="Lost your password?">
+          <p>
+            On the device itself, over SSH: <code>sudo sgc reset-admin</code> gives you a new one and ends every sign-in.
+          </p>
+        </More>
+    </SettingCard>
   )
 }

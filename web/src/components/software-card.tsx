@@ -1,11 +1,10 @@
 import { useEffect, useState } from 'react'
-import { TriangleAlert } from 'lucide-react'
 
 import { FormError } from '@/components/auth-card'
+import { More, SettingCard, StatusBadge, Warning } from '@/components/setting'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { api, errorMessage, type EolState, type ProxyStatus } from '@/lib/api'
-import { formatTimeAgo } from '@/lib/format'
+import { formatDate, formatTimeAgo } from '@/lib/format'
 
 /**
  * The software SGC stands on: until when it gets security fixes, and the
@@ -34,81 +33,87 @@ export function SoftwareCard({ onError }: { onError: (error: unknown) => void })
     }
   }
 
+  const looked = eol !== null && eol.items.length > 0
+  const attention = eol !== null && (eol.items.some((i) => i.warning) || eol.programs.some((p) => p.behind))
+  const badge = !looked ? undefined : attention ? (
+    <StatusBadge tone="warn">Needs a look</StatusBadge>
+  ) : (
+    <StatusBadge tone="ok">All supported</StatusBadge>
+  )
+  // The installed Traefik differs from the one this SGC brings only after an
+  // update of SGC, until the proxy is updated too.
+  const traefikBehind = proxy?.installed && proxy.version !== proxy.pinnedVersion
+
   return (
-    <Card>
-      <CardContent className="flex flex-col gap-3">
-        <h2 className="text-sm text-muted-foreground">Software and its end of life</h2>
-        {eol && eol.items.length === 0 && <p className="text-sm text-muted-foreground">Not looked yet.</p>}
-        {eol?.items.map((item) => (
-          <div key={item.product} className="text-sm">
-            <span className="font-medium">
-              {item.label} {item.cycle}
-            </span>
-            {': '}
-            {item.securityEnd
-              ? `security fixes until ${new Date(item.securityEnd).toLocaleDateString()}`
-              : 'no end date yet'}
-            {item.end && item.end !== item.securityEnd && `, long-term until ${new Date(item.end).toLocaleDateString()}`}
-            {item.warning && (
-              <p className="flex gap-2 text-amber-700 dark:text-amber-400">
-                <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-                {item.warning}
-              </p>
-            )}
-          </div>
+    <SettingCard title="End of life" status={badge}>
+      {eol && eol.items.length === 0 && <p className="text-sm text-muted-foreground">Not looked yet.</p>}
+      {looked && (
+        <ul className="divide-y text-sm">
+          {eol.items.map((item) => (
+            <li key={item.product} className="flex flex-wrap justify-between gap-x-4 gap-y-0.5 py-1.5">
+              <span className="font-medium">
+                {item.label} {item.cycle}
+              </span>
+              <span className="text-muted-foreground">
+                {item.securityEnd ? `security fixes until ${formatDate(item.securityEnd)}` : 'no end date yet'}
+              </span>
+            </li>
+          ))}
+          {eol.programs.map((p) => (
+            <li key={p.name} className="flex flex-wrap justify-between gap-x-4 gap-y-0.5 py-1.5">
+              <span className="font-medium">
+                {p.name} {p.pinned}
+              </span>
+              <span className={p.behind ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}>
+                {p.behind ? `${p.newest} is out` : p.newest ? 'the newest release' : p.problem ? 'could not be asked' : ''}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {eol?.items
+        .filter((item) => item.warning)
+        .map((item) => (
+          <Warning key={item.product}>{item.warning}</Warning>
         ))}
-        {eol?.items.some((i) => i.product === 'debian') && (
-          <p className="text-xs text-muted-foreground">
-            Debian's date covers everything that comes from Debian: the Linux kernel (WireGuard is part of it), the
-            firewall (nftables), SSH and the rest of the system. Debian keeps fixing them until then, also where the
-            programs' own makers have stopped.
-          </p>
-        )}
-        {eol?.programs.map((p) => (
-          <div key={p.name} className="text-sm">
-            <span className="font-medium">
-              {p.name} {p.pinned}
-            </span>
-            {p.name === 'AdGuard Home'
-              ? ': publishes no end-of-life dates; only its newest release gets fixes.'
-              : ': installed by SGC.'}
-            {p.behind && (
-              <p className="flex gap-2 text-amber-700 dark:text-amber-400">
-                <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-                {p.name} {p.newest} is out; this SGC brings {p.pinned}. A newer SGC brings it.
-              </p>
-            )}
-            {!p.behind && p.newest && <span className="text-xs text-muted-foreground"> The newest release.</span>}
-            {p.problem && <p className="text-xs text-muted-foreground">{p.name}: {p.problem}</p>}
-          </div>
+      {eol?.programs
+        .filter((p) => p.behind)
+        .map((p) => (
+          <Warning key={p.name}>
+            {p.name} {p.newest} is out; this SGC brings {p.pinned}. A newer SGC brings the newer one.
+          </Warning>
         ))}
-        {eol?.problem && <p className="text-xs text-amber-700 dark:text-amber-400">{eol.problem}</p>}
-        {eol?.checkedAt && (
-          <p className="text-xs text-muted-foreground">
-            Dates from endoflife.date, newest releases from GitHub, looked {formatTimeAgo(eol.checkedAt)}. SGC itself
-            comes with SGC's own updates (on the dashboard).
+      {traefikBehind && (
+        <Warning>
+          <p>
+            Traefik {proxy.version} is installed; this SGC brings {proxy.pinnedVersion}.
           </p>
-        )}
-        {proxy?.installed && (
-          <p className="text-sm">
-            Traefik {proxy.version}
-            {proxy.version !== proxy.pinnedVersion && (
-              <>
-                {' '}· this SGC brings {proxy.pinnedVersion}{' '}
-                <Button size="xs" variant="outline" disabled={busy} onClick={() => run(async () => setProxy(await api.updateProxy()))}>
-                  {busy ? 'Updating…' : 'Update'}
-                </Button>
-              </>
-            )}
-          </p>
-        )}
-        <FormError message={error} />
-        <div>
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => run(async () => setEol(await api.checkEol()))}>
-            Look again
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
+          <div>
+            <Button variant="outline" disabled={busy} onClick={() => run(async () => setProxy(await api.updateProxy()))}>
+              {busy ? 'Updating…' : `Update Traefik to ${proxy.pinnedVersion}`}
+            </Button>
+          </div>
+        </Warning>
+      )}
+      {eol?.problem && <Warning>{eol.problem}</Warning>}
+      <FormError message={error} />
+      <div className="flex flex-wrap items-center gap-3">
+        <Button variant="outline" disabled={busy} onClick={() => run(async () => setEol(await api.checkEol()))}>
+          Look again
+        </Button>
+        {eol?.checkedAt && <span className="text-xs text-muted-foreground">Looked {formatTimeAgo(eol.checkedAt)}</span>}
+      </div>
+      <More label="What about the kernel, WireGuard and SSH?">
+        <p>
+          They come from Debian, so Debian’s date covers them: the Linux kernel (WireGuard is part of it), the firewall
+          (nftables), SSH and the rest of the system. Debian keeps fixing them until then, also where the programs’ own
+          makers have stopped.
+        </p>
+        <p>
+          AdGuard Home publishes no end-of-life dates; only its newest release gets fixes, so SGC compares with that. Dates
+          come from endoflife.date, newest releases from GitHub. SGC itself comes with SGC’s own updates (above).
+        </p>
+      </More>
+    </SettingCard>
   )
 }

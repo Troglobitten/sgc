@@ -1,21 +1,12 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import {
-  BadgeCheck,
-  Globe,
-  HardDrive,
-  PackageCheck,
-  Route,
-  Shield,
-  ShieldCheck,
-  TriangleAlert,
-} from 'lucide-react'
+import { BadgeCheck, ChevronRight, Globe, KeyRound, Route, Shield, ShieldCheck, TriangleAlert } from 'lucide-react'
 
 import { AppShell, type ShellProps } from '@/components/app-shell'
 import { GuideChecklist } from '@/components/guide-checklist'
 import { HealthDot, ServiceIcon } from '@/components/service-icon'
-import { Logo } from '@/components/logo'
-import { UpdateCard } from '@/components/update-card'
-import { Card, CardContent } from '@/components/ui/card'
+import { PageTitle, SettingCard } from '@/components/setting'
+import { AvailableUpdateCard } from '@/components/update-card'
+import { UpdatingScreen } from '@/components/updating-screen'
 import {
   api,
   ApiError,
@@ -23,28 +14,37 @@ import {
   type AuditEntry,
   type CertificateStatus,
   type DnsStatus,
-  type DomainStatus,
   type FirewallStatus,
   type Health,
-  type OsUpdatesStatus,
+  type Notification,
   type ProxyStatus,
   type Service,
+  type SshStatus,
+  type VpnStatus,
 } from '@/lib/api'
-import { daysUntil, formatDuration, formatGigabytes, formatTimeAgo, percentOf } from '@/lib/format'
+import { daysUntil, formatDuration, formatTimeAgo, percentOf } from '@/lib/format'
+import type { Page, SystemSection } from '@/lib/pages'
+import { toneClass, type Tone } from '@/lib/tone'
 
 const healthInterval = 3_000
 const activityInterval = 15_000
 
+/**
+ * The dashboard: what needs the owner first, then SGC's parts in a word
+ * each, then the services. Settings are on the other pages; every part here
+ * links to where it is set.
+ */
 export function DashboardPage({ shell, onOpenGuide }: { shell: ShellProps; onOpenGuide: () => void }) {
   const [health, setHealth] = useState<Health | null>(null)
   const [activity, setActivity] = useState<AuditEntry[] | null>(null)
   const [firewall, setFirewall] = useState<FirewallStatus | null>(null)
-  const [osUpdates, setOsUpdates] = useState<OsUpdatesStatus | null>(null)
+  const [ssh, setSsh] = useState<SshStatus | null>(null)
   const [dns, setDns] = useState<DnsStatus | null>(null)
-  const [domain, setDomain] = useState<DomainStatus | null>(null)
   const [certificate, setCertificate] = useState<CertificateStatus | null>(null)
   const [services, setServices] = useState<Service[] | null>(null)
   const [proxyStatus, setProxyStatus] = useState<ProxyStatus | null>(null)
+  const [vpn, setVpn] = useState<VpnStatus | null>(null)
+  const [attention, setAttention] = useState<Notification[] | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
   // While an update runs: the number of the attempt before it (or null).
   const [updating, setUpdating] = useState<{ previousAttempt: number | null } | null>(null)
@@ -87,39 +87,22 @@ export function DashboardPage({ shell, onOpenGuide }: { shell: ShellProps; onOpe
   useEffect(() => {
     if (paused) return
     let stopped = false
+    // Each part in a word: a part that cannot be asked just stays "…",
+    // and only the essential ones (the activity) report a problem.
+    const quiet = () => {}
     const load = () => {
       api.audit().then(
         (entries) => !stopped && setActivity(entries),
         (e) => !stopped && handleError(e),
       )
-      api.firewall().then(
-        (status) => !stopped && setFirewall(status),
-        (e) => !stopped && handleError(e),
-      )
-      api.osUpdates().then(
-        (status) => !stopped && setOsUpdates(status),
-        (e) => !stopped && handleError(e),
-      )
-      api.dns().then(
-        (status) => !stopped && setDns(status),
-        (e) => !stopped && handleError(e),
-      )
-      api.domain().then(
-        (status) => !stopped && setDomain(status),
-        (e) => !stopped && handleError(e),
-      )
-      api.certificate().then(
-        (status) => !stopped && setCertificate(status),
-        (e) => !stopped && handleError(e),
-      )
-      api.services().then(
-        (data) => !stopped && setServices(data.services),
-        (e) => !stopped && handleError(e),
-      )
-      api.proxy().then(
-        (status) => !stopped && setProxyStatus(status),
-        (e) => !stopped && handleError(e),
-      )
+      api.notificationSummary().then((s) => !stopped && setAttention(s.banners), quiet)
+      api.firewall().then((s) => !stopped && setFirewall(s), quiet)
+      api.ssh().then((s) => !stopped && setSsh(s), quiet)
+      api.dns().then((s) => !stopped && setDns(s), quiet)
+      api.certificate().then((s) => !stopped && setCertificate(s), quiet)
+      api.services().then((data) => !stopped && setServices(data.services), quiet)
+      api.proxy().then((s) => !stopped && setProxyStatus(s), quiet)
+      api.vpn().then((s) => !stopped && setVpn(s), quiet)
     }
     load()
     const timer = setInterval(load, activityInterval)
@@ -141,6 +124,7 @@ export function DashboardPage({ shell, onOpenGuide }: { shell: ShellProps; onOpe
 
   return (
     <AppShell page="dashboard" {...shell}>
+      <PageTitle title="Dashboard" />
       <GuideChecklist onContinue={onOpenGuide} />
       {problem && (
         <p
@@ -152,189 +136,288 @@ export function DashboardPage({ shell, onOpenGuide }: { shell: ShellProps; onOpe
         </p>
       )}
 
-      <Section title="System">
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-          <Metric label="Processor" value={health && `${Math.round(health.cpuPercent)}%`} />
-          <Metric
-            label="Memory"
-            value={health && `${percentOf(health.memoryUsedBytes, health.memoryTotalBytes)}%`}
-            detail={
-              health &&
-              `${formatGigabytes(health.memoryUsedBytes)} of ${formatGigabytes(health.memoryTotalBytes)}`
-            }
-          />
-          <Metric
-            label="Disk"
-            value={health && `${percentOf(health.diskUsedBytes, health.diskTotalBytes)}%`}
-            detail={
-              health &&
-              `${formatGigabytes(health.diskUsedBytes)} of ${formatGigabytes(health.diskTotalBytes)}`
-            }
-          />
-          <Metric
-            label="Temperature"
-            value={
-              health &&
-              (health.temperatureC === null ? '–' : `${Math.round(health.temperatureC)} °C`)
-            }
-            detail={health && health.temperatureC === null ? 'No sensor' : null}
-          />
-          <Metric label="Running for" value={health && formatDuration(health.uptimeSeconds)} />
-        </div>
-        {health && (
-          <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
-            <HardDrive className="size-4" aria-hidden="true" />
-            {[health.model, health.os, bootMediumLabel(health.bootMedium)]
-              .filter(Boolean)
-              .join(' · ')}
-          </p>
-        )}
-      </Section>
+      {attention && attention.length > 0 && <NeedsAttention items={attention} onNavigate={onNavigate} />}
 
-      <Section title="Services">
-        {/* The DNS provider no longer accepting the key stops certificates from being
-            renewed, weeks before anything else shows it. */}
-        {domain?.configured && domain.checkedAt !== null && !domain.ok && (
-          <button
-            type="button"
-            onClick={() => onNavigate('system')}
-            className="mb-3 flex w-full items-start gap-2 rounded-xl bg-card p-3 text-left text-sm text-amber-700 ring-1 ring-foreground/10 outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 dark:text-amber-400"
-          >
-            <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-            <span>
-              The domain {domain.domain}: {domain.problem} The System page has the details.
-            </span>
-          </button>
-        )}
+      <Section title="Status">
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          <FirewallTile status={firewall} onOpen={() => onNavigate('system')} />
-          <OsUpdatesTile status={osUpdates} onOpen={() => onNavigate('system')} />
-          <ServiceTile icon={<ShieldCheck />} name="VPN" />
-          <DnsTile status={dns} onOpen={() => onNavigate('system')} />
-          <ProxyTile status={proxyStatus} onOpen={() => onNavigate('services')} />
-          <CertificateTile status={certificate} onOpen={() => onNavigate('system')} />
+          <Tile icon={<Shield />} label="Firewall" {...firewallWord(firewall)} onOpen={() => onNavigate('system', 'security')} />
+          <Tile icon={<KeyRound />} label="SSH" {...sshWord(ssh)} onOpen={() => onNavigate('system', 'security')} />
+          <Tile icon={<Globe />} label="DNS" {...dnsWord(dns)} onOpen={() => onNavigate('system', 'dns')} />
+          <Tile icon={<Route />} label="Proxy" {...proxyWord(proxyStatus)} onOpen={() => onNavigate('services')} />
+          <Tile icon={<ShieldCheck />} label="VPN" {...vpnWord(vpn)} onOpen={() => onNavigate('people')} />
+          <Tile
+            icon={<BadgeCheck />}
+            label="Certificate"
+            {...certificateWord(certificate)}
+            onOpen={() => onNavigate('system', 'domain')}
+          />
         </div>
       </Section>
 
       {services && services.length > 0 && (
-        <Section title="Your services">
+        <Section title="Your services" action={<SectionLink onClick={() => onNavigate('services')}>Manage</SectionLink>}>
           <ServiceGrid services={services} onManage={() => onNavigate('services')} />
         </Section>
       )}
 
-      <div className="grid gap-3 md:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
-        <Card>
-          <CardContent className="flex flex-col gap-2">
-            <h2 className="text-sm text-muted-foreground">Recent activity</h2>
-            <ActivityList entries={activity} />
-          </CardContent>
-        </Card>
-        <div className="flex flex-col gap-3">
-          <UpdateCard
-            onError={handleError}
-            onUpdating={(previousAttempt) => setUpdating({ previousAttempt })}
-          />
+      <div className="grid items-start gap-4 md:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+        <SettingCard title="Recent activity" status={<SectionLink onClick={() => onNavigate('logs')}>All activity</SectionLink>}>
+          <ActivityList entries={activity} limit={6} />
+        </SettingCard>
+        <div className="flex flex-col gap-4">
+          <AvailableUpdateCard onError={handleError} onUpdating={(previousAttempt) => setUpdating({ previousAttempt })} />
+          <SettingCard
+            title="This device"
+            status={<SectionLink onClick={() => onNavigate('system', 'device')}>Details</SectionLink>}
+          >
+            {health ? (
+              <>
+                <p className="flex flex-wrap gap-x-4 gap-y-1 text-sm tabular-nums">
+                  <span>
+                    Processor <b className="font-semibold">{Math.round(health.cpuPercent)}%</b>
+                  </span>
+                  <span>
+                    Memory <b className="font-semibold">{percentOf(health.memoryUsedBytes, health.memoryTotalBytes)}%</b>
+                  </span>
+                  <span>
+                    Disk <b className="font-semibold">{percentOf(health.diskUsedBytes, health.diskTotalBytes)}%</b>
+                  </span>
+                  {health.temperatureC !== null && <b className="font-semibold">{Math.round(health.temperatureC)} °C</b>}
+                  <span>
+                    up <b className="font-semibold">{formatDuration(health.uptimeSeconds)}</b>
+                  </span>
+                </p>
+                <p className="text-[13px] text-muted-foreground">
+                  {[health.model, health.os, bootMediumLabel(health.bootMedium)].filter(Boolean).join(' · ')}
+                </p>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">…</p>
+            )}
+          </SettingCard>
         </div>
       </div>
     </AppShell>
   )
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+function Section({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
   return (
-    <section className="flex flex-col gap-2.5">
-      <h2 className="text-sm text-muted-foreground">{title}</h2>
+    <section className="flex flex-col gap-3">
+      <div className="flex items-baseline justify-between gap-3">
+        <h2 className="text-[15px] font-semibold">{title}</h2>
+        {action}
+      </div>
       {children}
     </section>
   )
 }
 
-/** One number with its label. Shows a quiet placeholder until the first reading arrives. */
-function Metric({
-  label,
-  value,
-  detail,
+function SectionLink({ onClick, children }: { onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex items-center gap-0.5 rounded-sm text-sm font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+    >
+      {children}
+      <ChevronRight className="size-4" aria-hidden="true" />
+    </button>
+  )
+}
+
+/**
+ * The problems that last (the notifications' banners), each once, with the
+ * way to where it is put right. The bell keeps the history.
+ */
+function NeedsAttention({
+  items,
+  onNavigate,
 }: {
-  label: string
-  value: string | null
-  detail?: string | null
+  items: Notification[]
+  onNavigate: (page: Page, section?: SystemSection | null) => void
 }) {
+  const serious = items.some((n) => n.severity === 'problem')
   return (
-    <div className="rounded-xl bg-card p-3 ring-1 ring-foreground/10">
-      <p className="text-sm text-muted-foreground">{label}</p>
-      <p className="text-2xl font-medium tabular-nums">{value ?? '…'}</p>
-      {detail && <p className="text-xs text-muted-foreground">{detail}</p>}
-    </div>
+    <section
+      aria-labelledby="attention-heading"
+      className={
+        serious
+          ? 'rounded-xl bg-destructive/10 px-4 py-3'
+          : 'rounded-xl bg-amber-500/10 px-4 py-3'
+      }
+    >
+      <h2
+        id="attention-heading"
+        className={`flex items-center gap-2 text-[15px] font-semibold ${serious ? 'text-destructive' : 'text-amber-800 dark:text-amber-300'}`}
+      >
+        <TriangleAlert className="size-4" aria-hidden="true" />
+        Needs your attention
+      </h2>
+      <ul className="mt-1 divide-y divide-foreground/10">
+        {items.map((n) => {
+          const where = whereFor(n)
+          return (
+            <li key={n.id} className="flex flex-col gap-1 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+              <span className="text-sm">
+                <span className="font-medium">{n.title}</span>
+                {n.body && <span className="text-muted-foreground"> · {n.body}</span>}
+              </span>
+              <SectionLink onClick={() => onNavigate(where.page, where.section)}>{where.label}</SectionLink>
+            </li>
+          )
+        })}
+      </ul>
+    </section>
   )
 }
 
-/** A placeholder for a part of SGC that a later version brings. */
-function ServiceTile({ icon, name }: { icon: ReactNode; name: string }) {
-  return (
-    <div className="rounded-xl bg-card p-3 ring-1 ring-foreground/10">
-      <p className="flex items-center gap-2 text-sm font-medium [&_svg]:size-4">
-        {icon}
-        {name}
-      </p>
-      <p className="mt-1 text-xs text-muted-foreground">Not set up yet</p>
-    </div>
-  )
+/** Where a lasting problem is put right. */
+function whereFor(n: Notification): { label: string; page: Page; section?: SystemSection } {
+  switch (n.event) {
+    case 'certificate':
+    case 'domain':
+      return { label: 'Domain', page: 'system', section: 'domain' }
+    case 'public_ip':
+      return { label: 'People', page: 'people' }
+    case 'service_down':
+    case 'abandoned':
+    case 'announce':
+      return { label: 'Services', page: 'services' }
+    case 'health':
+      return { label: 'This device', page: 'system', section: 'device' }
+    case 'updates':
+    case 'end_of_life':
+      return { label: 'Updates', page: 'system', section: 'updates' }
+    case 'backup':
+      return { label: 'Backups', page: 'system', section: 'backups' }
+    case 'core_down':
+      if (/DNS|AdGuard/i.test(n.title)) return { label: 'DNS', page: 'system', section: 'dns' }
+      if (/proxy|Traefik/i.test(n.title)) return { label: 'Services', page: 'services' }
+      if (/VPN|WireGuard/i.test(n.title)) return { label: 'People', page: 'people' }
+      return { label: 'System', page: 'system' }
+    default:
+      return { label: 'Logs', page: 'logs' }
+  }
 }
 
-/** The proxy in a word; the Services page has the switch. */
-function ProxyTile({ status, onOpen }: { status: ProxyStatus | null; onOpen: () => void }) {
-  let text = '…'
-  let tone = 'text-muted-foreground'
-  if (status && !status.wanted) text = 'Off'
-  else if (status?.running && status.lastApply?.ok !== false)
-    [text, tone] = ['On', 'text-emerald-700 dark:text-emerald-400']
-  else if (status?.running) [text, tone] = ['Last change failed', 'text-amber-700 dark:text-amber-400']
-  else if (status) [text, tone] = ['Not running', 'text-amber-700 dark:text-amber-400']
+/** A part of SGC in a word, opening where it is set. */
+function Tile({
+  icon,
+  label,
+  text,
+  tone,
+  onOpen,
+}: {
+  icon: ReactNode
+  label: string
+  text: string
+  tone: Tone
+  onOpen: () => void
+}) {
   return (
     <button
       type="button"
       onClick={onOpen}
-      className="rounded-xl bg-card p-3 text-left ring-1 ring-foreground/10 outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
+      className="flex min-h-16 flex-col items-start gap-0.5 rounded-xl bg-card p-3 text-left ring-1 ring-foreground/10 outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
     >
-      <span className="flex items-center gap-2 text-sm font-medium">
-        <Route className="size-4" aria-hidden="true" />
-        Proxy
+      <span className="flex items-center gap-2 text-sm font-medium [&_svg]:size-4 [&_svg]:text-muted-foreground">
+        {icon}
+        {label}
       </span>
-      <span className={`mt-1 block text-xs ${tone}`}>{text}</span>
+      <span className={`text-xs ${toneClass(tone)}`}>{text}</span>
     </button>
   )
+}
+
+type Word = { text: string; tone: Tone }
+const waiting: Word = { text: '…', tone: 'muted' }
+
+function firewallWord(s: FirewallStatus | null): Word {
+  if (!s) return waiting
+  if (s.state === 'pending') return { text: 'Waiting for confirmation', tone: 'warn' }
+  if (s.state === 'off') return { text: 'Off', tone: 'warn' }
+  if (s.behind.length > 0) return { text: 'On, rules behind', tone: 'warn' }
+  return { text: 'On', tone: 'ok' }
+}
+
+function sshWord(s: SshStatus | null): Word {
+  if (!s) return waiting
+  if (!s.available) return { text: 'Could not be asked', tone: 'muted' }
+  if (s.pending) return { text: 'Waiting for a login with a key', tone: 'warn' }
+  if (s.keysOnly) return { text: 'Keys only', tone: 'ok' }
+  return { text: 'Passwords allowed', tone: 'muted' }
+}
+
+function dnsWord(s: DnsStatus | null): Word {
+  if (!s) return waiting
+  if (!s.available) return { text: 'Could not be asked', tone: 'muted' }
+  if (!s.enabled) return { text: 'Off', tone: 'muted' }
+  if (s.running) return { text: 'Running', tone: 'ok' }
+  return { text: 'Not running', tone: 'warn' }
+}
+
+function proxyWord(s: ProxyStatus | null): Word {
+  if (!s) return waiting
+  if (!s.wanted) return { text: 'Off', tone: 'muted' }
+  if (s.running && s.lastApply?.ok !== false) return { text: 'Running', tone: 'ok' }
+  if (s.running) return { text: 'Last change failed', tone: 'warn' }
+  return { text: 'Not running', tone: 'warn' }
+}
+
+function vpnWord(s: VpnStatus | null): Word {
+  if (!s) return waiting
+  if (!s.enabled) return { text: 'Off', tone: 'muted' }
+  if (!s.running || !s.up) return { text: 'Not running', tone: 'warn' }
+  const devices = s.devices.filter((d) => d.enabled)
+  if (devices.length === 0) return { text: 'On, no devices yet', tone: 'ok' }
+  const connected = devices.filter((d) => d.connected).length
+  return { text: `${connected} of ${devices.length} devices connected`, tone: 'ok' }
+}
+
+function certificateWord(s: CertificateStatus | null): Word {
+  if (!s) return waiting
+  const current = s.certificate?.forDomain ? s.certificate : null
+  const renewalFails = s.lastAttempt != null && !s.lastAttempt.ok && s.lastAttempt.kind === 'renewal'
+  if (s.running) return { text: 'Being requested…', tone: 'muted' }
+  if (current) {
+    const days = daysUntil(current.notAfter)
+    if (days < 0) return { text: 'Run out', tone: 'bad' }
+    if (renewalFails) return { text: `${days} days left, renewing fails`, tone: 'warn' }
+    return { text: `${days} days left`, tone: days < 14 ? 'warn' : 'ok' }
+  }
+  if (s.lastAttempt != null && !s.lastAttempt.ok) return { text: 'Last attempt failed', tone: 'warn' }
+  return { text: 'Not set up yet', tone: 'muted' }
 }
 
 /** The services in use, grouped by category, each opening at its name. */
 function ServiceGrid({ services, onManage }: { services: Service[]; onManage: () => void }) {
   const live = services.filter((s) => s.enabled && !s.pending)
-  const waiting = services.length - live.length
+  const waitingCount = services.length - live.length
   const categories = [...new Set(live.map((s) => s.category))]
   return (
     <div className="flex flex-col gap-3">
       {categories.map((category) => (
         <div key={category || '-'} className="flex flex-col gap-2">
           {categories.length > 1 && (
-            <h3 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+            <h3 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
               {category || 'Other'}
             </h3>
           )}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+          <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 lg:grid-cols-4">
             {live
               .filter((s) => s.category === category)
               .map((s) => {
                 const inner = (
                   <>
                     <ServiceIcon service={s} />
-                    <span className="flex min-w-0 flex-col">
-                      <span className="flex items-center gap-1.5 truncate text-sm font-medium">
-                        <HealthDot service={s} />
-                        {s.title || s.name}
-                      </span>
+                    <span className="flex min-w-0 flex-1 flex-col">
+                      <span className="truncate text-sm font-medium">{s.title || s.name}</span>
                       <span className="truncate text-xs text-muted-foreground">
                         {s.kind === 'http' ? s.url.replace('https://', '') : s.url}
                       </span>
                     </span>
+                    <HealthDot service={s} />
                   </>
                 )
                 const className =
@@ -353,155 +436,21 @@ function ServiceGrid({ services, onManage }: { services: Service[]; onManage: ()
           </div>
         </div>
       ))}
-      {waiting > 0 && (
+      {waitingCount > 0 && (
         <button type="button" onClick={onManage} className="self-start text-sm text-muted-foreground hover:underline">
-          {waiting} more switched off or waiting for approval
+          {waitingCount} more switched off or waiting for approval
         </button>
       )}
     </div>
   )
 }
 
-/** The firewall at a glance. It is switched on and off on the System page. */
-function FirewallTile({
-  status,
-  onOpen,
-}: {
-  status: FirewallStatus | null
-  onOpen: () => void
-}) {
-  let text = '…'
-  let tone = 'text-muted-foreground'
-  if (status?.state === 'on') {
-    text = 'On'
-    tone = 'text-emerald-700 dark:text-emerald-400'
-  } else if (status?.state === 'pending') {
-    text = 'Waiting for confirmation'
-    tone = 'text-amber-700 dark:text-amber-400'
-  } else if (status) {
-    text = 'Off'
-    tone = 'text-amber-700 dark:text-amber-400'
-  }
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="rounded-xl bg-card p-3 text-left ring-1 ring-foreground/10 outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
-    >
-      <span className="flex items-center gap-2 text-sm font-medium">
-        <Shield className="size-4" aria-hidden="true" />
-        Firewall
-      </span>
-      <span className={`mt-1 block text-xs ${tone}`}>{text}</span>
-    </button>
-  )
-}
-
-/** The certificate in a word; the System page has the rest. */
-function CertificateTile({
-  status,
-  onOpen,
-}: {
-  status: CertificateStatus | null
-  onOpen: () => void
-}) {
-  const good = 'text-emerald-700 dark:text-emerald-400'
-  const warn = 'text-amber-700 dark:text-amber-400'
-  let text = '…'
-  let tone = 'text-muted-foreground'
-  const current = status?.certificate?.forDomain ? status.certificate : null
-  const renewalFails =
-    status?.lastAttempt != null && !status.lastAttempt.ok && status.lastAttempt.kind === 'renewal'
-  if (status?.running) text = 'Being requested…'
-  else if (current) {
-    const days = daysUntil(current.notAfter)
-    if (days < 0) [text, tone] = ['Run out', warn]
-    else if (renewalFails) [text, tone] = [`${days} days left, renewing fails`, warn]
-    else [text, tone] = [`${days} days left`, days < 14 ? warn : good]
-  } else if (status?.lastAttempt != null && !status.lastAttempt.ok) [text, tone] = ['Last attempt failed', warn]
-  else if (status) text = 'Not set up yet'
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="rounded-xl bg-card p-3 text-left ring-1 ring-foreground/10 outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
-    >
-      <span className="flex items-center gap-2 text-sm font-medium">
-        <BadgeCheck className="size-4" aria-hidden="true" />
-        Certificate
-      </span>
-      <span className={`mt-1 block text-xs ${tone}`}>{text}</span>
-    </button>
-  )
-}
-
-/** AdGuard Home in a word; the System page has the rest. */
-function DnsTile({ status, onOpen }: { status: DnsStatus | null; onOpen: () => void }) {
-  let text = '…'
-  let tone = 'text-muted-foreground'
-  if (status?.available && !status.enabled) text = 'Off'
-  else if (status?.running) [text, tone] = ['On', 'text-emerald-700 dark:text-emerald-400']
-  else if (status?.available) [text, tone] = ['Not running', 'text-amber-700 dark:text-amber-400']
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="rounded-xl bg-card p-3 text-left ring-1 ring-foreground/10 outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
-    >
-      <span className="flex items-center gap-2 text-sm font-medium">
-        <Globe className="size-4" aria-hidden="true" />
-        DNS
-      </span>
-      <span className={`mt-1 block text-xs ${tone}`}>{text}</span>
-    </button>
-  )
-}
-
-/** Updates for the device itself, in a few words; the System page has the rest. */
-function OsUpdatesTile({
-  status,
-  onOpen,
-}: {
-  status: OsUpdatesStatus | null
-  onOpen: () => void
-}) {
-  const calm = 'text-muted-foreground'
-  const good = 'text-emerald-700 dark:text-emerald-400'
-  const attention = 'text-amber-700 dark:text-amber-400'
-  let text = '…'
-  let tone = calm
-  if (status) {
-    const waiting = status.waiting.length
-    if (status.mode === '') [text, tone] = ['Not set up', attention]
-    else if (status.running === 'install') [text, tone] = ['Installing', calm]
-    else if (status.restartNeeded) [text, tone] = ['Restart needed', attention]
-    else if (status.problem) [text, tone] = ['Needs attention', attention]
-    else if (waiting > 0 && status.mode === 'by-hand') [text, tone] = [`${waiting} waiting`, attention]
-    else if (waiting > 0) [text, tone] = [`${waiting} waiting`, calm]
-    else if (status.mode === 'automatic') [text, tone] = ['By themselves', good]
-    else [text, tone] = ['By hand', calm]
-  }
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="rounded-xl bg-card p-3 text-left ring-1 ring-foreground/10 outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
-    >
-      <span className="flex items-center gap-2 text-sm font-medium">
-        <PackageCheck className="size-4" aria-hidden="true" />
-        Updates
-      </span>
-      <span className={`mt-1 block text-xs ${tone}`}>{text}</span>
-    </button>
-  )
-}
-
-function ActivityList({ entries }: { entries: AuditEntry[] | null }) {
+function ActivityList({ entries, limit }: { entries: AuditEntry[] | null; limit: number }) {
   if (entries === null) return <p className="text-sm text-muted-foreground">…</p>
   if (entries.length === 0) return <p className="text-sm text-muted-foreground">Nothing yet.</p>
   return (
     <ul className="divide-y">
-      {entries.slice(0, 8).map((entry) => (
+      {entries.slice(0, limit).map((entry) => (
         <li key={entry.id} className="flex justify-between gap-4 py-1.5 text-sm">
           <span>{describeActivity(entry)}</span>
           <span className="shrink-0 text-muted-foreground">{formatTimeAgo(entry.at)}</span>
@@ -710,59 +659,4 @@ function bootMediumLabel(medium: Health['bootMedium']): string {
     default:
       return ''
   }
-}
-
-/**
- * Shown while SGC updates itself. SGC is stopped for part of that time, so
- * failed requests are expected and simply retried. The update is over when
- * the updater has recorded the outcome of a new attempt.
- */
-function UpdatingScreen({
-  previousAttempt,
-  onFinished,
-  onSignedOut,
-}: {
-  previousAttempt: number | null
-  onFinished: () => void
-  onSignedOut: () => void
-}) {
-  const [slow, setSlow] = useState(false)
-
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout>
-    const started = Date.now()
-    const again = () => {
-      if (Date.now() - started > 6 * 60 * 1000) setSlow(true)
-      timer = setTimeout(check, 2_000)
-    }
-    const check = () =>
-      api.update().then(
-        (status) => {
-          const last = status.lastUpdate
-          if (!last || last.id === previousAttempt || last.state === 'running') return again()
-          // A new version brings new interface files: load them. After a
-          // rollback the page is still right; the dashboard shows what happened.
-          if (last.state === 'succeeded') window.location.reload()
-          else onFinished()
-        },
-        (error) => {
-          if (error instanceof ApiError && error.status === 401) onSignedOut()
-          else again()
-        },
-      )
-    timer = setTimeout(check, 2_000)
-    return () => clearTimeout(timer)
-  }, [previousAttempt, onFinished, onSignedOut])
-
-  return (
-    <div className="flex min-h-svh flex-col items-center justify-center gap-4 bg-muted/40 p-4 text-center">
-      <Logo className="size-14 animate-spin [animation-duration:6s]" />
-      <h1 className="text-base font-medium">Updating SGC</h1>
-      <p className="max-w-xs text-sm text-muted-foreground">
-        {slow
-          ? 'This is taking longer than expected. You can reload the page; if SGC stays unreachable, check it over SSH with: sudo sgc update --check'
-          : 'This takes about a minute. The page comes back by itself.'}
-      </p>
-    </div>
-  )
 }

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { CircleCheck, Hand, LoaderCircle, RefreshCw, TriangleAlert } from 'lucide-react'
+import { LoaderCircle, RefreshCw } from 'lucide-react'
 
 import { FormError } from '@/components/auth-card'
+import { More, SettingCard, StatusBadge, Warning } from '@/components/setting'
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -12,7 +13,6 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { api, errorMessage, type OsUpdatesStatus } from '@/lib/api'
 import { formatTimeAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -25,7 +25,7 @@ const namesShown = 8
 
 /**
  * Updates for the device itself: Debian's packages (and Raspberry Pi's, on a
- * Pi), as opposed to SGC's own updates on the dashboard.
+ * Pi), as opposed to SGC's own updates (the card above it).
  *
  * The owner chooses between updates that install by themselves and updates
  * started here. Either way it is Debian's own tool that installs them, and
@@ -68,12 +68,9 @@ export function OsUpdatesCard({ onError }: { onError: (error: unknown) => void }
 
   if (status === null) {
     return (
-      <Card>
-        <CardContent className="flex flex-col gap-3">
-          <h2 className="text-sm text-muted-foreground">Updates for this device</h2>
-          <p className="text-sm text-muted-foreground">…</p>
-        </CardContent>
-      </Card>
+      <SettingCard title="This device (Debian)">
+        <p className="text-sm text-muted-foreground">…</p>
+      </SettingCard>
     )
   }
 
@@ -81,40 +78,26 @@ export function OsUpdatesCard({ onError }: { onError: (error: unknown) => void }
   const automatic = status.mode === 'automatic'
   const busy = running !== '' || starting
 
-  return (
-    <Card>
-      <CardContent className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-sm text-muted-foreground">Updates for this device</h2>
-          {setUp && (
-            <span
-              className={cn(
-                'flex items-center gap-1.5 text-sm font-medium',
-                automatic && !status.problem
-                  ? 'text-emerald-700 dark:text-emerald-400'
-                  : status.problem
-                    ? 'text-amber-700 dark:text-amber-400'
-                    : 'text-foreground',
-              )}
-            >
-              {automatic ? (
-                <CircleCheck className="size-4" aria-hidden="true" />
-              ) : (
-                <Hand className="size-4" aria-hidden="true" />
-              )}
-              {automatic ? 'By themselves' : 'By hand'}
-            </span>
-          )}
-        </div>
+  const badge = !setUp ? (
+    <StatusBadge tone="warn">Not set up</StatusBadge>
+  ) : status.problem ? (
+    <StatusBadge tone="warn">Needs a look</StatusBadge>
+  ) : automatic ? (
+    <StatusBadge tone="ok">By themselves</StatusBadge>
+  ) : (
+    <StatusBadge tone="muted">By hand</StatusBadge>
+  )
 
+  return (
+    <SettingCard title="This device (Debian)" status={badge}>
         {!setUp ? (
           <NotSetUp status={status} onChoose={setChoosing} />
         ) : (
           <>
             <p className="text-sm">
               {automatic
-                ? "Security fixes and corrections from Debian install by themselves, once a day. On a Raspberry Pi that includes its kernel and firmware."
-                : 'Security fixes and corrections from Debian install when you start them here. On a Raspberry Pi that includes its kernel and firmware.'}
+                ? 'Security fixes install by themselves, once a day.'
+                : 'Security fixes install when you start them here.'}
             </p>
 
             {status.problem && <Notice>{status.problem}</Notice>}
@@ -134,7 +117,8 @@ export function OsUpdatesCard({ onError }: { onError: (error: unknown) => void }
                 {status.restartPackages.length > 0
                   ? ` (${shortList(status.restartPackages, 3)})`
                   : ''}
-                . Nothing restarts by itself: use Restart below when it suits you.
+                . Nothing restarts by itself outside the maintenance window: restart the device (under This device)
+                when it suits you.
               </Notice>
             )}
 
@@ -158,6 +142,12 @@ export function OsUpdatesCard({ onError }: { onError: (error: unknown) => void }
                 </Button>
               </div>
             </div>
+            <More>
+              <p>
+                Security fixes and corrections for the device itself come from Debian; on a Raspberry Pi that includes its
+                kernel and firmware. Either way it is Debian’s own tool that installs them, and the same set.
+              </p>
+            </More>
           </>
         )}
 
@@ -182,8 +172,7 @@ export function OsUpdatesCard({ onError }: { onError: (error: unknown) => void }
             }}
           />
         )}
-      </CardContent>
-    </Card>
+    </SettingCard>
   )
 }
 
@@ -312,10 +301,9 @@ function shortList(names: string[], shown: number): string {
 
 function Notice({ children }: { children: ReactNode }) {
   return (
-    <p className="flex items-start gap-2 text-sm text-amber-700 dark:text-amber-400">
-      <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-      <span className="min-w-0 [overflow-wrap:anywhere]">{children}</span>
-    </p>
+    <Warning>
+      <p className="[overflow-wrap:anywhere]">{children}</p>
+    </Warning>
   )
 }
 

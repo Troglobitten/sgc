@@ -131,6 +131,10 @@
   html {
     @apply font-sans;
     }
+  /* A command to type, inside running text. */
+  code {
+    @apply rounded bg-muted px-1 py-px font-mono text-[0.92em] text-foreground;
+    }
   /* Menus and dialogs are drawn outside the app's own element. Giving the app
      its own stacking context keeps them reliably on top of it. */
   #root {

@@ -12,7 +12,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
+import { SettingCard } from '@/components/setting'
 import { Input } from '@/components/ui/input'
 import { api, errorMessage, type AnnounceToken } from '@/lib/api'
 import { formatTimeAgo } from '@/lib/format'
@@ -51,9 +51,7 @@ export function TokensCard({
 
   const host = gatewayHost || 'sgc.your-domain'
   return (
-    <Card>
-      <CardContent className="flex flex-col gap-3">
-        <h2 className="text-sm text-muted-foreground">Servers that announce their services</h2>
+    <SettingCard title="Servers that announce their services">
         <p className="text-sm">
           A server running Docker can tell SGC about its services itself: give it a token, and add
           a small container to its compose file that announces them when it starts. Nothing of
@@ -134,7 +132,6 @@ export function TokensCard({
             ))}
           </ul>
         )}
-      </CardContent>
       {removing && (
         <RemoveTokenDialog
           token={removing}
@@ -145,7 +142,7 @@ export function TokensCard({
           }}
         />
       )}
-    </Card>
+    </SettingCard>
   )
 }
 

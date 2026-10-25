@@ -4,7 +4,7 @@ import type { ShellProps } from '@/components/app-shell'
 import { Logo } from '@/components/logo'
 import { Button } from '@/components/ui/button'
 import { api, errorMessage, type State } from '@/lib/api'
-import { pageForPath, pages, type Page } from '@/lib/pages'
+import { pageForPath, pathFor, sectionForPath, type Page, type SystemSection } from '@/lib/pages'
 import { DashboardPage } from '@/pages/dashboard'
 import { GatePage } from '@/pages/gate'
 import { GuidePage } from '@/pages/guide'
@@ -45,6 +45,8 @@ function AdminApp() {
   const [error, setError] = useState<string | null>(null)
   const [setupToken, setSetupToken] = useState(readSetupToken)
   const [page, setPage] = useState<Page>(readPage)
+  // Which of the System page's sections the address names (null: none).
+  const [section, setSection] = useState<SystemSection | null>(() => sectionForPath(window.location.pathname))
   const [hostname, setHostname] = useState('')
   // The guided setup: opened right after the account is made on a fresh
   // device, and from the dashboard's list while it is not through.
@@ -57,7 +59,10 @@ function AdminApp() {
   // back and forward buttons between SGC's pages.
   useEffect(() => {
     const onHashChange = () => setSetupToken(readSetupToken())
-    const onPopState = () => setPage(readPage())
+    const onPopState = () => {
+      setPage(readPage())
+      setSection(sectionForPath(window.location.pathname))
+    }
     window.addEventListener('hashchange', onHashChange)
     window.addEventListener('popstate', onPopState)
     return () => {
@@ -81,14 +86,14 @@ function AdminApp() {
   const signedIn = state?.signedIn ?? false
   useEffect(() => {
     if (!state) return
-    const path = state.setupRequired ? '/setup' : state.signedIn ? pages[page].path : '/login'
+    const path = state.setupRequired ? '/setup' : state.signedIn ? pathFor(page, section) : '/login'
     // Keep the setup secret in the address while it is still needed, and
     // drop it from the address bar and history as soon as it is not.
     const hash = state.setupRequired ? window.location.hash : ''
     if (window.location.pathname !== path || window.location.hash !== hash) {
       window.history.replaceState(null, '', path + hash)
     }
-  }, [state, page])
+  }, [state, page, section])
 
   // The device's name for the top of every page. It does not change while
   // the page is open, so it is asked for once.
@@ -104,11 +109,13 @@ function AdminApp() {
     }
   }, [signedIn])
 
-  const navigate = useCallback((next: Page) => {
-    if (window.location.pathname !== pages[next].path) {
-      window.history.pushState(null, '', pages[next].path)
+  const navigate = useCallback((next: Page, nextSection?: SystemSection | null) => {
+    const path = pathFor(next, nextSection)
+    if (window.location.pathname !== path) {
+      window.history.pushState(null, '', path)
     }
     setPage(next)
+    setSection(nextSection ?? null)
   }, [])
 
   if (error) {
@@ -155,7 +162,12 @@ function AdminApp() {
   if (page === 'logs') return <LogsPage shell={shell} />
   if (page === 'system') {
     return (
-      <SystemPage shell={shell} minPassphraseLength={state.minPassphraseLength} minPasswordLength={state.minPasswordLength} />
+      <SystemPage
+        shell={shell}
+        section={section}
+        minPassphraseLength={state.minPassphraseLength}
+        minPasswordLength={state.minPasswordLength}
+      />
     )
   }
   return <DashboardPage shell={shell} onOpenGuide={() => setGuiding(true)} />

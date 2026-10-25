@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { TriangleAlert } from 'lucide-react'
 
 import { AppShell, type ShellProps } from '@/components/app-shell'
+import { PageTitle } from '@/components/setting'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -15,7 +16,7 @@ import {
   type LogQuery,
   type Notification,
 } from '@/lib/api'
-import { formatTimeAgo } from '@/lib/format'
+import { formatLogTime, formatTimeAgo } from '@/lib/format'
 
 type Tab = 'notifications' | 'logs' | 'history'
 
@@ -60,6 +61,7 @@ export function LogsPage({ shell }: { shell: ShellProps }) {
   )
   return (
     <AppShell page="logs" {...shell}>
+      <PageTitle title="Logs" lead="What SGC told you, what its parts logged, and who changed what." />
       {problem && (
         <p role="alert" className="flex items-center gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
           <TriangleAlert className="size-4 shrink-0" aria-hidden="true" />
@@ -207,7 +209,7 @@ function Journal({ onError }: { onError: (e: unknown) => void }) {
           <pre className="max-h-[70vh] overflow-auto rounded-md bg-muted/50 p-2 text-xs leading-5">
             {answer.entries.map((e, i) => (
               <div key={i} className={e.priority <= 3 ? 'text-destructive' : e.priority === 4 ? 'text-amber-700 dark:text-amber-400' : undefined}>
-                {new Date(e.at).toLocaleString()} {e.unit.replace(/\.service$/, '')}: {e.message}
+                {formatLogTime(e.at)} {e.unit.replace(/\.service$/, '')}: {e.message}
               </div>
             ))}
           </pre>
@@ -232,7 +234,7 @@ function History({ onError }: { onError: (e: unknown) => void }) {
       <CardContent className="flex flex-col divide-y">
         {entries.map((e) => (
           <div key={e.id} className="flex flex-wrap items-baseline gap-x-2 py-1.5 text-sm">
-            <span className="text-xs text-muted-foreground">{new Date(e.at).toLocaleString()}</span>
+            <span className="text-xs text-muted-foreground">{formatLogTime(e.at)}</span>
             <span className="font-medium">{e.actor}</span>
             <span className="text-muted-foreground">{e.action}</span>
             <span className="min-w-0 break-words">{e.detail}</span>

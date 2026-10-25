@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { CircleCheck, Download } from 'lucide-react'
 
 import { FormError } from '@/components/auth-card'
+import { SettingCard } from '@/components/setting'
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -12,7 +13,6 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { api, errorMessage } from '@/lib/api'
@@ -23,11 +23,10 @@ export function ExportCard({ minPassphraseLength }: { minPassphraseLength: numbe
   const [savedAs, setSavedAs] = useState<string | null>(null)
 
   return (
-    <Card>
-      <CardContent className="flex flex-col gap-3">
-        <h2 className="text-sm text-muted-foreground">Export</h2>
+    <SettingCard title="Export">
         <p className="text-sm">
-          Everything SGC holds in one encrypted file. A fresh install can be restored from it.
+          One file with everything, locked with a passphrase you choose. For moving to a new device, or before something
+          risky.
         </p>
         {savedAs && (
           <p className="flex items-start gap-2 text-sm text-emerald-700 dark:text-emerald-400">
@@ -38,10 +37,12 @@ export function ExportCard({ minPassphraseLength }: { minPassphraseLength: numbe
             </span>
           </p>
         )}
-        <Button variant="outline" onClick={() => setOpen(true)}>
-          <Download />
-          Export
-        </Button>
+        <div>
+          <Button variant="outline" onClick={() => setOpen(true)}>
+            <Download />
+            Export…
+          </Button>
+        </div>
         {open && (
           <ExportDialog
             minPassphraseLength={minPassphraseLength}
@@ -52,8 +53,7 @@ export function ExportCard({ minPassphraseLength }: { minPassphraseLength: numbe
             }}
           />
         )}
-      </CardContent>
-    </Card>
+    </SettingCard>
   )
 }
 

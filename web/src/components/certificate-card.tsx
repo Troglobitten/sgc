@@ -1,7 +1,7 @@
-import { useEffect, useId, useState, type ReactNode } from 'react'
-import { CircleCheck, TriangleAlert } from 'lucide-react'
+import { useEffect, useId, useState } from 'react'
 
 import { FormError } from '@/components/auth-card'
+import { Facts, More, SettingCard, StatusBadge, Warning } from '@/components/setting'
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -12,22 +12,13 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { api, errorMessage, type CertificateStatus } from '@/lib/api'
-import { daysUntil } from '@/lib/format'
+import { daysUntil, formatDate, formatDateTime as formatMoment } from '@/lib/format'
 
 const idleInterval = 15_000
 const busyInterval = 2_000
-
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })
-}
-
-function formatMoment(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })
-}
 
 /**
  * The certificate for every name under the owner's domain, from Let's
@@ -59,15 +50,12 @@ export function CertificateCard({ onError }: { onError: (error: unknown) => void
     }
   }, [onError, busy])
 
-  const title = 'Certificate (Let’s Encrypt)'
+  const title = 'Certificate'
   if (status === null) {
     return (
-      <Card>
-        <CardContent className="flex flex-col gap-3">
-          <h2 className="text-sm text-muted-foreground">{title}</h2>
-          <p className="text-sm text-muted-foreground">…</p>
-        </CardContent>
-      </Card>
+      <SettingCard title={title}>
+        <p className="text-sm text-muted-foreground">…</p>
+      </SettingCard>
     )
   }
 
@@ -89,45 +77,31 @@ export function CertificateCard({ onError }: { onError: (error: unknown) => void
     }
   }
 
-  return (
-    <Card>
-      <CardContent className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-sm text-muted-foreground">{title}</h2>
-          {current && !busy && (
-            <span
-              className={
-                days >= 14 && !failed
-                  ? 'flex items-center gap-1.5 text-sm font-medium text-emerald-700 dark:text-emerald-400'
-                  : 'flex items-center gap-1.5 text-sm font-medium text-amber-700 dark:text-amber-400'
-              }
-            >
-              {days >= 14 && !failed ? (
-                <CircleCheck className="size-4" aria-hidden="true" />
-              ) : (
-                <TriangleAlert className="size-4" aria-hidden="true" />
-              )}
-              {days < 0 ? 'Run out' : `${days} days left`}
-            </span>
-          )}
-        </div>
+  const badge = busy ? (
+    <StatusBadge tone="muted">Being requested…</StatusBadge>
+  ) : current ? (
+    <StatusBadge tone={days >= 14 && !failed ? 'ok' : days < 0 ? 'bad' : 'warn'}>
+      {days < 0 ? 'Run out' : `${days} days left`}
+    </StatusBadge>
+  ) : (
+    <StatusBadge tone="muted">None yet</StatusBadge>
+  )
 
-        {status.disabled !== '' && <Notice>{status.disabled}</Notice>}
+  return (
+    <SettingCard title={title} status={badge}>
+        {status.disabled !== '' && <Warning>{status.disabled}</Warning>}
 
         {status.running && <Running status={status} />}
 
         {!status.running && current && (
-          <>
-            <p className="text-sm">
-              <span className="font-medium">{current.names.join(', ')}</span>, issued by{' '}
-              {current.issuer}. Valid until {formatDate(current.notAfter)}.
-            </p>
-            {status.renewsAt !== null && (
-              <p className="text-sm text-muted-foreground">
-                SGC renews it by itself, around {formatDate(status.renewsAt)}.
-              </p>
-            )}
-          </>
+          <Facts
+            items={[
+              ['For', <span key="names" className="font-medium">{current.names.join(', ')}</span>],
+              ['From', current.issuer],
+              ['Valid until', formatDate(current.notAfter)],
+              ...(status.renewsAt !== null ? [['Renewed', `by SGC itself, around ${formatDate(status.renewsAt)}`] as [string, string]] : []),
+            ]}
+          />
         )}
 
         {!status.running && !current && (
@@ -138,21 +112,18 @@ export function CertificateCard({ onError }: { onError: (error: unknown) => void
           </p>
         )}
         {!status.running && certificate && !certificate.forDomain && status.domain !== '' && (
-          <Notice>
-            The certificate SGC has is for {certificate.names.join(', ')}, not for the domain
-            that is set up now.
-          </Notice>
+          <Warning>
+            The certificate SGC has is for {certificate.names.join(', ')}, not for the domain that is set up now.
+          </Warning>
         )}
-        {!status.running && status.domain === '' && (
-          <Notice>A certificate is for a domain. Set up the domain first.</Notice>
-        )}
+        {!status.running && status.domain === '' && <Warning>A certificate is for a domain. Set up the domain first.</Warning>}
 
         {!status.running && failed && (
-          <Notice>
+          <Warning>
             {failed.kind === 'renewal' ? 'Renewing by itself failed' : 'The last attempt failed'}{' '}
             ({formatMoment(failed.finishedAt)}): {failed.message}
             {failed.kind === 'renewal' && ' SGC tries again twice a day.'}
-          </Notice>
+          </Warning>
         )}
         {!status.running && failed && failed.log.length > 0 && <Log lines={failed.log} />}
 
@@ -176,6 +147,19 @@ export function CertificateCard({ onError }: { onError: (error: unknown) => void
           </div>
         )}
 
+        {!status.running && current && (
+          <More>
+            <p>
+              One certificate from Let’s Encrypt covers every name under your domain, so browsers show a padlock without a
+              warning. SGC proves the domain is yours by publishing a piece of text in its DNS, and removes it again.
+            </p>
+            <p>
+              Public logs list every certificate, so that one exists for {current.names.join(', ')} is public; the names of
+              your services are not in it.
+            </p>
+          </More>
+        )}
+
         {asking && (
           <FirstDialog
             status={status}
@@ -186,19 +170,10 @@ export function CertificateCard({ onError }: { onError: (error: unknown) => void
             }}
           />
         )}
-      </CardContent>
-    </Card>
+    </SettingCard>
   )
 }
 
-function Notice({ children }: { children: ReactNode }) {
-  return (
-    <p className="flex items-start gap-2 text-sm text-amber-700 dark:text-amber-400">
-      <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-      <span>{children}</span>
-    </p>
-  )
-}
 
 /** What an attempt reported, for whoever wants the details. */
 function Log({ lines }: { lines: string[] }) {
