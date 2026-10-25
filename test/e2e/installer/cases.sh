@@ -2265,6 +2265,16 @@ proxy)
     check "the gateway's own name opens SGC's page, without a port" sh -c "curl -sk --resolve sgc.domain.tld:443:127.0.0.1 https://sgc.domain.tld/api/state | grep -q '\"version\"'"
     check "plain http to it is sent on to https, without a port" sh -c "curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --resolve sgc.domain.tld:80:127.0.0.1 http://sgc.domain.tld/system | grep -qE '^30[18] https://sgc.domain.tld/system'"
     check "SGC's listener for the proxy takes nothing without the proxy's header" sh -c "! curl -sk --max-time 5 https://127.0.0.1:8445/api/state"
+    # A browser reuses a connection for another name under the same
+    # certificate (HTTP/2 connection coalescing). Both ends answer such a
+    # request 421, which makes the browser ask again over a connection of
+    # its own: SGC's name on a connection opened for a service (it showed
+    # "No service by this name"), and a service's name on SGC's connection.
+    # curl sends the name in the handshake from the address, and the Host
+    # header as told, which is what a reused connection does.
+    check "SGC's name on a service's connection is sent back (421)" sh -c "[ \"\$(curl -sk -o /dev/null -w '%{http_code}' --resolve web.domain.tld:443:127.0.0.1 -H 'Host: sgc.domain.tld' https://web.domain.tld/api/state)\" = 421 ]"
+    check "a service's name on SGC's connection is sent back (421)" sh -c "[ \"\$(curl -sk -o /dev/null -w '%{http_code}' --resolve sgc.domain.tld:443:127.0.0.1 -H 'Host: web.domain.tld' https://sgc.domain.tld/)\" = 421 ]"
+    check "an unknown name still gets the page that says so (404)" sh -c "[ \"\$(curl -sk -o /dev/null -w '%{http_code}' --resolve nothing.domain.tld:443:127.0.0.1 https://nothing.domain.tld/)\" = 404 ]"
     echo "Icons from the collection kept on the device (a stand-in publishes the pack)"
     # shellcheck disable=SC2317  # called indirectly through wait_for()
     icons_installed() { [ "$(http GET /api/services)" = 200 ] && grep -q '"installed":true' /tmp/sgc-test-body; }

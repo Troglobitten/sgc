@@ -2,6 +2,10 @@
 
 What changed in each version of SGC, newest first. The section for a version is what SGC shows before you update to it, so it is written for the person running SGC, not for developers.
 
+## 0.19.1
+
+- **`https://sgc.your-domain` no longer shows "No service by this name" now and then.** A browser that had a connection open to one of your services sometimes reused it for SGC's page (the certificate covers both names), and the proxy could not pass that on to SGC. Both ends now answer such a request with a code that makes the browser open a connection of its own, by itself, without you noticing. The same goes the other way round: a service never opens as SGC's page by mistake.
+
 ## 0.19.0
 
 A calmer page. Nothing changes in what SGC does; everything is where it is easier to find, with less to read.

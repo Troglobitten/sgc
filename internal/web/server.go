@@ -223,7 +223,9 @@ func (s *Server) Handler() http.Handler {
 	// curl carry no browser origin headers and pass.
 	crossOrigin := http.NewCrossOriginProtection()
 
-	return s.commonHeaders(crossOrigin.Handler(mux))
+	// A request for a name its connection was not opened for (misdirected.go)
+	// is sent back, before any of the rest.
+	return s.commonHeaders(rejectMisdirected(crossOrigin.Handler(mux)))
 }
 
 func (s *Server) commonHeaders(next http.Handler) http.Handler {
