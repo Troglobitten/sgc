@@ -1,9 +1,9 @@
 import { useState, type FormEvent } from 'react'
-import { CircleCheck, ExternalLink, TriangleAlert } from 'lucide-react'
+import { ExternalLink } from 'lucide-react'
 
 import { FormError } from '@/components/auth-card'
+import { Facts, More, SettingCard, StatusBadge, Warning } from '@/components/setting'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { api, errorMessage } from '@/lib/api'
@@ -20,12 +20,9 @@ export function NamesCard({ onError }: { onError: (error: unknown) => void }) {
   const title = 'Names'
   if (status === null) {
     return (
-      <Card>
-        <CardContent className="flex flex-col gap-3">
-          <h2 className="text-sm text-muted-foreground">{title}</h2>
-          <p className="text-sm text-muted-foreground">…</p>
-        </CardContent>
-      </Card>
+      <SettingCard title={title}>
+        <p className="text-sm text-muted-foreground">…</p>
+      </SettingCard>
     )
   }
 
@@ -37,85 +34,54 @@ export function NamesCard({ onError }: { onError: (error: unknown) => void }) {
       : '',
   ].filter(Boolean)
   const missing = status.dns.names.filter((n) => !n.inPlace)
+  const badge = !status.domain ? undefined : problems.length === 0 && missing.length === 0 ? (
+    <StatusBadge tone="ok">In place</StatusBadge>
+  ) : (
+    <StatusBadge tone="warn">Needs a look</StatusBadge>
+  )
 
   return (
-    <Card>
-      <CardContent className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-sm text-muted-foreground">{title}</h2>
-          {status.domain && (
-            <span
-              className={
-                problems.length === 0 && missing.length === 0
-                  ? 'flex items-center gap-1.5 text-sm font-medium text-emerald-700 dark:text-emerald-400'
-                  : 'flex items-center gap-1.5 text-sm font-medium text-amber-700 dark:text-amber-400'
-              }
-            >
-              {problems.length === 0 && missing.length === 0 ? (
-                <CircleCheck className="size-4" aria-hidden="true" />
-              ) : (
-                <TriangleAlert className="size-4" aria-hidden="true" />
-              )}
-              {problems.length === 0 && missing.length === 0 ? 'In place' : 'Needs a look'}
-            </span>
-          )}
-        </div>
-
+    <SettingCard title={title} status={badge}>
         {!status.domain ? (
           <p className="text-sm">
-            Once your domain is set up, this device is called{' '}
-            <span className="font-medium">{status.name}</span> under it, and its page opens at
-            that name with a real certificate.
+            Once your domain is set up, this device is called <span className="font-medium">{status.name}</span> under it,
+            and its page opens at that name with a real certificate.
           </p>
         ) : (
-          <>
-            <p className="text-sm">
-              This device is <span className="font-medium">{status.fqdn}</span>
-              {status.lan && <> at {status.lan.address} in the home network</>}. Its page:{' '}
-              <a
-                href={status.url}
-                className="inline-flex items-center gap-1 font-medium text-primary underline-offset-4 hover:underline"
-              >
-                {status.url.replace('https://', '')}
-                <ExternalLink className="size-3.5" aria-hidden="true" />
-              </a>
-            </p>
-            {status.url !== status.directUrl && (
-              <p className="text-xs text-muted-foreground">
-                The proxy passes that name on to SGC. If the proxy is not running, the page is still
-                at {status.directUrl.replace('https://', '')}
-                {status.lan && <>, and at {status.lan.address}:8443</>}.
-              </p>
-            )}
-            <p className="text-xs text-muted-foreground">
-              The names work on devices that use this device for DNS (the router hands it out,
-              or the device is set to it). Give this device a fixed address in your router, so
-              the names keep pointing at it.
-            </p>
-          </>
+          <Facts
+            items={[
+              [
+                'This device',
+                <a
+                  key="url"
+                  href={status.url}
+                  className="inline-flex items-center gap-1 font-medium text-primary underline-offset-4 hover:underline"
+                >
+                  {status.url.replace('https://', '')}
+                  <ExternalLink className="size-3.5" aria-hidden="true" />
+                </a>,
+              ],
+              ...(status.lan ? [['In the home', status.lan.address] as [string, string]] : []),
+              ...(status.url !== status.directUrl
+                ? [
+                    [
+                      'Without the proxy',
+                      `${status.directUrl.replace('https://', '')}${status.lan ? `, ${status.lan.address}:8443` : ''}`,
+                    ] as [string, string],
+                  ]
+                : []),
+            ]}
+          />
         )}
 
         {problems.map((p) => (
-          <p key={p} className="flex gap-2 text-sm text-amber-700 dark:text-amber-400">
-            <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-            {p}
-          </p>
+          <Warning key={p}>{p}</Warning>
         ))}
-
-        {status.dns.names.length > 0 && (
-          <ul className="flex flex-col gap-1 text-sm">
-            {status.dns.names.map((n) => (
-              <li key={n.domain} className="flex flex-wrap items-baseline justify-between gap-x-3">
-                <span>
-                  {n.domain} <span className="text-muted-foreground">→ {n.answer}</span>
-                </span>
-                <span className={n.inPlace ? 'text-xs text-muted-foreground' : 'text-xs text-amber-700 dark:text-amber-400'}>
-                  {n.inPlace ? n.for : n.conflict || 'not in place yet'}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
+        {missing.map((n) => (
+          <Warning key={n.domain}>
+            {n.domain}: {n.conflict || 'not in place yet'}
+          </Warning>
+        ))}
 
         {editing ? (
           <RenameForm
@@ -129,13 +95,33 @@ export function NamesCard({ onError }: { onError: (error: unknown) => void }) {
           />
         ) : (
           <div>
-            <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+            <Button variant="outline" onClick={() => setEditing(true)}>
               Change the name
             </Button>
           </div>
         )}
-      </CardContent>
-    </Card>
+
+        {status.dns.names.length > 0 && (
+          <More label={`The ${status.dns.names.length} names SGC keeps in AdGuard Home`}>
+            <ul className="flex flex-col gap-1">
+              {status.dns.names.map((n) => (
+                <li key={n.domain} className="flex flex-wrap items-baseline justify-between gap-x-3">
+                  <span className="text-foreground">
+                    {n.domain} <span className="text-muted-foreground">→ {n.answer}</span>
+                  </span>
+                  <span className={n.inPlace ? '' : 'text-amber-700 dark:text-amber-400'}>
+                    {n.inPlace ? n.for : n.conflict || 'not in place yet'}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <p>
+              The names work on devices that use this device for DNS (the router hands it out, or the device is set to it).
+              Give this device a fixed address in your router, so the names keep pointing at it.
+            </p>
+          </More>
+        )}
+    </SettingCard>
   )
 }
 

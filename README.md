@@ -51,11 +51,11 @@ sudo sgc update           # look, ask, install
 
 Before installing, SGC verifies the release's signature and that it is newer than what is installed. After installing, it waits for the new version to answer; if it does not, SGC puts back the previous version together with its data, and reports what happened.
 
-SGC asks GitHub for the newest release once a day (a switch on the dashboard turns that off). That request tells GitHub your IP address and that you run SGC, nothing else.
+SGC asks GitHub for the newest release once a day (a switch on the System page, under Updates, turns that off). That request tells GitHub your IP address and that you run SGC, nothing else.
 
 ### Export and restore
 
-The dashboard's **Export** saves everything SGC holds (the admin account, settings and history) as one encrypted file. You choose a passphrase for it, and SGC asks for your password again before handing it out. Sign-in sessions and other things that only make sense on the running machine are left out.
+**Export** (System page, under Backups) saves everything SGC holds (the admin account, settings and history) as one encrypted file. You choose a passphrase for it, and SGC asks for your password again before handing it out. Sign-in sessions and other things that only make sense on the running machine are left out.
 
 To restore, install SGC on a clean machine and open the setup link: next to creating an account it offers **Restore from an export**. You see what the file contains before confirming. A newer SGC can restore an export made by an older one; an export made by a newer SGC is refused.
 
@@ -109,7 +109,9 @@ Being able to add keys in the page means that whoever gets into SGC's page, with
 
 [AdGuard Home](https://github.com/AdguardTeam/AdGuardHome) answers the name lookups of your network and leaves out advertising and tracking. It is part of SGC: the installer installs it and starts it. To use it, enter the device's address as the DNS server in your router, or on single devices.
 
-On the **System** page it is a switch. Off means that AdGuard Home does not run and does not start with the device; the program and your settings stay. `sgc dns` says whether it is on; `sudo sgc dns on` and `sudo sgc dns off` do what the switch does. A device that was updated from a version without AdGuard Home gets it when DNS is first switched on. If the installer could not download it, SGC is installed all the same and says so.
+**Make it the only DNS server.** The names SGC gives your services exist only in this AdGuard Home. A device that sometimes asks another DNS server does not find them now and then: typically just after it starts, with a "site can't be reached" page that later goes away by itself. That happens when the router hands out a second DNS server next to this device (your provider's, or 8.8.8.8 or 1.1.1.1), or when the router answers lookups itself and has such a server as its second choice. Best is to have the router hand out this device's address as the one DNS server.
+
+On the **System** page, under DNS, it is a switch. Off means that AdGuard Home does not run and does not start with the device; the program and your settings stay. `sgc dns` says whether it is on; `sudo sgc dns on` and `sudo sgc dns off` do what the switch does. A device that was updated from a version without AdGuard Home gets it when DNS is first switched on. If the installer could not download it, SGC is installed all the same and says so.
 
 - **A program of its own.** It runs as a service of its own under an account of its own (`sgc-adguard.service`), and keeps answering when SGC is stopped or being updated.
 - **Pinned.** SGC downloads the release from AdGuard's page on GitHub and installs it only if it is exactly the file this version of SGC expects (size and SHA-256, checked by the web process and again by the root side). A newer AdGuard Home comes with a newer SGC.
@@ -140,11 +142,11 @@ Some updates only take effect after a restart. The **System** page can set a tim
 
 Inside the window SGC restarts the device only if an installed update asked for it, at most once, never in the first minutes after start-up, never while updates are being installed, and only once the device's clock has been set from the network. It is SGC that does this, so if SGC is not running, nothing happens.
 
-On the dashboard, SGC's own updates can be set to install by themselves in the same window (off by default). A new version then waits until your device has known it for three days, counted from when the device first saw it, not from a date the release carries. That leaves time for a faulty release to be noticed and withdrawn. With this on, a release reaches the device without a click from you; the wait is what stands between a bad release and your gateway.
+On the System page, under Updates, SGC's own updates can be set to install by themselves in the same window (off by default). A new version then waits until your device has known it for three days, counted from when the device first saw it, not from a date the release carries. That leaves time for a faulty release to be noticed and withdrawn. With this on, a release reaches the device without a click from you; the wait is what stands between a bad release and your gateway.
 
 ### Domain and its DNS provider
 
-Every name SGC will hand out ends in your domain, and the certificate for those names is obtained by proving to Let's Encrypt, through DNS, that the domain is yours. For that SGC needs an account at the company whose name servers answer for the domain: **Zone.eu, Cloudflare, Porkbun or Namecheap**. On the **System** page, under Network, enter the domain, pick the provider, and enter what the page asks for; it also says what to do at the provider first.
+Every name SGC will hand out ends in your domain, and the certificate for those names is obtained by proving to Let's Encrypt, through DNS, that the domain is yours. For that SGC needs an account at the company whose name servers answer for the domain: **Zone.eu, Cloudflare, Porkbun or Namecheap**. On the **System** page, under Domain and names, enter the domain, pick the provider, and enter what the page asks for; it also says what to do at the provider first.
 
 | Provider | What SGC needs | First, at the provider |
 |---|---|---|
@@ -175,7 +177,7 @@ With the domain set up, **Get the certificate** on the System page asks [Let's E
 
 ### Logs in memory, for a device on an SD card
 
-An SD card wears out from being written to, and logs are written all the time. With **This device runs from an SD card** switched on (System page), [log2ram](https://github.com/azlux/log2ram) keeps the log folder (`/var/log`) in memory and writes it to the card once a day and at shutdown. The price: after a power cut, the log entries since the last write are gone.
+An SD card wears out from being written to, and logs are written all the time. With **This device runs from an SD card** switched on (System page, under This device), [log2ram](https://github.com/azlux/log2ram) keeps the log folder (`/var/log`) in memory and writes it to the card once a day and at shutdown. The price: after a power cut, the log entries since the last write are gone.
 
 - **It comes with SGC, switched off.** The installer installs Debian's own `log2ram` package (and `rsync`, which it copies with). Whether your device runs from an SD card is for you to say; SGC does not try to detect it.
 - **It takes effect at a restart,** both ways. log2ram changes places with the logs at start-up and shutdown, when nothing has them open; SGC never does that on a running device. The page says which state the device is in.
@@ -191,13 +193,13 @@ An SD card wears out from being written to, and logs are written all the time. W
 
 ### Names
 
-Once the domain is set up, this device has a name under it: `sgc.domain.tld` (change it on the System page, Names). SGC puts its names into AdGuard Home, pointing at this device's address in the home network; give the device a fixed address in your router so they stay right. SGC's page opens at `https://sgc.domain.tld` with the real certificate once the proxy is on (the proxy passes that name on to SGC unopened), and at `https://sgc.domain.tld:8443` in any case. By address (`https://192.168.1.x:8443`) it keeps its own certificate, so there is always a way in, also when the proxy does not run. SGC removes only names it made itself: rewrites you add in AdGuard Home are left alone.
+Once the domain is set up, this device has a name under it: `sgc.domain.tld` (change it on the System page, under Domain and names). SGC puts its names into AdGuard Home, pointing at this device's address in the home network; give the device a fixed address in your router so they stay right. SGC's page opens at `https://sgc.domain.tld` with the real certificate once the proxy is on (the proxy passes that name on to SGC unopened), and at `https://sgc.domain.tld:8443` in any case. By address (`https://192.168.1.x:8443`) it keeps its own certificate, so there is always a way in, also when the proxy does not run. SGC removes only names it made itself: rewrites you add in AdGuard Home are left alone.
 
 The names work on devices that use this device for DNS: set the router to hand it out, or set a device to it by hand.
 
 ### The proxy and your services
 
-On the Services page, switch the proxy on (Traefik; it needs the domain and the certificate first). Every web service then opens at `https://name.domain.tld`, and plain http is sent on to https. Add services by hand for devices that cannot announce themselves (a router, a printer, a NAS), with their address in the home network and their port; devices with a self-signed certificate are fine.
+On the Services page, under Settings, switch the proxy on (Traefik; it needs the domain and the certificate first). Every web service then opens at `https://name.domain.tld`, and plain http is sent on to https. Add services by hand for devices that cannot announce themselves (a router, a printer, a NAS), with their address in the home network and their port; devices with a self-signed certificate are fine.
 
 Game servers and other services that are not web pages work too, in one of two ways: **direct** (the name points at the device itself; the default) or **through the gateway** (a port of this device passes the connection on; switching one on restarts the proxy for a few seconds).
 
@@ -207,7 +209,7 @@ While the firewall is on, switching the proxy (or the VPN) on offers to bring th
 
 ### Servers that announce their services
 
-A server running Docker can register its services itself. Make a token for it on the Services page (it is shown once), put it in the server's `.env` file as `SGC_TOKEN`, and add this to its compose file:
+A server running Docker can register its services itself. Make a token for it on the Services page, under Servers that announce (it is shown once), put it in the server's `.env` file as `SGC_TOKEN`, and add this to its compose file:
 
 ```yaml
 services:
@@ -237,13 +239,13 @@ Put a web service behind SGC's login (on the Services page). Opening it then ask
 
 ### Notifications and logs
 
-The bell at the top of every page has SGC's notifications, and a banner stays while a problem lasts. On the System page, Notifications, they can also go out by email (STARTTLS or TLS) and to ntfy, per kind of event; problems and warnings by default, information only in the bell. On ntfy.sh, anyone who knows a topic can read it: make it long and random, or use a token.
+The bell at the top of every page has SGC's notifications, and the dashboard lists what needs your attention while a problem lasts. On the System page, under Notifications, they can also go out by email (STARTTLS or TLS) and to ntfy, per kind of event; problems and warnings by default, information only in the bell. On ntfy.sh, anyone who knows a topic can read it: make it long and random, or use a token.
 
 The Logs page has the notifications, the logs of each part of SGC (with a live view), and the full history of who did what.
 
 ### Backups to another device
 
-On the System page, Backups, SGC makes an export every day at your time and puts it on a share (SMB), an SFTP server or a WebDAV folder, keeping the newest ten. Make the backup key first: SGC shows its secret half once and keeps only the half that locks, so the backups are no use to anyone without what you kept. "Make a new key" replaces it (for instance if the secret half got out); keep the old one as long as you keep backups made with it. To restore one, install SGC on a fresh device, open the setup link, choose the backup file and enter the backup key where the passphrase goes. SGC warns after three days without a good backup. For SFTP, SGC shows the server's key the first time; compare it with the server's own before confirming.
+On the System page, under Backups, SGC makes an export every day at your time and puts it on a share (SMB), an SFTP server or a WebDAV folder, keeping the newest ten. Make the backup key first: SGC shows its secret half once and keeps only the half that locks, so the backups are no use to anyone without what you kept. "Make a new key" replaces it (for instance if the secret half got out); keep the old one as long as you keep backups made with it. To restore one, install SGC on a fresh device, open the setup link, choose the backup file and enter the backup key where the passphrase goes. SGC warns after three days without a good backup. For SFTP, SGC shows the server's key the first time; compare it with the server's own before confirming.
 
 ### End of life
 

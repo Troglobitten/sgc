@@ -1,9 +1,8 @@
 import { useState } from 'react'
-import { CircleCheck, TriangleAlert } from 'lucide-react'
 
 import { FormError } from '@/components/auth-card'
 import { FirewallFollowUp } from '@/components/firewall-follow-up'
-import { Card, CardContent } from '@/components/ui/card'
+import { SettingCard, StatusBadge, Warning } from '@/components/setting'
 import { Switch } from '@/components/ui/switch'
 import { api, errorMessage } from '@/lib/api'
 import { formatTimeAgo } from '@/lib/format'
@@ -32,28 +31,15 @@ export function ProxyCard({ onError }: { onError: (error: unknown) => void }) {
 
   const on = status?.wanted ?? false
   const failing = status?.lastApply && !status.lastApply.ok
+  const badge = !status ? undefined : !on ? (
+    <StatusBadge tone="muted">Off</StatusBadge>
+  ) : status.running && !failing ? (
+    <StatusBadge tone="ok">Running</StatusBadge>
+  ) : (
+    <StatusBadge tone="warn">{status.running ? 'Last change failed' : 'Not running'}</StatusBadge>
+  )
   return (
-    <Card>
-      <CardContent className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-sm text-muted-foreground">Proxy</h2>
-          {status && on && (
-            <span
-              className={
-                status.running && !failing
-                  ? 'flex items-center gap-1.5 text-sm font-medium text-emerald-700 dark:text-emerald-400'
-                  : 'flex items-center gap-1.5 text-sm font-medium text-amber-700 dark:text-amber-400'
-              }
-            >
-              {status.running && !failing ? (
-                <CircleCheck className="size-4" aria-hidden="true" />
-              ) : (
-                <TriangleAlert className="size-4" aria-hidden="true" />
-              )}
-              {status.running ? (failing ? 'Running, last change failed' : 'Running') : 'Not running'}
-            </span>
-          )}
-        </div>
+    <SettingCard title="Proxy" status={badge}>
         <div className="flex items-start justify-between gap-4">
           <p className="text-sm">
             {busy && !on
@@ -73,10 +59,9 @@ export function ProxyCard({ onError }: { onError: (error: unknown) => void }) {
           <p className="text-sm text-muted-foreground">{status.notReady}</p>
         )}
         {status && failing && status.lastApply && (
-          <p className="flex gap-2 text-sm text-amber-700 dark:text-amber-400">
-            <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          <Warning>
             {formatTimeAgo(status.lastApply.at)}: {status.lastApply.message}
-          </p>
+          </Warning>
         )}
         {status && status.installed && (
           <p className="text-xs text-muted-foreground">
@@ -87,7 +72,6 @@ export function ProxyCard({ onError }: { onError: (error: unknown) => void }) {
         )}
         <FormError message={error} />
         {on && <FirewallFollowUp watch={status?.running} />}
-      </CardContent>
-    </Card>
+    </SettingCard>
   )
 }

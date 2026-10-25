@@ -1,10 +1,9 @@
 import { useState, type FormEvent } from 'react'
-import { CircleCheck, TriangleAlert } from 'lucide-react'
 
 import { FormError } from '@/components/auth-card'
 import { FirewallFollowUp } from '@/components/firewall-follow-up'
+import { Facts, More, SettingCard, StatusBadge, Warning } from '@/components/setting'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
@@ -44,28 +43,19 @@ export function VpnCard({
   const failing = status.lastApply && !status.lastApply.ok
   const healthy = status.enabled && status.up && !failing
   const state = status.publicState
+  const badge = !status.enabled ? (
+    <StatusBadge tone="muted">Off</StatusBadge>
+  ) : healthy ? (
+    <StatusBadge tone="ok">On</StatusBadge>
+  ) : (
+    <StatusBadge tone="warn">{status.up ? 'On, last change failed' : 'Not running'}</StatusBadge>
+  )
   return (
-    <Card>
-      <CardContent className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-sm text-muted-foreground">VPN (WireGuard)</h2>
-          {status.enabled && (
-            <span
-              className={
-                healthy
-                  ? 'flex items-center gap-1.5 text-sm font-medium text-emerald-700 dark:text-emerald-400'
-                  : 'flex items-center gap-1.5 text-sm font-medium text-amber-700 dark:text-amber-400'
-              }
-            >
-              {healthy ? <CircleCheck className="size-4" aria-hidden="true" /> : <TriangleAlert className="size-4" aria-hidden="true" />}
-              {healthy ? 'On' : status.up ? 'On, last change failed' : 'Not running'}
-            </span>
-          )}
-        </div>
+    <SettingCard title="VPN (WireGuard)" status={badge}>
         <div className="flex items-start justify-between gap-4">
           <p className="text-sm">
             {status.enabled
-              ? `Devices of the people below connect from anywhere at ${status.endpoint || 'your public address'}.`
+              ? `People’s devices connect from anywhere at ${status.endpoint || 'your public address'}.`
               : 'Let people’s phones and laptops into the home network from anywhere, with the ad blocking of home. Each device gets its own key and QR code.'}
           </p>
           <Switch
@@ -76,28 +66,16 @@ export function VpnCard({
           />
         </div>
 
-        {status.enabled && (
-          <div className="rounded-lg bg-muted/50 p-3 text-sm">
-            <p className="font-medium">On your router</p>
-            <p className="text-muted-foreground">
-              Forward UDP port {status.port} to {lanAddress || 'this device'}. That is the only
-              port of the home network that faces the internet.
-            </p>
-          </div>
+        {status.enabled && state && status.publicName && (
+          <Facts
+            items={[
+              ['Public name', `${status.publicName} → ${state.recordIp || '…'}`],
+              ...(state.publicIp ? [['Home is at', state.publicIp] as [string, string]] : []),
+              ...(state.checkedAt ? [['Looked', formatTimeAgo(state.checkedAt)] as [string, string]] : []),
+            ]}
+          />
         )}
-        {status.enabled && state && (
-          <p className="text-xs text-muted-foreground">
-            {status.publicName && <>{status.publicName} → {state.recordIp || '…'}</>}
-            {state.publicIp && <> · the internet sees home at {state.publicIp}</>}
-            {state.checkedAt && <> · looked {formatTimeAgo(state.checkedAt)}</>}
-          </p>
-        )}
-        {status.enabled && state?.problem && (
-          <p className="flex gap-2 text-sm text-amber-700 dark:text-amber-400">
-            <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-            {state.problem}
-          </p>
-        )}
+        {status.enabled && state?.problem && <Warning>{state.problem}</Warning>}
         {status.enabled && state?.foreign && (
           <div>
             <Button size="sm" variant="outline" onClick={() => api.takeOverVpnRecord().then(() => api.vpn().then(onChanged), (e) => setError(errorMessage(e)))}>
@@ -105,32 +83,33 @@ export function VpnCard({
             </Button>
           </div>
         )}
-        {status.enabled && status.problem && (
-          <p className="flex gap-2 text-sm text-amber-700 dark:text-amber-400">
-            <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-            {status.problem}
-          </p>
-        )}
+        {status.enabled && status.problem && <Warning>{status.problem}</Warning>}
         {failing && status.lastApply && (
-          <p className="flex gap-2 text-sm text-amber-700 dark:text-amber-400">
-            <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          <Warning>
             {formatTimeAgo(status.lastApply.at)}: {status.lastApply.message}
-          </p>
+          </Warning>
         )}
 
         {editing ? (
           <SettingsForm status={status} busy={busy} onCancel={() => setEditing(false)} onSave={save} />
         ) : (
           <div>
-            <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
-              Settings
+            <Button variant="outline" onClick={() => setEditing(true)}>
+              Change the settings
             </Button>
           </div>
         )}
+        {status.enabled && (
+          <More label={`On your router: forward UDP port ${status.port}`}>
+            <p>
+              Forward UDP port {status.port} to {lanAddress || 'this device'}. That is the only port of the home network that
+              faces the internet. Whether it works from outside, only a phone on mobile data can tell.
+            </p>
+          </More>
+        )}
         <FormError message={error} />
         {status.enabled && <FirewallFollowUp watch={`${status.up}:${status.port}`} />}
-      </CardContent>
-    </Card>
+    </SettingCard>
   )
 }
 

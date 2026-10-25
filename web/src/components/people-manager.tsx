@@ -27,7 +27,7 @@ import {
   type VpnDevice,
   type VpnStatus,
 } from '@/lib/api'
-import { formatBytes, formatTimeAgo } from '@/lib/format'
+import { formatBytes, formatDate, formatTimeAgo } from '@/lib/format'
 
 const blank: PersonInput = {
   name: '',
@@ -57,9 +57,9 @@ export function PeopleManager({
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-medium text-muted-foreground">People</h2>
+        <h2 className="text-[15px] font-semibold">People</h2>
         {!adding && (
-          <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
+          <Button size="sm" onClick={() => setAdding(true)}>
             <Plus />
             Add a person
           </Button>
@@ -170,14 +170,14 @@ function PersonCard({
               <p className="text-sm text-muted-foreground">
                 Reaches {accessWords(person, services)}
                 {person.loginEnabled && ` · login ${person.username}`}
-                {person.expiresAt && ` · until ${new Date(person.expiresAt).toLocaleDateString()}`}
+                {person.expiresAt && ` · until ${formatDate(person.expiresAt)}`}
               </p>
             </div>
             <div className="flex gap-1">
               <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>
                 Change
               </Button>
-              <Button size="sm" variant="ghost" onClick={() => setRemoving(true)}>
+              <Button size="sm" variant="ghost" className="text-muted-foreground" onClick={() => setRemoving(true)}>
                 Remove
               </Button>
             </div>

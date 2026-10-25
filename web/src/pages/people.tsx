@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import { TriangleAlert } from 'lucide-react'
 
+import { PageTitle, SettingCard } from '@/components/setting'
+
 import { AppShell, type ShellProps } from '@/components/app-shell'
 import { PeopleManager } from '@/components/people-manager'
 import { UsageChart } from '@/components/usage-chart'
 import { VpnCard } from '@/components/vpn-card'
-import { Card, CardContent } from '@/components/ui/card'
 import { api, ApiError, errorMessage, type Person, type Service, type VpnStatus } from '@/lib/api'
 
 /** People, their devices in the VPN, and the VPN itself. */
@@ -44,6 +45,7 @@ export function PeoplePage({ shell }: { shell: ShellProps }) {
 
   return (
     <AppShell page="people" {...shell}>
+      <PageTitle title="People" lead="Who may come in through the VPN, with which devices, and what they reach." />
       {problem && (
         <p role="alert" className="flex items-center gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
           <TriangleAlert className="size-4 shrink-0" aria-hidden="true" />
@@ -53,12 +55,9 @@ export function PeoplePage({ shell }: { shell: ShellProps }) {
       {vpn && <VpnCard status={vpn} lanAddress={lanAddress} onChanged={setVpn} />}
       {vpn && people && <PeopleManager people={people} services={services} vpn={vpn} onChanged={refresh} />}
       {vpn?.enabled && vpn.devices.length > 0 && (
-        <Card>
-          <CardContent className="flex flex-col gap-2">
-            <h2 className="text-sm text-muted-foreground">What all devices used</h2>
-            <UsageChart device={0} />
-          </CardContent>
-        </Card>
+        <SettingCard title="What all devices used">
+          <UsageChart device={0} />
+        </SettingCard>
       )}
     </AppShell>
   )

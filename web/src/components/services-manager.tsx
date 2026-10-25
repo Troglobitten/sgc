@@ -1,8 +1,9 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
-import { ExternalLink, Plus, RefreshCw } from 'lucide-react'
+import { Ellipsis, ExternalLink, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
 
 import { FormError } from '@/components/auth-card'
 import { HealthDot, ServiceIcon } from '@/components/service-icon'
+import { SettingCard, StatusBadge } from '@/components/setting'
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -13,7 +14,12 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
@@ -21,13 +27,13 @@ import {
   api,
   errorMessage,
   type IconsStatus,
+  type Person,
   type Service,
   type ServiceInput,
   type ServicesResponse,
   type ServicesSettings,
 } from '@/lib/api'
-import { formatTimeAgo } from '@/lib/format'
-import { usePolled } from '@/lib/poll'
+import { formatDate, formatTimeAgo } from '@/lib/format'
 
 const selectClass =
   'h-8 w-full rounded-lg border border-input bg-transparent px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30'
@@ -47,96 +53,101 @@ const blank: ServiceInput = {
   enabled: true,
 }
 
-/** Every service behind SGC's names: add, change, approve, remove. */
-export function ServicesManager({ onError }: { onError: (error: unknown) => void }) {
-  const [data, setData, refresh] = usePolled(api.services, 15_000, onError)
+/**
+ * Every service behind SGC's names: add, change, approve, remove. One row
+ * each; the rare actions are behind the row's ⋯ button. The page owns the
+ * data (it is shared with the Settings tab).
+ */
+export function ServicesManager({
+  data,
+  people,
+  refresh,
+  onError,
+}: {
+  data: ServicesResponse
+  people: Person[]
+  refresh: () => void
+  onError: (error: unknown) => void
+}) {
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<Service | null>(null)
   const [removing, setRemoving] = useState<Service | null>(null)
 
-  if (data === null) {
-    return (
-      <Card>
-        <CardContent>
-          <p className="text-sm text-muted-foreground">…</p>
-        </CardContent>
-      </Card>
-    )
-  }
-
   const pending = data.services.filter((s) => s.pending)
-  const categories = [...new Set(data.services.map((s) => s.category))]
+  const listed = data.services.filter((s) => !s.pending)
+  const categories = [...new Set(listed.map((s) => s.category))]
+  const answering = listed.filter((s) => s.enabled && s.health.state === 'up').length
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-4">
       {pending.length > 0 && (
-        <Card>
-          <CardContent className="flex flex-col gap-2">
-            <h2 className="text-sm text-muted-foreground">Waiting for your approval</h2>
-            {pending.map((s) => (
-              <div key={s.id} className="flex flex-wrap items-center justify-between gap-2 text-sm">
-                <span>
-                  <span className="font-medium">{s.name}</span> at {s.upstreamIp}:{s.upstreamPort},
-                  announced by {s.tokenLabel || 'a removed token'}
-                </span>
-                <span className="flex gap-2">
-                  <Button
-                    size="sm"
-                    onClick={() => api.approveService(s.id).then(refresh, onError)}
-                  >
-                    Approve
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setRemoving(s)}>
-                    Remove
-                  </Button>
-                </span>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
+        <SettingCard title="Waiting for your approval" status={<StatusBadge tone="warn">{pending.length}</StatusBadge>}>
+          {pending.map((s) => (
+            <div key={s.id} className="flex flex-wrap items-center justify-between gap-2 text-sm">
+              <span>
+                <span className="font-medium">{s.name}</span> at {s.upstreamIp}:{s.upstreamPort}, announced by{' '}
+                {s.tokenLabel || 'a removed token'}
+              </span>
+              <span className="flex gap-2">
+                <Button size="sm" onClick={() => api.approveService(s.id).then(refresh, onError)}>
+                  Approve
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setRemoving(s)}>
+                  Remove
+                </Button>
+              </span>
+            </div>
+          ))}
+        </SettingCard>
       )}
 
-      <Card>
-        <CardContent className="flex flex-col gap-3">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="text-sm text-muted-foreground">Services</h2>
-            {!adding && (
-              <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
-                <Plus />
-                Add a service
-              </Button>
-            )}
-          </div>
-          {adding && (
-            <ServiceForm
-              initial={blank}
-              onCancel={() => setAdding(false)}
-              onSave={async (input) => {
-                await api.addService(input)
-                setAdding(false)
-                refresh()
-              }}
-            />
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-muted-foreground">
+          {listed.length === 0
+            ? 'No services yet.'
+            : `${listed.length} ${listed.length === 1 ? 'service' : 'services'} · ${answering} ${answering === 1 ? 'answers' : 'answer'}`}
+        </p>
+        {!adding && (
+          <Button onClick={() => setAdding(true)}>
+            <Plus />
+            Add a service
+          </Button>
+        )}
+      </div>
+
+      {adding && (
+        <SettingCard title="A new service">
+          <ServiceForm
+            initial={blank}
+            onCancel={() => setAdding(false)}
+            onSave={async (input) => {
+              await api.addService(input)
+              setAdding(false)
+              refresh()
+            }}
+          />
+        </SettingCard>
+      )}
+
+      {listed.length === 0 && !adding && (
+        <p className="text-sm text-muted-foreground">
+          Add one here for a device that cannot announce itself (a router, a printer, a NAS), or give a server a token
+          (Servers that announce) and let it announce its own.
+        </p>
+      )}
+
+      {categories.map((category) => (
+        <section key={category || '-'} className="flex flex-col gap-2">
+          {categories.length > 1 && (
+            <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">{category || 'Other'}</h2>
           )}
-          {data.services.length === 0 && !adding && (
-            <p className="text-sm text-muted-foreground">
-              No services yet. Add one here for a device that cannot announce itself (a router, a
-              printer, a NAS), or give a server a token below and let it announce its own.
-            </p>
-          )}
-          {categories.map((category) => (
-            <div key={category || '-'} className="flex flex-col gap-1">
-              {categories.length > 1 && (
-                <h3 className="pt-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                  {category || 'Other'}
-                </h3>
-              )}
-              {data.services
-                .filter((s) => s.category === category && !s.pending)
-                .map((s) =>
-                  editing?.id === s.id ? (
+          <div className="divide-y overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
+            {listed
+              .filter((s) => s.category === category)
+              .map((s) =>
+                editing?.id === s.id ? (
+                  <div key={s.id} className="p-4">
                     <ServiceForm
-                      key={s.id}
                       initial={s}
                       announced={s.tokenId !== null}
                       onCancel={() => setEditing(null)}
@@ -146,22 +157,21 @@ export function ServicesManager({ onError }: { onError: (error: unknown) => void
                         refresh()
                       }}
                     />
-                  ) : (
-                    <ServiceRow
-                      key={s.id}
-                      service={s}
-                      onEdit={() => setEditing(s)}
-                      onRemove={() => setRemoving(s)}
-                      onRefreshIcon={() => api.refreshServiceIcon(s.id).then(() => setTimeout(refresh, 4000), onError)}
-                    />
-                  ),
-                )}
-            </div>
-          ))}
-        </CardContent>
-      </Card>
-
-      <SettingsCard data={data} onSaved={setData} />
+                  </div>
+                ) : (
+                  <ServiceRow
+                    key={s.id}
+                    service={s}
+                    people={people}
+                    onEdit={() => setEditing(s)}
+                    onRemove={() => setRemoving(s)}
+                    onRefreshIcon={() => api.refreshServiceIcon(s.id).then(() => setTimeout(refresh, 4000), onError)}
+                  />
+                ),
+              )}
+          </div>
+        </section>
+      ))}
 
       {removing && (
         <RemoveDialog
@@ -179,60 +189,100 @@ export function ServicesManager({ onError }: { onError: (error: unknown) => void
 
 function describeWay(s: Service): string {
   if (s.kind === 'http') return `${s.scheme}://${s.upstreamIp}:${s.upstreamPort}`
-  if (s.mode === 'proxied') return `${s.kind.toUpperCase()} via the gateway's port ${s.listenPort} → ${s.upstreamIp}:${s.upstreamPort}`
+  if (s.mode === 'proxied') return `${s.kind.toUpperCase()} via this device's port ${s.listenPort} → ${s.upstreamIp}:${s.upstreamPort}`
   return `${s.kind.toUpperCase()}, the name points at ${s.upstreamIp}:${s.upstreamPort}`
+}
+
+/** Whose list a service is on (People page): those people reach it through the VPN, and pass SGC's login for it. */
+function onListsOf(s: Service, people: Person[]): string[] {
+  return people.filter((p) => p.active && !p.disabled && (p.allServices || p.serviceIds.includes(s.id))).map((p) => p.name)
 }
 
 function ServiceRow({
   service: s,
+  people,
   onEdit,
   onRemove,
   onRefreshIcon,
 }: {
   service: Service
+  people: Person[]
   onEdit: () => void
   onRemove: () => void
   onRefreshIcon: () => void
 }) {
+  const lists = onListsOf(s, people)
+  const state = !s.enabled
+    ? { text: 'Switched off', tone: 'text-muted-foreground' }
+    : s.health.state === 'up'
+      ? { text: 'Answers', tone: 'text-emerald-700 dark:text-emerald-400' }
+      : s.health.state === 'down'
+        ? {
+            text: s.health.abandoned ? 'Looks abandoned' : `Does not answer · ${formatTimeAgo(s.health.since)}`,
+            tone: s.health.abandoned ? 'text-muted-foreground' : 'text-red-700 dark:text-red-400',
+          }
+        : { text: 'Not probed', tone: 'text-muted-foreground' }
   return (
-    <div className="flex flex-wrap items-center gap-3 rounded-lg py-1.5">
-      <ServiceIcon service={s} />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <span className="flex items-center gap-2 text-sm font-medium">
-          <HealthDot service={s} />
-          {s.title || s.name}
-          {!s.enabled && <span className="text-xs font-normal text-muted-foreground">switched off</span>}
-          {s.protected && <span className="text-xs font-normal text-muted-foreground">· behind SGC’s login</span>}
-        </span>
-        <span className="truncate text-xs text-muted-foreground">
+    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 px-4 py-3 md:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1fr)_10rem_auto]">
+      <div className="flex min-w-0 items-center gap-3">
+        <ServiceIcon service={s} />
+        <span className="flex min-w-0 flex-col">
+          <span className="truncate text-sm font-medium">{s.title || s.name}</span>
           {s.url && s.kind === 'http' ? (
-            <a href={s.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:underline">
-              {s.url.replace('https://', '')}
-              <ExternalLink className="size-3" aria-hidden="true" />
+            <a
+              href={s.url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex min-w-0 items-center gap-1 text-xs text-muted-foreground hover:underline"
+            >
+              <span className="truncate">{s.url.replace('https://', '')}</span>
+              <ExternalLink className="size-3 shrink-0" aria-hidden="true" />
             </a>
           ) : (
-            s.url
+            <span className="truncate text-xs text-muted-foreground">{s.url}</span>
           )}
-          {' · '}
-          {describeWay(s)}
-          {' · '}
-          {s.tokenId !== null ? `announced by ${s.tokenLabel}` : 'added here'}
-          {s.health.state === 'down' && ` · down since ${formatTimeAgo(s.health.since)}`}
-          {s.health.abandoned && ' · looks abandoned'}
         </span>
       </div>
-      <div className="flex gap-1">
-        {s.kind === 'http' && !s.hasIcon && (
-          <Button size="icon-sm" variant="ghost" onClick={onRefreshIcon} aria-label={`Look for ${s.name}'s icon again`}>
-            <RefreshCw />
-          </Button>
+      <div className="col-start-2 row-start-1 md:col-start-5">
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={<Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label={`More for ${s.title || s.name}`} />}
+          >
+            <Ellipsis />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={onEdit}>
+              <Pencil />
+              Change
+            </DropdownMenuItem>
+            {s.kind === 'http' && !s.hasIcon && (
+              <DropdownMenuItem onClick={onRefreshIcon}>
+                <RefreshCw />
+                Look for its icon again
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuItem variant="destructive" onClick={onRemove}>
+              <Trash2 />
+              Remove
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+      <div className="col-span-2 min-w-0 text-xs text-muted-foreground md:col-span-1 md:col-start-2 md:row-start-1 md:text-sm">
+        <span className="block truncate md:text-foreground">{describeWay(s)}</span>
+        <span className="block truncate text-xs">{s.tokenId !== null ? `announced by ${s.tokenLabel}` : 'added here'}</span>
+      </div>
+      <div className="col-span-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 md:col-span-1 md:col-start-3 md:row-start-1">
+        <span className="rounded-full bg-muted px-2 py-0.5 text-xs">{s.protected ? 'Behind SGC’s login' : 'Open in the home network'}</span>
+        {lists.length > 0 && (
+          <span className="truncate text-xs text-muted-foreground" title={lists.join(', ')}>
+            on the list of {lists.length <= 2 ? lists.join(' and ') : `${lists.length} people`}
+          </span>
         )}
-        <Button size="sm" variant="ghost" onClick={onEdit}>
-          Change
-        </Button>
-        <Button size="sm" variant="ghost" onClick={onRemove}>
-          Remove
-        </Button>
+      </div>
+      <div className={`col-span-2 flex items-center gap-2 text-sm md:col-span-1 md:col-start-4 md:row-start-1 ${state.tone}`}>
+        <HealthDot service={s} />
+        <span className="truncate">{state.text}</span>
       </div>
     </div>
   )
@@ -362,7 +412,8 @@ function ServiceForm({
   )
 }
 
-function SettingsCard({ data, onSaved }: { data: ServicesResponse; onSaved: (next: ServicesResponse) => void }) {
+/** How services are handled: approval of announced ones, icons, when one looks abandoned. */
+export function ServicesSettingsCard({ data, onSaved }: { data: ServicesResponse; onSaved: (next: ServicesResponse) => void }) {
   const [days, setDays] = useState(String(data.settings.abandonedDays))
   const [error, setError] = useState<string | null>(null)
   async function save(patch: Partial<ServicesSettings>) {
@@ -374,9 +425,7 @@ function SettingsCard({ data, onSaved }: { data: ServicesResponse; onSaved: (nex
     }
   }
   return (
-    <Card>
-      <CardContent className="flex flex-col gap-3">
-        <h2 className="text-sm text-muted-foreground">How services are handled</h2>
+    <SettingCard title="How services are handled">
         <label className="flex items-start justify-between gap-4 text-sm">
           <span>
             Announced services wait for your approval
@@ -388,9 +437,8 @@ function SettingsCard({ data, onSaved }: { data: ServicesResponse; onSaved: (nex
           <span>
             Icons from the icon collection
             <span className="block text-xs text-muted-foreground">
-              When a service has no icon of its own, SGC looks in a copy of the dashboard-icons collection
-              that it keeps on this device (about 20 MB, fetched once there is a service and then kept up to
-              date). Nobody outside learns the names of your services.
+              For a service without an icon of its own: from a copy of the dashboard-icons collection kept on this device
+              (about 20 MB), so nobody outside learns your services’ names.
             </span>
           </span>
           <Switch checked={data.settings.iconCatalogue} onCheckedChange={(v) => save({ iconCatalogue: v })} />
@@ -403,8 +451,7 @@ function SettingsCard({ data, onSaved }: { data: ServicesResponse; onSaved: (nex
           days looks abandoned.
         </div>
         <FormError message={error} />
-      </CardContent>
-    </Card>
+    </SettingCard>
   )
 }
 
@@ -430,7 +477,7 @@ function IconsLine({
   const state = icons.updating
     ? 'Looking for a new icon pack…'
     : icons.installed
-      ? `${icons.count.toLocaleString()} icons, from ${new Date(icons.built!).toLocaleDateString()}` +
+      ? `${icons.count.toLocaleString('en-GB')} icons, from ${formatDate(icons.built!)}` +
         (icons.checkedAt ? ` · looked for a newer pack ${formatTimeAgo(icons.checkedAt)}` : '')
       : 'No icons on this device yet: they are fetched once there is a service.'
   return (

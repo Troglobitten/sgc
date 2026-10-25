@@ -1,5 +1,5 @@
 import type { MouseEvent, ReactNode } from 'react'
-import { Bell, LogOut, TriangleAlert, User } from 'lucide-react'
+import { Bell, LogOut, User } from 'lucide-react'
 
 import { Logo } from '@/components/logo'
 import { ThemeMenu } from '@/components/theme-menu'
@@ -11,7 +11,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { api } from '@/lib/api'
-import { pageNames, pages, type Page } from '@/lib/pages'
+import { pageNames, pages, type Page, type SystemSection } from '@/lib/pages'
 import { usePolled } from '@/lib/poll'
 import { cn } from '@/lib/utils'
 
@@ -24,7 +24,8 @@ export interface ShellProps {
   username: string
   version: string
   hostname: string
-  onNavigate: (page: Page) => void
+  /** to a page, or to one of the System page's sections */
+  onNavigate: (page: Page, section?: SystemSection | null) => void
   onSignedOut: () => void
 }
 
@@ -50,7 +51,8 @@ export function AppShell({
 
   return (
     <div className="min-h-svh bg-muted/40">
-      <header className="flex flex-wrap items-center gap-x-2.5 gap-y-1 border-b bg-background px-4 py-2">
+      <header className="border-b bg-background">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-2.5 gap-y-1 px-4 py-2 sm:px-6">
         <Logo className="size-7" />
         <span className="font-medium">SGC</span>
         {hostname && <span className="text-sm text-muted-foreground">{hostname}</span>}
@@ -100,31 +102,14 @@ export function AppShell({
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        </div>
       </header>
 
-      <main className="mx-auto flex max-w-5xl flex-col gap-6 p-4">
-        {/* Problems that last stay on every page until they are over. */}
-        {summary && summary.banners.length > 0 && (
-          <div className="flex flex-col gap-2">
-            {summary.banners.map((b) => (
-              <p
-                key={b.id}
-                className={
-                  b.severity === 'problem'
-                    ? 'flex gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive'
-                    : 'flex gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-300'
-                }
-              >
-                <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-                <span>
-                  <span className="font-medium">{b.title}.</span> {b.body}
-                </span>
-              </p>
-            ))}
-          </div>
-        )}
-        {children}
-      </main>
+      {/* Problems that last are listed once, on the dashboard ("Needs your
+          attention"), and counted on the bell here; the card concerned shows
+          its own warning where the thing is set. A banner on every page
+          filled a phone's whole first screen. */}
+      <main className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-5 sm:px-6 sm:py-6">{children}</main>
     </div>
   )
 }
@@ -157,7 +142,7 @@ function PageLink({
       aria-current={current ? 'page' : undefined}
       className={cn(
         buttonVariants({ variant: current ? 'secondary' : 'ghost', size: 'sm' }),
-        'h-auto min-w-0 flex-col gap-0.5 px-1 py-1 text-[11px] sm:h-8 sm:flex-row sm:gap-1.5 sm:px-2.5 sm:py-0 sm:text-sm',
+        'h-auto min-h-11 min-w-0 flex-col gap-0.5 px-0 py-1 text-[11px] tracking-tight sm:h-8 sm:min-h-0 sm:flex-row sm:gap-1.5 sm:px-2.5 sm:py-0 sm:text-sm sm:tracking-normal',
       )}
     >
       <Icon />

@@ -2,6 +2,18 @@
 
 What changed in each version of SGC, newest first. The section for a version is what SGC shows before you update to it, so it is written for the person running SGC, not for developers.
 
+## 0.19.0
+
+A calmer page. Nothing changes in what SGC does; everything is where it is easier to find, with less to read.
+
+- **The System page is in sections:** Security, Domain and names, DNS, Updates, Backups, Notifications and This device. On a computer the list is on the left with each section's state; on a phone the list is the page, and a section opens on its own.
+- **Updates in one place:** SGC's own updates, the device's, the maintenance window and end-of-life dates are together under System, Updates. The dashboard only shows SGC's update card when there is a new version.
+- **Less text on the cards.** Each card shows its state and what matters now; the explanation is behind "More about this". Warnings stay in view. Set-up forms (backups, notifications, the maintenance window) fold away behind "Change" once they are set up.
+- **The dashboard starts with "Needs your attention"**, one list of what is wrong, each with a link to where it is put right. It replaces the banners that filled the top of every page. The bell still has every notification.
+- **The VPN tile on the dashboard shows the VPN's real state** (it said "Not set up yet" whatever the VPN did), and SSH has a tile of its own.
+- **Services has tabs:** the services, the servers that announce them, and the settings (the proxy, icons). Change and Remove are behind each service's ⋯ button.
+- Dates are written the same way everywhere ("9 August 2028").
+
 ## 0.18.0
 
 What you asked for after trying 0.17.

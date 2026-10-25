@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useId, useState } from 'react'
-import { CircleCheck, RefreshCw, TriangleAlert, X } from 'lucide-react'
+import { useCallback, useEffect, useId, useState, type ReactNode } from 'react'
+import { CircleCheck, RefreshCw, X } from 'lucide-react'
 
+import { Facts, More, SettingCard, StatusBadge, Warning } from '@/components/setting'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -12,7 +13,6 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import {
@@ -22,7 +22,7 @@ import {
   type UpdateOutcome,
   type UpdateStatus,
 } from '@/lib/api'
-import { formatTimeAgo } from '@/lib/format'
+import { formatDate, formatTimeAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 const refreshInterval = 60_000
@@ -30,39 +30,23 @@ const refreshInterval = 60_000
 /** What "install by itself" means right now, in one line. */
 function autoUpdateHint(m: MaintenanceStatus): string {
   if (m.autoUpdate && !m.enabled) {
-    return 'The maintenance window is switched off (System page), so nothing installs by itself yet.'
+    return 'The maintenance window is switched off, so nothing installs by itself yet.'
   }
   if (m.autoUpdate && m.updateVersion && m.updateInstallableFrom) {
     const from = new Date(m.updateInstallableFrom)
     return from.getTime() <= Date.now()
       ? `SGC ${m.updateVersion} installs in the next window, from ${m.start}.`
-      : `SGC ${m.updateVersion} installs in the first window after ${from.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}.`
+      : `SGC ${m.updateVersion} installs in the first window after ${formatDate(from)}.`
   }
-  return `A new version installs once this device has known it for ${m.updateWaitDays} days. The button installs it sooner.`
+  if (m.autoUpdate) return `By themselves in the maintenance window, once this device has known them for ${m.updateWaitDays} days.`
+  return 'When you install them.'
 }
 const dismissedKey = 'sgc-dismissed-update'
 
-/**
- * What SGC knows about newer versions of itself, and the way to install one.
- *
- * onUpdating is called once an update has started, with the number of the
- * previous attempt, so the caller can tell when this one has finished.
- */
-export function UpdateCard({
-  onError,
-  onUpdating,
-}: {
-  onError: (error: unknown) => void
-  onUpdating: (previousAttempt: number | null) => void
-}) {
+/** SGC's update state and the maintenance window, loaded and kept fresh. */
+function useUpdateState(onError: (error: unknown) => void) {
   const [status, setStatus] = useState<UpdateStatus | null>(null)
-  const [checking, setChecking] = useState(false)
-  const [dialogOpen, setDialogOpen] = useState(false)
-  const switchId = useId()
-  // The maintenance window, for the "install by itself" switch.
   const [maintenance, setMaintenance] = useState<MaintenanceStatus | null>(null)
-  const autoId = useId()
-
   useEffect(() => {
     let stopped = false
     const load = () => {
@@ -82,6 +66,62 @@ export function UpdateCard({
       clearInterval(timer)
     }
   }, [onError])
+  return { status, setStatus, maintenance, setMaintenance }
+}
+
+/**
+ * The dashboard's part: there only when there is something to do, a newer
+ * version or an update that went wrong. Everything else about SGC's updates
+ * is on the System page, under Updates.
+ *
+ * onUpdating is called once an update has started, with the number of the
+ * previous attempt, so the caller can tell when this one has finished.
+ */
+export function AvailableUpdateCard({
+  onError,
+  onUpdating,
+}: {
+  onError: (error: unknown) => void
+  onUpdating: (previousAttempt: number | null) => void
+}) {
+  const { status, maintenance } = useUpdateState(onError)
+  const [dialogOpen, setDialogOpen] = useState(false)
+  if (!status) return null
+  if (!status.updateAvailable) {
+    // A rollback or failure stays in view until dismissed; a success for a day.
+    return <LastOutcome outcome={status.lastUpdate} framed />
+  }
+  return (
+    <SettingCard title={`SGC ${status.latest} is out`} status={<StatusBadge tone="warn">You have {status.current}</StatusBadge>}>
+      <LastOutcome outcome={status.lastUpdate} />
+      {maintenance && <p className="text-sm text-muted-foreground">{autoUpdateHint(maintenance)}</p>}
+      <div className="flex flex-wrap gap-2">
+        <Button onClick={() => setDialogOpen(true)}>What’s new, and install</Button>
+      </div>
+      <UpdateDialog
+        status={status}
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        onStarted={() => onUpdating(status.lastUpdate?.id ?? null)}
+      />
+    </SettingCard>
+  )
+}
+
+/** The System page's part: the version, how new versions arrive, and the way to install one. */
+export function SgcUpdatesCard({
+  onError,
+  onUpdating,
+}: {
+  onError: (error: unknown) => void
+  onUpdating: (previousAttempt: number | null) => void
+}) {
+  const { status, setStatus, maintenance, setMaintenance } = useUpdateState(onError)
+  const [checking, setChecking] = useState(false)
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const [changing, setChanging] = useState(false)
+  const switchId = useId()
+  const autoId = useId()
 
   const checkNow = useCallback(async () => {
     setChecking(true)
@@ -92,7 +132,7 @@ export function UpdateCard({
     } finally {
       setChecking(false)
     }
-  }, [onError])
+  }, [onError, setStatus])
 
   async function setAutoCheck(enabled: boolean) {
     try {
@@ -114,91 +154,108 @@ export function UpdateCard({
     }
   }
 
+  if (status === null) {
+    return (
+      <SettingCard title="SGC">
+        <p className="text-sm text-muted-foreground">…</p>
+      </SettingCard>
+    )
+  }
+
+  const badge = status.updateAvailable ? (
+    <StatusBadge tone="warn">{status.latest} is out</StatusBadge>
+  ) : status.checkError ? (
+    <StatusBadge tone="warn">Could not look</StatusBadge>
+  ) : status.checkedAt ? (
+    <StatusBadge tone="ok">{status.current}, the newest</StatusBadge>
+  ) : (
+    <StatusBadge tone="muted">{status.current}</StatusBadge>
+  )
+
   return (
-    <Card>
-      <CardContent className="flex flex-col gap-3">
-        <h2 className="text-sm text-muted-foreground">SGC updates</h2>
-
-        {status === null ? (
-          <p className="text-sm text-muted-foreground">…</p>
-        ) : (
-          <>
-            <LastOutcome outcome={status.lastUpdate} />
-
-            {status.updateAvailable ? (
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="font-medium">SGC {status.latest} is available</p>
-                  <p className="text-sm text-muted-foreground">You have {status.current}.</p>
-                </div>
-                <Button onClick={() => setDialogOpen(true)}>View update</Button>
-              </div>
-            ) : (
-              <p className="text-sm">
-                {status.checkedAt
-                  ? `SGC ${status.current} is the newest version.`
-                  : `You have SGC ${status.current}.`}
-              </p>
-            )}
-
-            {status.checkError && (
-              // A check that keeps failing must not look like "up to date".
-              <p className="flex items-start gap-2 text-sm text-amber-700 dark:text-amber-400">
-                <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-                <span>
-                  Couldn't check for updates
-                  {status.checkFailedAt ? ` (${formatTimeAgo(status.checkFailedAt)})` : ''}:{' '}
-                  {status.checkError}.
-                </span>
-              </p>
-            )}
-
-            {maintenance && (
-              <div className="flex flex-col gap-1 border-t pt-3">
-                <div className="flex items-center gap-2">
-                  <Switch
-                    id={autoId}
-                    checked={maintenance.autoUpdate}
-                    onCheckedChange={setAutoUpdate}
-                  />
-                  <Label htmlFor={autoId} className="font-normal">
-                    Install by itself in the maintenance window
-                  </Label>
-                </div>
-                <p className="text-xs text-muted-foreground">{autoUpdateHint(maintenance)}</p>
-              </div>
-            )}
-
-            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t pt-3">
-              <div className="flex items-center gap-2">
-                <Switch id={switchId} checked={status.autoCheck} onCheckedChange={setAutoCheck} />
-                <Label htmlFor={switchId} className="font-normal">
-                  Check daily
-                </Label>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground">
-                  {status.checkedAt
-                    ? `Checked ${formatTimeAgo(status.checkedAt)}`
-                    : 'Not checked yet'}
-                </span>
-                <Button variant="outline" size="sm" onClick={checkNow} disabled={checking}>
-                  <RefreshCw className={cn(checking && 'animate-spin')} />
-                  Check now
-                </Button>
-              </div>
-            </div>
-
-            <UpdateDialog
-              status={status}
-              open={dialogOpen}
-              onOpenChange={setDialogOpen}
-              onStarted={() => onUpdating(status.lastUpdate?.id ?? null)}
-            />
-          </>
+    <SettingCard title="SGC" status={badge}>
+      <LastOutcome outcome={status.lastUpdate} />
+      {status.checkError && (
+        // A check that keeps failing must not look like "up to date".
+        <Warning>
+          <p>
+            SGC could not look for a new version
+            {status.checkFailedAt ? ` (${formatTimeAgo(status.checkFailedAt)})` : ''}: {status.checkError}.
+          </p>
+        </Warning>
+      )}
+      {status.updateAvailable && (
+        <div className="flex flex-wrap items-center gap-3">
+          <p className="text-sm">
+            SGC {status.latest} is out; you have {status.current}.
+          </p>
+          <Button onClick={() => setDialogOpen(true)}>What’s new, and install</Button>
+        </div>
+      )}
+      <Facts
+        items={[
+          ['New versions', maintenance ? autoUpdateHint(maintenance) : '…'],
+          [
+            'Last looked',
+            status.autoCheck
+              ? status.checkedAt
+                ? `${formatTimeAgo(status.checkedAt)} (every day)`
+                : 'not yet (every day)'
+              : status.checkedAt
+                ? `${formatTimeAgo(status.checkedAt)} (only when you ask)`
+                : 'only when you ask',
+          ],
+        ]}
+      />
+      <div className="flex flex-wrap gap-2">
+        <Button variant="outline" onClick={checkNow} disabled={checking}>
+          <RefreshCw className={cn(checking && 'animate-spin')} />
+          Look now
+        </Button>
+        {!changing && (
+          <Button variant="outline" onClick={() => setChanging(true)}>
+            Change
+          </Button>
         )}
-      </CardContent>
-    </Card>
+      </div>
+      {changing && maintenance && (
+        <div className="flex flex-col gap-3 border-t pt-3">
+          <div className="flex items-start gap-2">
+            <Switch id={autoId} checked={maintenance.autoUpdate} onCheckedChange={setAutoUpdate} />
+            <Label htmlFor={autoId} className="flex flex-col items-start gap-0.5 font-normal">
+              Install new versions by themselves in the maintenance window
+              <span className="text-xs text-muted-foreground">
+                A new version waits until this device has known it for {maintenance.updateWaitDays} days, so that a faulty
+                release can be withdrawn first.
+              </span>
+            </Label>
+          </div>
+          <div className="flex items-center gap-2">
+            <Switch id={switchId} checked={status.autoCheck} onCheckedChange={setAutoCheck} />
+            <Label htmlFor={switchId} className="font-normal">
+              Look for a new version every day
+            </Label>
+          </div>
+          <div>
+            <Button variant="ghost" size="sm" onClick={() => setChanging(false)}>
+              Done
+            </Button>
+          </div>
+        </div>
+      )}
+      <More>
+        <p>
+          A new version is checked against SGC’s signature before it is installed. If it does not start correctly, SGC
+          goes back to the version before by itself. Over SSH: <code>sudo sgc update</code>.
+        </p>
+      </More>
+      <UpdateDialog
+        status={status}
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        onStarted={() => onUpdating(status.lastUpdate?.id ?? null)}
+      />
+    </SettingCard>
   )
 }
 
@@ -206,32 +263,33 @@ export function UpdateCard({
  * How the last update ended. A success is mentioned quietly for a day; an
  * update that was rolled back or failed stays until dismissed.
  */
-function LastOutcome({ outcome }: { outcome: UpdateOutcome | null }) {
+function LastOutcome({ outcome, framed = false }: { outcome: UpdateOutcome | null; framed?: boolean }) {
   const [dismissed, setDismissed] = useState(() => readDismissed())
   // The time this card appeared. Read once, so that drawing the card always
   // gives the same result for the same data.
   const [shownAt] = useState(() => Date.now())
 
   if (!outcome || outcome.state === 'running' || !outcome.finishedAt) return null
+  // On the dashboard the outcome is a card of its own, there only while it is news.
+  const frame = (content: ReactNode) => (framed ? <SettingCard title="SGC updates">{content}</SettingCard> : content)
 
   if (outcome.state === 'succeeded') {
     const age = shownAt - new Date(outcome.finishedAt).getTime()
     if (age > 24 * 60 * 60 * 1000) return null
-    return (
+    return frame(
       <p className="flex items-start gap-2 text-sm text-emerald-700 dark:text-emerald-400">
         <CircleCheck className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
         {outcome.message}
-      </p>
+      </p>,
     )
   }
 
   if (dismissed === outcome.id) return null
-  return (
+  return frame(
     <div
       role="alert"
       className="flex items-start gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive"
     >
-      <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
       <span className="flex-1">{outcome.message}</span>
       <Button
         variant="ghost"
@@ -244,7 +302,7 @@ function LastOutcome({ outcome }: { outcome: UpdateOutcome | null }) {
       >
         <X />
       </Button>
-    </div>
+    </div>,
   )
 }
 

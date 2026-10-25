@@ -27,6 +27,28 @@ export function daysUntil(iso: string, now: Date = new Date()): number {
   return Math.floor((new Date(iso).getTime() - now.getTime()) / (24 * 60 * 60 * 1000))
 }
 
+// One way of writing dates everywhere. The page is in English, so its dates
+// are too, whatever language the browser is set to ("9 August 2028", not
+// "09/08/2028" here and "Aug 9" there).
+const dateLocale = 'en-GB'
+
+/** "9 August 2028". */
+export function formatDate(iso: string | Date): string {
+  return new Date(iso).toLocaleDateString(dateLocale, { day: 'numeric', month: 'long', year: 'numeric' })
+}
+
+/** "26 October, 22:19". */
+export function formatDateTime(iso: string | Date): string {
+  const d = new Date(iso)
+  return `${d.toLocaleDateString(dateLocale, { day: 'numeric', month: 'long' })}, ${d.toLocaleTimeString(dateLocale, { hour: '2-digit', minute: '2-digit' })}`
+}
+
+/** "26 Oct 2026, 22:19:05", for log lines. */
+export function formatLogTime(iso: string | Date): string {
+  const d = new Date(iso)
+  return `${d.toLocaleDateString(dateLocale, { day: 'numeric', month: 'short', year: 'numeric' })}, ${d.toLocaleTimeString(dateLocale)}`
+}
+
 /** "just now", "5 min ago", "3 h ago", then the date. */
 export function formatTimeAgo(iso: string, now: Date = new Date()): string {
   const then = new Date(iso)
@@ -36,7 +58,7 @@ export function formatTimeAgo(iso: string, now: Date = new Date()): string {
   if (minutes < 60) return `${minutes} min ago`
   const hours = Math.floor(minutes / 60)
   if (hours < 24) return `${hours} h ago`
-  return then.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+  return formatDate(then)
 }
 
 /** "1.2 GB", "340 MB", "12 kB". */
