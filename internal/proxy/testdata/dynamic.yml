@@ -10,10 +10,10 @@
           ]
         }
       },
-      "config-71ae7e920cc8e575": {
+      "config-12a7abe57a361224": {
         "headers": {
           "customRequestHeaders": {
-            "X-SGC-Config": "71ae7e920cc8e575"
+            "X-SGC-Config": "12a7abe57a361224"
           }
         }
       },
@@ -34,11 +34,6 @@
           ],
           "maxResponseBodySize": 65536,
           "trustForwardHeader": false
-        }
-      },
-      "misdirected": {
-        "replacePath": {
-          "path": "/proxy-misdirected"
         }
       },
       "no-user-header": {
@@ -107,18 +102,6 @@
         "priority": 100,
         "rule": "Host(`nas.domain.tld`)",
         "service": "http-nas",
-        "tls": {}
-      },
-      "misdirected": {
-        "entryPoints": [
-          "websecure"
-        ],
-        "middlewares": [
-          "misdirected"
-        ],
-        "priority": 1000,
-        "rule": "Host(`sgc.domain.tld`)",
-        "service": "sgc-internal",
         "tls": {}
       },
       "unknown": {

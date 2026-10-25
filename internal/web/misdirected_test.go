@@ -40,9 +40,9 @@ func TestARequestForAnotherNameOnTheConnectionIsSentBack(t *testing.T) {
 	}
 }
 
-// Both doors: the page itself checks every request, and the proxy's
-// "misdirected" router sends SGC's own name, asked over a connection opened
-// for a service, to the internal answer.
+// Both doors: the page itself checks every request, and the page the proxy
+// shows for a name it does not know sends SGC's own name back, which reaches
+// it over a connection opened for a service.
 func TestBothSidesAnswerMisdirectedRequests(t *testing.T) {
 	s, _ := gateServer(t)
 	r := httptest.NewRequest(http.MethodGet, "/api/state", nil)
@@ -54,11 +54,18 @@ func TestBothSidesAnswerMisdirectedRequests(t *testing.T) {
 		t.Errorf("the page: status %d, want 421", w.Code)
 	}
 
-	r = httptest.NewRequest(http.MethodGet, "/proxy-misdirected", nil)
-	r.Host = "sgc.domain.tld"
-	w = httptest.NewRecorder()
-	s.InternalHandler().ServeHTTP(w, r)
-	if w.Code != http.StatusMisdirectedRequest {
-		t.Errorf("the proxy's side: status %d, want 421", w.Code)
+	for host, want := range map[string]int{
+		"sgc.domain.tld":     http.StatusMisdirectedRequest,
+		"SGC.domain.tld.":    http.StatusMisdirectedRequest,
+		"nothing.domain.tld": http.StatusNotFound,
+		"sgc.elsewhere.tld":  http.StatusNotFound,
+	} {
+		r = httptest.NewRequest(http.MethodGet, "/proxy-unknown", nil)
+		r.Host = host
+		w = httptest.NewRecorder()
+		s.InternalHandler().ServeHTTP(w, r)
+		if w.Code != want {
+			t.Errorf("the proxy's side, %s: status %d, want %d", host, w.Code, want)
+		}
 	}
 }

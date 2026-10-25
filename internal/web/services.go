@@ -369,9 +369,6 @@ func (s *Server) InternalHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /proxy-error/{status}", s.handleProxyError)
 	mux.HandleFunc("/proxy-unknown", s.handleProxyUnknown)
-	// SGC's own name, asked of the proxy over a connection opened for
-	// another name (misdirected.go).
-	mux.HandleFunc("/proxy-misdirected", writeMisdirected)
 	s.gateRoutes(mux)
 	return mux
 }
@@ -390,6 +387,12 @@ func (s *Server) handleProxyError(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleProxyUnknown(w http.ResponseWriter, r *http.Request) {
+	// SGC's own name only gets here over a connection opened for another
+	// name (misdirected.go).
+	if s.isOwnName(r.Context(), r.Host) {
+		writeMisdirected(w, r)
+		return
+	}
 	friendlyPage(w, http.StatusNotFound, "No service by this name",
 		"SGC has no service called <b>"+html.EscapeString(hostOnly(r.Host))+"</b>. Services are added in SGC's page, or announce themselves.")
 }

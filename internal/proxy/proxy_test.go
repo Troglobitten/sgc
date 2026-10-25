@@ -135,6 +135,50 @@ func TestEveryHTTPEntryPointDropsLookAlikeHeaders(t *testing.T) {
 	}
 }
 
+// Traefik gives a connection to an HTTPS router whose rule names the
+// connection's name before any TCP router (Traefik 3.7, ServeTCP). An HTTP
+// router naming the gateway would take SGC's page from the pass-through: one
+// did, in the whole-machine test of 2026-10-25, and every visit to SGC's name
+// got the router's answer instead of SGC's page.
+func TestNoHTTPRouterNamesTheGateway(t *testing.T) {
+	cfg := sample(t)
+	dynamic, err := RenderDynamic(cfg, "/c.crt", "/c.key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		HTTP struct {
+			Routers map[string]struct {
+				Rule string `json:"rule"`
+			} `json:"routers"`
+		} `json:"http"`
+		TCP struct {
+			Routers map[string]struct {
+				Rule string `json:"rule"`
+				TLS  struct {
+					Passthrough bool `json:"passthrough"`
+				} `json:"tls"`
+			} `json:"routers"`
+		} `json:"tcp"`
+	}
+	if err := json.Unmarshal(dynamic[strings.IndexByte(string(dynamic), '\n')+1:], &parsed); err != nil {
+		t.Fatal(err)
+	}
+	gateway := cfg.GatewayName + "." + cfg.Domain
+	if len(parsed.HTTP.Routers) == 0 {
+		t.Fatal("no HTTP routers read: the test reads the wrong place")
+	}
+	for name, router := range parsed.HTTP.Routers {
+		if strings.Contains(strings.ToLower(router.Rule), gateway) {
+			t.Errorf("HTTP router %s names the gateway (%s): Traefik would give it SGC's connections", name, router.Rule)
+		}
+	}
+	passthrough := parsed.TCP.Routers["gateway"]
+	if !passthrough.TLS.Passthrough || !strings.Contains(passthrough.Rule, gateway) {
+		t.Errorf("the gateway's name is not passed through: %+v", passthrough)
+	}
+}
+
 func TestWhatIsRefused(t *testing.T) {
 	otherCert, otherKey := certificate(t, "*.elsewhere.tld")
 	cases := map[string]func(*Config){

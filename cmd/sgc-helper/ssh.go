@@ -38,14 +38,23 @@ func sshStatus() (sshd.Status, error) {
 // again before using it.
 func startSSHChange(cfg sshd.Config) error {
 	// The unit stays active while a change waits for its proof; starting an
-	// active unit would do nothing and lose this request.
-	if runSystemctl("is-active", "--quiet", sshChangeUnit) == nil {
-		return errors.New("another change to SSH is still waiting for a login with a key")
+	// active unit would do nothing and lose this request. A unit that is
+	// only ending is waited for (changeunit.go).
+	if err := waitForEndedChange(func() bool { return unitRunning(sshChangeUnit) }, sshChangeWaiting,
+		errors.New("another change to SSH is still waiting for a login with a key")); err != nil {
+		return err
 	}
 	if err := handOver(sshd.DefaultPaths().RequestFile, cfg); err != nil {
 		return err
 	}
 	return startChangeUnit(sshChangeUnit)
+}
+
+// sshChangeWaiting reports whether an SSH change is on record as waiting
+// for its proof.
+func sshChangeWaiting() (bool, error) {
+	state, err := sshd.ReadState(sshd.DefaultPaths())
+	return state.Pending != nil, err
 }
 
 // undoSSHChange stops the unit that is waiting, which makes it put the
