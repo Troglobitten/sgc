@@ -23,6 +23,7 @@ const (
 	nftProgram     = "/usr/sbin/nft"
 	fail2banClient = "/usr/bin/fail2ban-client"
 	systemctl      = "/usr/bin/systemctl"
+	envProgram     = "/usr/bin/env"
 	fail2banUnit   = "fail2ban.service"
 	// The largest list file read: level 4 is about 4 MB, DB-IP's country
 	// list about 5 MB compressed.
@@ -216,7 +217,7 @@ func (s *System) applyFail2ban(ctx context.Context, settings Settings) error {
 		return err
 	}
 	if !settings.Fail2ban.Enabled {
-		if output, err := s.Run(ctx, systemctl, "disable", "--now", fail2banUnit); err != nil {
+		if output, err := s.fail2banStartUp(ctx, "disable", "--now"); err != nil {
 			return fmt.Errorf("fail2ban could not be switched off: %s", lastLine(output, err))
 		}
 		return nil
@@ -225,7 +226,7 @@ func (s *System) applyFail2ban(ctx context.Context, settings Settings) error {
 	if output, err := s.Run(ctx, fail2banClient, "--test"); err != nil {
 		return fmt.Errorf("fail2ban did not accept its settings: %s", lastLine(output, err))
 	}
-	if output, err := s.Run(ctx, systemctl, "enable", fail2banUnit); err != nil {
+	if output, err := s.fail2banStartUp(ctx, "enable"); err != nil {
 		return fmt.Errorf("fail2ban could not be made part of start-up: %s", lastLine(output, err))
 	}
 	if _, err := s.Run(ctx, systemctl, "is-active", "--quiet", fail2banUnit); err == nil {
@@ -241,6 +242,17 @@ func (s *System) applyFail2ban(ctx context.Context, settings Settings) error {
 		return fmt.Errorf("fail2ban could not be started: %s", lastLine(output, err))
 	}
 	return nil
+}
+
+// fail2banStartUp makes fail2ban part of start-up or takes it out. Without
+// systemctl's SysV hooks: fail2ban also ships an init script, and for that
+// systemctl runs update-rc.d itself, which cannot write /etc/rc?.d from the
+// proxy job's sandbox ("update-rc.d: error: Read-only file system", found by
+// the whole-machine test on 2026-10-26). systemd starts the native unit at
+// start-up and ignores the script's links while the unit exists (enabled
+// that way from the same sandbox on the test machine: "enabled").
+func (s *System) fail2banStartUp(ctx context.Context, args ...string) ([]byte, error) {
+	return s.Run(ctx, envProgram, append(append([]string{"SYSTEMCTL_SKIP_SYSV=1", systemctl}, args...), fail2banUnit)...)
 }
 
 // WriteFail2banFiles writes SGC's files into fail2ban's folder, each in one
@@ -301,6 +313,10 @@ func (s *System) Unban(ctx context.Context, addr netip.Addr) error {
 	}
 	if !Fail2banInstalled() {
 		return errors.New("fail2ban is not installed on this device")
+	}
+	// Not running: it holds no bans (stopping lifts every one of them).
+	if _, err := s.Run(ctx, systemctl, "is-active", "--quiet", fail2banUnit); err != nil {
+		return nil
 	}
 	if output, err := s.Run(ctx, fail2banClient, "unban", addr.String()); err != nil {
 		return fmt.Errorf("fail2ban did not lift the ban: %s", lastLine(output, err))
