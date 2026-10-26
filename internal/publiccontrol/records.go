@@ -12,6 +12,7 @@ import (
 
 	"github.com/Troglobitten/sgc/internal/audit"
 	"github.com/Troglobitten/sgc/internal/dnsprovider"
+	"github.com/Troglobitten/sgc/internal/lasting"
 	"github.com/Troglobitten/sgc/internal/proxy"
 	"github.com/Troglobitten/sgc/internal/public"
 	"github.com/Troglobitten/sgc/internal/services"
@@ -62,6 +63,9 @@ type state struct {
 	CheckedAt *time.Time             `json:"checkedAt"`
 	Problem   string                 `json:"problem"`
 	Records   map[string]RecordState `json:"records"`
+	// Failing: rounds that did not get through (the provider or the address
+	// services out of reach). A Problem only once they have lasted.
+	Failing lasting.Failure `json:"failing"`
 }
 
 func (s *Service) state(ctx context.Context) state {
@@ -84,6 +88,20 @@ func (s *Service) keepState(ctx context.Context, st state) {
 		s.record(ctx, audit.ActorSystem, audit.ActionPublicRecordFailed, st.Problem, "")
 		s.cfg.Alert(ctx, "A public name could not be kept up to date", st.Problem)
 	}
+}
+
+// failed keeps a round that did not get through all the way. It is news for
+// the owner only once such rounds have failed for lasting.Grace; until then
+// the names stay as they were (internal/lasting).
+func (s *Service) failed(ctx context.Context, st *state, now time.Time, message string) {
+	long := st.Failing.Note(now, message)
+	if long && st.Problem == "" {
+		st.Problem = message
+	}
+	if !long {
+		s.cfg.Log.Warn("public names: a request did not get through, SGC tries again", "error", message)
+	}
+	s.keepState(ctx, *st)
 }
 
 func (s *Service) madeRecords(ctx context.Context) []made {
@@ -162,6 +180,7 @@ func (s *Service) keepRecords(ctx context.Context) {
 	}
 	if len(open) == 0 && len(mine) == 0 {
 		st.Records = map[string]RecordState{}
+		st.Failing.Clear()
 		s.keepState(ctx, st)
 		return
 	}
@@ -180,12 +199,12 @@ func (s *Service) keepRecords(ctx context.Context) {
 	if len(open) > 0 {
 		address, err := s.cfg.PublicIP(ctx)
 		if err != nil {
-			st.Problem = "The home's public address could not be found: " + err.Error()
-			s.keepState(ctx, st)
+			s.failed(ctx, &st, now, "The home's public address could not be found: "+err.Error())
 			return
 		}
 		st.PublicIP = address.String()
 		if address.IsPrivate() || netip.MustParsePrefix("100.64.0.0/10").Contains(address) {
+			st.Failing.Clear()
 			st.Problem = "The internet sees this home at " + address.String() + ", which is not a public address: the provider shares one address between customers (carrier-grade NAT), so nothing at home can be reached from the internet this way. Ask the provider for a public address."
 			s.keepState(ctx, st)
 			return
@@ -211,18 +230,27 @@ func (s *Service) keepRecords(ctx context.Context) {
 	}
 	existingA, err := client.ARecords(ctx, domain)
 	if err != nil {
-		st.Problem = at + " could not be asked about the public names: " + err.Error()
-		s.keepState(ctx, st)
+		s.failed(ctx, &st, now, at+" could not be asked about the public names: "+err.Error())
 		return
 	}
 	srvClient, hasSRV := dnsprovider.SupportsSRV(client)
 	var existingSRV []dnsprovider.SRV
 	if hasSRV {
 		if existingSRV, err = srvClient.SRVRecords(ctx, domain); err != nil {
-			st.Problem = at + " could not be asked about the service records: " + err.Error()
-			s.keepState(ctx, st)
+			s.failed(ctx, &st, now, at+" could not be asked about the service records: "+err.Error())
 			return
 		}
+	}
+	// trouble: the first request the provider did not answer as asked;
+	// passing: the problems of single records that came from one.
+	var trouble string
+	passing := map[string]bool{}
+	note := func(message string) string {
+		if trouble == "" {
+			trouble = message
+		}
+		passing[message] = true
+		return message
 	}
 
 	var kept []made
@@ -258,7 +286,7 @@ func (s *Service) keepRecords(ctx context.Context) {
 			err = srvClient.DeleteSRV(ctx, domain, m.ID)
 		}
 		if err != nil {
-			st.Problem = at + " did not remove " + m.Name + ": " + err.Error()
+			note(at + " did not remove " + m.Name + ": " + err.Error())
 			kept = append(kept, m)
 			continue
 		}
@@ -292,7 +320,7 @@ func (s *Service) keepRecords(ctx context.Context) {
 				r.OK = true
 			case own != nil && present:
 				if err := client.UpdateA(ctx, domain, own.ID, w.name, w.value); err != nil {
-					r.Problem = at + " did not take the new address for " + w.name + ": " + err.Error()
+					r.Problem = note(at + " did not take the new address for " + w.name + ": " + err.Error())
 					break
 				}
 				own.Value, r.OK = w.value, true
@@ -306,7 +334,7 @@ func (s *Service) keepRecords(ctx context.Context) {
 				}
 				created, err := client.AddA(ctx, domain, w.name, w.value)
 				if err != nil {
-					r.Problem = at + " did not take the record for " + w.name + ": " + err.Error()
+					r.Problem = note(at + " did not take the record for " + w.name + ": " + err.Error())
 					break
 				}
 				kept = append(kept, made{Provider: account.Provider, Domain: domain, Kind: "A", Name: w.name, ID: created.ID, Value: w.value})
@@ -336,7 +364,7 @@ func (s *Service) keepRecords(ctx context.Context) {
 			}
 			created, err := srvClient.AddSRV(ctx, domain, w.srv)
 			if err != nil {
-				r.Problem = at + " did not take the service record " + w.name + ": " + err.Error()
+				r.Problem = note(at + " did not take the service record " + w.name + ": " + err.Error())
 				break
 			}
 			kept = append(kept, made{Provider: account.Provider, Domain: domain, Kind: "SRV", Name: w.name, ID: created.ID, Value: w.value})
@@ -348,10 +376,15 @@ func (s *Service) keepRecords(ctx context.Context) {
 	s.keepMade(ctx, kept)
 	st.Records = records
 	for _, r := range records {
-		if r.Problem != "" && st.Problem == "" {
+		if r.Problem != "" && st.Problem == "" && !passing[r.Problem] {
 			st.Problem = r.Problem
 		}
 	}
+	if trouble != "" {
+		s.failed(ctx, &st, now, trouble)
+		return
+	}
+	st.Failing.Clear()
 	s.keepState(ctx, st)
 }
 

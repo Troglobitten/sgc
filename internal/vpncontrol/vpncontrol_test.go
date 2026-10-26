@@ -387,3 +387,70 @@ func TestThePublicName(t *testing.T) {
 		t.Errorf("CGNAT: %+v", state)
 	}
 }
+
+// The owner's router's DNS failed for a few minutes at night (2026-10-26),
+// and the warning it raised was gone at the next look: looks that do not get
+// through are news only once they have failed for half an hour.
+func TestALookThatDoesNotGetThroughIsNewsOnlyOnceItLasts(t *testing.T) {
+	stand := zonetest.New("alex", "a-made-up-key", "domain.tld")
+	server := httptest.NewServer(stand)
+	defer server.Close()
+	w := newWorld(t)
+	ctx := context.Background()
+	w.on(t)
+	now := time.Date(2026, 10, 26, 4, 0, 0, 0, time.UTC)
+	lookupFails := false
+	alerts := 0
+	endpoint := NewEndpoint(EndpointConfig{
+		DB: w.vpn.cfg.DB, Audit: w.vpn.cfg.Audit, Log: w.vpn.cfg.Log,
+		Settings: w.vpn.Settings,
+		DNS: func(context.Context) (dnsprovider.Provider, dnsprovider.Account, bool, error) {
+			account := dnsprovider.Account{Domain: "domain.tld", Provider: "zone", Values: map[string]string{"username": "alex", "apiKey": "a-made-up-key"}}
+			client, err := dnsprovider.Open(account, dnsprovider.Options{ZoneEndpoint: server.URL + "/v2/", StandIn: true, HTTP: &http.Client{Timeout: 5 * time.Second}})
+			return client, account, err == nil, err
+		},
+		PublicIP: func(context.Context) (netip.Addr, error) {
+			if lookupFails {
+				return netip.Addr{}, errors.New("lookup ipv4.icanhazip.com on 192.168.1.1:53: i/o timeout")
+			}
+			return netip.MustParseAddr("203.0.113.7"), nil
+		},
+		Alert: func(context.Context, string, string) { alerts++ },
+		Now:   func() time.Time { return now },
+	})
+	if state := endpoint.Check(ctx); state.Problem != "" {
+		t.Fatalf("first look: %+v", state)
+	}
+
+	lookupFails = true
+	for minutes := 0; minutes < 30; minutes += 5 {
+		if state := endpoint.Check(ctx); state.Problem != "" || alerts != 0 {
+			t.Fatalf("after %d minutes of failed looks, news already: %q (%d alerts)", minutes, state.Problem, alerts)
+		}
+		now = now.Add(5 * time.Minute)
+	}
+	state := endpoint.Check(ctx)
+	if !strings.Contains(state.Problem, "i/o timeout") || alerts != 1 {
+		t.Errorf("after 30 minutes of failed looks: %q, %d alert(s), want the problem and one alert", state.Problem, alerts)
+	}
+	now = now.Add(5 * time.Minute)
+	if endpoint.Check(ctx); alerts != 1 {
+		t.Errorf("the same problem alerted again (%d alerts)", alerts)
+	}
+
+	// One look that gets through: no problem, and the count starts afresh.
+	lookupFails = false
+	if state := endpoint.Check(ctx); state.Problem != "" || state.Failing.Since != nil {
+		t.Errorf("after a look that got through: %+v", state)
+	}
+	// The DNS provider out of reach counts the same.
+	stand.FailWith(http.StatusBadGateway)
+	now = now.Add(5 * time.Minute)
+	if state := endpoint.Check(ctx); state.Problem != "" || state.Failing.Since == nil {
+		t.Errorf("one look at a provider out of reach: %+v", state)
+	}
+	now = now.Add(31 * time.Minute)
+	if state := endpoint.Check(ctx); !strings.Contains(state.Problem, "could not be asked") {
+		t.Errorf("a provider out of reach for half an hour: %+v", state)
+	}
+}

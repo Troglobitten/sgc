@@ -200,6 +200,37 @@ func TestOpeningAndClosingAServiceMakesAndRemovesItsName(t *testing.T) {
 	}
 }
 
+func TestAProviderOutOfReachIsNewsOnlyOnceItLasts(t *testing.T) {
+	ctx := context.Background()
+	w := newWorld(t)
+	web := w.add(t, services.Input{Name: "media", UpstreamIP: "192.168.1.30", UpstreamPort: 8096})
+	w.s.SetEnabled(ctx, "alex", "", true)
+	if err := w.s.SetServicePublic(ctx, "alex", "", web.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	w.s.keepRecords(ctx)
+	w.zone.FailWith(http.StatusBadGateway)
+	for minutes := 0; minutes < 30; minutes += 5 {
+		w.s.keepRecords(ctx)
+		if status, _ := w.s.Status(ctx); status.Problem != "" {
+			t.Fatalf("after %d minutes out of reach, news already: %s", minutes, status.Problem)
+		}
+		w.now = w.now.Add(5 * time.Minute)
+	}
+	w.s.keepRecords(ctx)
+	if status, _ := w.s.Status(ctx); !strings.Contains(status.Problem, "could not be asked") {
+		t.Errorf("after half an hour out of reach: %q", status.Problem)
+	}
+	w.zone.FailWith(0)
+	w.s.keepRecords(ctx)
+	if status, _ := w.s.Status(ctx); status.Problem != "" {
+		t.Errorf("back in reach: %q", status.Problem)
+	}
+	if st := w.s.state(ctx); st.Failing.Since != nil {
+		t.Errorf("the run of failures was not cleared: %+v", st.Failing)
+	}
+}
+
 func TestANameAlreadyGoneAtTheProviderIsNoProblem(t *testing.T) {
 	ctx := context.Background()
 	w := newWorld(t)

@@ -13,6 +13,7 @@ What changed in each version of SGC, newest first. The section for a version is 
 - **SGC's login works from the internet** for a public service behind it: you and the people you gave a login sign in under the service's own name. Wrong passwords are slowed down, and you are told at once if someone seems to be guessing yours. SGC's page itself never faces the internet.
 - **Closing cuts open connections.** Switching internet access off closes every public service, and so does restoring an export; a server that announces a public service anew with other settings has it closed. You get a notification for every change.
 - fail2ban comes with a new installation, switched off. On a device you update, it is installed when you switch it on.
+- **Fewer false alarms about the VPN's public name.** When your router's DNS or your DNS provider is out of reach for a few minutes (at night, say), SGC no longer warns you at once with a warning that is gone at its next look. It tells you when keeping the name up to date has failed for half an hour. The same goes for the public names of services you open.
 
 ## 0.19.1
 
