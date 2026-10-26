@@ -16,6 +16,7 @@ import (
 
 	"github.com/Troglobitten/sgc/internal/audit"
 	"github.com/Troglobitten/sgc/internal/dnsprovider"
+	"github.com/Troglobitten/sgc/internal/lasting"
 	"github.com/Troglobitten/sgc/internal/problem"
 	"github.com/Troglobitten/sgc/internal/store"
 )
@@ -54,6 +55,9 @@ type EndpointState struct {
 	Problem   string     `json:"problem"`
 	// Foreign: the provider has a record for the name that SGC did not make.
 	Foreign bool `json:"foreign"`
+	// Failing: looks that did not get through (the provider or the address
+	// services out of reach). A Problem only once they have lasted.
+	Failing lasting.Failure `json:"failing"`
 }
 
 // mine is the record SGC made (SettingRecord). Provider is where; before
@@ -78,6 +82,9 @@ func NewEndpoint(cfg EndpointConfig) *Endpoint {
 	}
 	if cfg.Alert == nil {
 		cfg.Alert = func(context.Context, string, string) {}
+	}
+	if cfg.Log == nil {
+		cfg.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	return &Endpoint{cfg: cfg, kick: make(chan struct{}, 1)}
 }
@@ -106,6 +113,18 @@ func (e *Endpoint) keep(ctx context.Context, state EndpointState) {
 		e.record(ctx, audit.ActionVPNEndpointFailed, state.Problem)
 		e.cfg.Alert(ctx, "The VPN's public name could not be kept up to date", state.Problem)
 	}
+}
+
+// failed keeps a look that did not get through. It is news for the owner
+// only once such looks have failed for lasting.Grace; until then the name
+// stays as it was (internal/lasting).
+func (e *Endpoint) failed(ctx context.Context, state *EndpointState, now time.Time, message string) {
+	if state.Failing.Note(now, message) {
+		state.Problem = message
+	} else {
+		e.cfg.Log.Warn("the VPN's public name: a look did not get through, SGC tries again", "error", message)
+	}
+	e.keep(ctx, *state)
 }
 
 func (e *Endpoint) record(ctx context.Context, action, detail string) {
@@ -196,12 +215,12 @@ func (e *Endpoint) Check(ctx context.Context) EndpointState {
 	state.Problem, state.Foreign = "", false
 	address, err := e.publicIP(ctx)
 	if err != nil {
-		state.Problem = "The home's public address could not be found: " + err.Error()
-		e.keep(ctx, state)
+		e.failed(ctx, &state, now, "The home's public address could not be found: "+err.Error())
 		return state
 	}
 	state.PublicIP, state.CheckedAt = address.String(), &now
 	if address.IsPrivate() || netip.MustParsePrefix("100.64.0.0/10").Contains(address) {
+		state.Failing.Clear()
 		state.Problem = "The internet sees this home at " + address.String() + ", which is not a public address: the provider shares one address between customers (carrier-grade NAT), and a VPN from outside cannot reach the home this way. Ask the provider for a public address."
 		e.keep(ctx, state)
 		return state
@@ -218,8 +237,7 @@ func (e *Endpoint) Check(ctx context.Context) EndpointState {
 	defer cancel()
 	records, err := client.ARecords(ctx, domain)
 	if err != nil {
-		state.Problem = at + " could not be asked about " + name + ": " + err.Error()
-		e.keep(ctx, state)
+		e.failed(ctx, &state, now, at+" could not be asked about "+name+": "+err.Error())
 		return state
 	}
 	var made mine
@@ -232,6 +250,8 @@ func (e *Endpoint) Check(ctx context.Context) EndpointState {
 	}
 	var own *dnsprovider.Record
 	var others []dnsprovider.Record
+	// trouble: a request that the provider did not answer as asked.
+	var trouble string
 	for i, r := range records {
 		if !strings.EqualFold(r.Name, name) {
 			continue
@@ -247,7 +267,7 @@ func (e *Endpoint) Check(ctx context.Context) EndpointState {
 		state.RecordIP = own.Value
 		if own.Value != want {
 			if err := client.UpdateA(ctx, domain, own.ID, name, want); err != nil {
-				state.Problem = at + " did not take the new address for " + name + ": " + err.Error()
+				trouble = at + " did not take the new address for " + name + ": " + err.Error()
 				break
 			}
 			state.RecordIP, state.UpdatedAt = want, &now
@@ -259,7 +279,7 @@ func (e *Endpoint) Check(ctx context.Context) EndpointState {
 	default:
 		created, err := client.AddA(ctx, domain, name, want)
 		if err != nil {
-			state.Problem = at + " did not take the record for " + name + ": " + err.Error()
+			trouble = at + " did not take the record for " + name + ": " + err.Error()
 			break
 		}
 		data, _ := json.Marshal(mine{Provider: account.Provider, Domain: domain, Name: name, ID: created.ID})
@@ -267,6 +287,11 @@ func (e *Endpoint) Check(ctx context.Context) EndpointState {
 		state.RecordIP, state.UpdatedAt = want, &now
 		e.record(ctx, audit.ActionVPNEndpointUpdated, name+" → "+want+" (new)")
 	}
+	if trouble != "" {
+		e.failed(ctx, &state, now, trouble)
+		return state
+	}
+	state.Failing.Clear()
 	e.keep(ctx, state)
 	return state
 }
