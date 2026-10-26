@@ -8,6 +8,7 @@ import {
   logQueryBody,
   notificationChannelsBody,
   personBody,
+  publicSettingsBody,
   serviceBody,
   servicesSettingsBody,
   vpnSettingsBody,
@@ -470,10 +471,18 @@ export interface ServiceInput {
   category: string
   protected: boolean
   enabled: boolean
+  /** a proxied TCP service is told who each visitor is (PROXY protocol) */
+  proxyProtocol: boolean
+  /** a proxied UDP service: seconds a quiet connection is kept, 0 for 3 */
+  udpTimeout: number
+  /** a proxied TCP or UDP service: its name in an SRV record ("minecraft") */
+  srvService: string
 }
 
 export interface Service extends ServiceInput {
   id: number
+  /** 'public': reachable from the internet too (docs/design.md §14) */
+  exposure: 'lan' | 'public'
   pending: boolean
   tokenId: number | null
   tokenLabel: string
@@ -529,6 +538,64 @@ export interface ProxyStatus {
   listenPorts: string[]
   applying: boolean
   pinnedVersion: string
+}
+
+/** How visitors from the internet are filtered (internal/publiccontrol). */
+export interface PublicSettings {
+  requestsPerMinute: number
+  connectionsPerMinute: number
+  /** addresses or ranges every filter lets through */
+  allow: string[]
+  /** FireHOL's lists switched on */
+  levels: string[]
+  countryMode: '' | 'allow' | 'block'
+  countries: string[]
+  fail2ban: { enabled: boolean; signIns: number; refused: number; findMinutes: number; banMinutes: number }
+}
+
+export interface PublicList {
+  name: string
+  label: string
+  description: string
+  enabled: boolean
+  entries: number
+  updatedAt: string | null
+  error: string
+  errorAt: string | null
+}
+
+export interface PublicService {
+  id: number
+  name: string
+  title: string
+  kind: ServiceKind
+  /** what the router forwards from the internet */
+  port: number
+  /** where on this device */
+  localPort: number
+  url: string
+  record: { name: string; address: string; ok: boolean; problem: string; srv: string; srvManual: string }
+}
+
+/** Internet access (internal/publiccontrol). */
+export interface PublicStatus {
+  wanted: boolean
+  /** where the router sends the internet's port 443 */
+  doorPort: number
+  lanAddress: string
+  publicIp: string
+  problem: string
+  settings: PublicSettings
+  lists: PublicList[]
+  fail2banInstalled: boolean
+  services: PublicService[]
+}
+
+/** An address fail2ban has banned. */
+export interface Ban {
+  address: string
+  jail: string
+  until: string
 }
 
 /** A server's token for announcing its services; never the token itself. */
@@ -877,6 +944,17 @@ export const api = {
   eol: () => request<EolState>('GET', '/api/eol'),
   checkEol: () => request<EolState>('POST', '/api/eol/check', {}),
   updateProxy: () => request<ProxyStatus>('POST', '/api/proxy/update', {}),
+  publicStatus: () => request<PublicStatus>('GET', '/api/public'),
+  /** switching on asks for the admin's password again */
+  setPublicEnabled: (enabled: boolean, password = '') =>
+    request<PublicStatus>('POST', '/api/public/enabled', { enabled, password }),
+  savePublicSettings: (settings: PublicSettings) =>
+    request<PublicStatus>('POST', '/api/public/settings', publicSettingsBody(settings)),
+  /** opening asks for the admin's password again; closing never does */
+  setServicePublic: (id: number, open: boolean, password = '') =>
+    request<ServicesResponse>('POST', `/api/services/${id}/public`, { public: open, password }),
+  publicBans: () => request<Ban[]>('GET', '/api/public/bans'),
+  unban: (address: string) => request<Ban[]>('POST', '/api/public/unban', { address }),
 }
 
 /** The message to show for any thrown value. */

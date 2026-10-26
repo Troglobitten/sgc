@@ -59,6 +59,7 @@ func main() {
 	dav := flag.String("webdav", "127.0.0.1:9300", "address of the WebDAV folder")
 	ntfy := flag.String("ntfy", "127.0.0.1:9400", "address of the ntfy server")
 	icons := flag.String("icons", "127.0.0.1:9500", "address where the icon pack is published")
+	lists := flag.String("lists", "127.0.0.1:9600", "address where FireHOL's and DB-IP's lists are published")
 	flag.Parse()
 
 	fail := func(err error) {
@@ -118,6 +119,12 @@ func main() {
 		fail(err)
 	}
 	go serve(*icons, http.StripPrefix("/icons/", http.FileServer(http.Dir(packDir))), false)
+	// FireHOL's and DB-IP's lists, as files cases.sh writes into the state
+	// folder (firehol/<level>.netset, dbip/dbip-country-lite-<month>.csv.gz),
+	// so that the test decides which made-up addresses they name.
+	listsDir := filepath.Join(*state, "lists")
+	os.MkdirAll(listsDir, 0o755)
+	go serve(*lists, http.FileServer(http.Dir(listsDir)), false)
 	// Two authorities, as with Let's Encrypt: what SGC tries with the first
 	// it then asks of the second.
 	go serve(*trial, acmetest.New(dnsInUse), true)

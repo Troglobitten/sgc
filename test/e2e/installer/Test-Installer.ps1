@@ -130,10 +130,12 @@ Invoke-Cases proxy
 Invoke-Cases announce
 
 # The VPN with a phone in a stand-in neighbour on the "internet", SGC's login
-# gate in front of a service, notifications (to a stand-in ntfy) and the logs,
-# and backups to a stand-in WebDAV folder.
+# gate in front of a service, services made reachable from the internet (the
+# same neighbour), notifications (to a stand-in ntfy) and the logs, and
+# backups to a stand-in WebDAV folder.
 Invoke-Cases vpn
 Invoke-Cases gate
+Invoke-Cases public
 Invoke-Cases notify
 Invoke-Cases backups
 

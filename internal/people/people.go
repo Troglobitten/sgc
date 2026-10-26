@@ -71,13 +71,19 @@ type Config struct {
 	Changed func()
 	// AdminUsername returns the admin's name, which no person may take.
 	AdminUsername func(ctx context.Context) (string, error)
-	Now           func() time.Time
-	Log           *slog.Logger
+	// Slowed is told when wrong passwords for one username start being
+	// slowed down (auth.AccountThrottle): someone may be guessing it.
+	Slowed func(ctx context.Context, username, remote string)
+	Now    func() time.Time
+	Log    *slog.Logger
 }
 
 type Service struct {
 	cfg     Config
 	limiter *auth.Limiter
+	// accounts slows down guessing one person's password from many
+	// addresses (SGC's login on a public service faces the internet).
+	accounts *auth.AccountThrottle
 }
 
 func New(cfg Config) *Service {
@@ -87,7 +93,7 @@ func New(cfg Config) *Service {
 	if cfg.Changed == nil {
 		cfg.Changed = func() {}
 	}
-	return &Service{cfg: cfg, limiter: auth.NewLimiter()}
+	return &Service{cfg: cfg, limiter: auth.NewLimiter(), accounts: auth.NewAccountThrottle()}
 }
 
 func (s *Service) record(ctx context.Context, actor, action, detail, remote string) {
@@ -447,33 +453,13 @@ type Session struct {
 	Expires  time.Time
 }
 
-// Login checks a person's username and password.
+// Login checks a person's username and password and starts a sign-in on
+// SGC's gate page.
 func (s *Service) Login(ctx context.Context, username, password, remote, userAgent string) (*Session, error) {
-	if wait := s.limiter.RetryAfter(remote); wait > 0 {
-		return nil, &auth.TooManyAttemptsError{RetryAfter: wait}
-	}
-	var id int64
-	var name, hash string
-	var loginEnabled, disabled bool
-	var expires int64
-	err := s.cfg.DB.QueryRowContext(ctx, `SELECT id, name, password_hash, login_enabled, disabled, expires_at FROM person
-		WHERE username = ? COLLATE NOCASE`, strings.TrimSpace(username)).Scan(&id, &name, &hash, &loginEnabled, &disabled, &expires)
-	if errors.Is(err, sql.ErrNoRows) {
-		hash = auth.DecoyHash()
-	} else if err != nil {
+	id, name, err := s.checkPassword(ctx, username, password, remote)
+	if err != nil {
 		return nil, err
 	}
-	ok, verifyErr := auth.VerifyPassword(hash, password)
-	if verifyErr != nil {
-		ok = false
-	}
-	active := loginEnabled && !disabled && (expires == 0 || s.cfg.Now().Unix() < expires)
-	if err != nil || !ok || !active {
-		s.limiter.Fail(remote)
-		s.record(ctx, "-", audit.ActionGateLoginFailed, "username tried: "+truncate(username, 64), remote)
-		return nil, ErrSignIn
-	}
-	s.limiter.Succeed(remote)
 	token, tokenHash, err := auth.NewToken()
 	if err != nil {
 		return nil, err
@@ -487,6 +473,62 @@ func (s *Service) Login(ctx context.Context, username, password, remote, userAge
 	}
 	s.record(ctx, name, audit.ActionGateLogin, "", remote)
 	return session, nil
+}
+
+// Verify checks a person's username and password without starting a
+// sign-in: for SGC's login on a public service, which hands that one name
+// its pass directly (docs/design.md §14).
+func (s *Service) Verify(ctx context.Context, username, password, remote string) (*Person, error) {
+	id, _, err := s.checkPassword(ctx, username, password, remote)
+	if err != nil {
+		return nil, err
+	}
+	p, err := s.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// checkPassword is the one check of a person's password, with the limits
+// per address and per account.
+func (s *Service) checkPassword(ctx context.Context, username, password, remote string) (int64, string, error) {
+	if wait := s.limiter.RetryAfter(remote); wait > 0 {
+		return 0, "", &auth.TooManyAttemptsError{RetryAfter: wait}
+	}
+	if wait := s.accounts.RetryAfter(username); wait > 0 {
+		return 0, "", &auth.TooManyAttemptsError{RetryAfter: wait}
+	}
+	var id int64
+	var name, hash string
+	var loginEnabled, disabled bool
+	var expires int64
+	err := s.cfg.DB.QueryRowContext(ctx, `SELECT id, name, password_hash, login_enabled, disabled, expires_at FROM person
+		WHERE username = ? COLLATE NOCASE`, strings.TrimSpace(username)).Scan(&id, &name, &hash, &loginEnabled, &disabled, &expires)
+	if errors.Is(err, sql.ErrNoRows) {
+		hash = auth.DecoyHash()
+	} else if err != nil {
+		return 0, "", err
+	}
+	ok, verifyErr := auth.VerifyPassword(hash, password)
+	if errors.Is(verifyErr, auth.ErrBusy) {
+		return 0, "", verifyErr
+	}
+	if verifyErr != nil {
+		ok = false
+	}
+	active := loginEnabled && !disabled && (expires == 0 || s.cfg.Now().Unix() < expires)
+	if err != nil || !ok || !active {
+		s.limiter.Fail(remote)
+		if s.accounts.Fail(username) && s.cfg.Slowed != nil {
+			s.cfg.Slowed(ctx, username, remote)
+		}
+		s.record(ctx, "-", audit.ActionGateLoginFailed, "username tried: "+truncate(username, 64), remote)
+		return 0, "", ErrSignIn
+	}
+	s.limiter.Succeed(remote)
+	s.accounts.Succeed(username)
+	return id, name, nil
 }
 
 // Authenticate returns the person a gate sign-in belongs to, or nil. A

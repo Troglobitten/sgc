@@ -42,6 +42,17 @@ const VPNInterface = "sgc-wg"
 // maxProxyPorts bounds the ports proxied services can have.
 const maxProxyPorts = 500
 
+// PublicMark is the mark SGC's table for traffic from the internet
+// (internal/public, "inet sgc_public") puts on a packet it let through: one
+// for a service the owner made public, from a visitor who got past the
+// filters. This table accepts such packets while internet access is on
+// (Config.Door). Marks are the kernel's own; nothing on the wire sets them.
+const PublicMark = 0x53474301
+
+// DoorPort is Traefik's public entry point (internal/public.DoorPort, which
+// this package cannot import).
+const DoorPort = 8446
+
 // maxSSHPorts bounds a list that comes from this machine's SSH configuration.
 const maxSSHPorts = 8
 
@@ -62,6 +73,9 @@ var insideV6 = []netip.Prefix{
 	netip.MustParsePrefix("fc00::/7"),
 	netip.MustParsePrefix("fe80::/10"),
 }
+
+// InsideV4 returns the IPv4 ranges that count as inside.
+func InsideV4() []netip.Prefix { return slices.Clone(insideV4) }
 
 // IsInside reports whether a connection from this address is let in by the
 // rules. The machine talking to itself always is.
@@ -109,13 +123,18 @@ type Config struct {
 	// VPNPort is the VPN's UDP port, let in from anywhere: the one port that
 	// faces the internet. 0 while the VPN is off.
 	VPNPort int `json:"vpnPort,omitempty"`
+	// Door: internet access is on (docs/design.md §14). What the table for
+	// the internet marked is let in, and the public door from inside too
+	// (a router that sends the home's own requests for a public name back
+	// in). Set by the root side from what the proxy has in place.
+	Door bool `json:"door,omitempty"`
 }
 
 // Equal reports whether two configurations lead to the same rules.
 func (c Config) Equal(other Config) bool {
 	a, b := c.normalised(), other.normalised()
 	return a.Enabled == b.Enabled && a.WebPort == b.WebPort && a.DNS == b.DNS &&
-		a.Proxy == b.Proxy && a.VPNPort == b.VPNPort &&
+		a.Proxy == b.Proxy && a.VPNPort == b.VPNPort && a.Door == b.Door &&
 		slices.Equal(a.SSHPorts, b.SSHPorts) && slices.Equal(a.ProxyPorts, b.ProxyPorts)
 }
 
@@ -230,7 +249,11 @@ func Render(cfg Config) (string, error) {
 	}
 	b.WriteString(`		ip saddr @inside4 jump inside
 		ip6 saddr @inside6 jump inside
-		counter name refused drop
+`)
+	if cfg.Door {
+		fmt.Fprintf(&b, "\t\t# From the internet: what SGC's table for public services let through.\n\t\tmeta mark 0x%08x accept\n", PublicMark)
+	}
+	b.WriteString(`		counter name refused drop
 	}
 	chain inside {
 `)
@@ -260,6 +283,9 @@ func Render(cfg Config) (string, error) {
 			slices.Sort(udpPorts)
 			fmt.Fprintf(&b, "\t\tudp dport { %s } accept\n", joinPorts(slices.Compact(udpPorts)))
 		}
+	}
+	if cfg.Door {
+		fmt.Fprintf(&b, "\t\t# The public door, from inside too.\n\t\ttcp dport %d accept\n", DoorPort)
 	}
 	b.WriteString(`		icmp type echo-request accept
 		icmpv6 type echo-request accept

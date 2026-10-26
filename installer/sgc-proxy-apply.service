@@ -15,11 +15,14 @@ ExecStart=/opt/sgc/current/sgc-helper proxy apply
 TimeoutStartSec=150
 
 # Root, because the files belong to root and are readable by Traefik's group
-# only (they contain the certificate's key). It writes to /etc/sgc and
-# nowhere else, and talks only to Traefik on 127.0.0.1.
+# only (they contain the certificate's key). It writes to /etc/sgc, and to
+# SGC's four files among fail2ban's settings while internet access is on
+# ("-": the folder exists only once fail2ban is installed); it talks to
+# Traefik on 127.0.0.1, loads the table for traffic from the internet
+# (internal/public) and asks fail2ban to take its settings.
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=/etc/sgc
+ReadWritePaths=/etc/sgc -/etc/fail2ban
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes

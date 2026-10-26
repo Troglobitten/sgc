@@ -36,6 +36,8 @@
 //	GET  /v1/vpn/status           is the VPN on, and what do its devices' counters say?
 //	POST /v1/vpn/apply            put a configuration for the VPN in place (typed, checked again by its program)
 //	POST /v1/logs                 read the journal of one of SGC's parts (typed query)
+//	GET  /v1/public/bans          the addresses fail2ban has banned now
+//	POST /v1/public/unban         lift fail2ban's ban on one IPv4 address
 package helper
 
 import (
@@ -46,6 +48,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"syscall"
 	"time"
 
@@ -55,6 +58,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/log2ram"
 	"github.com/Troglobitten/sgc/internal/osupdate"
 	"github.com/Troglobitten/sgc/internal/proxy"
+	"github.com/Troglobitten/sgc/internal/public"
 	"github.com/Troglobitten/sgc/internal/release"
 	"github.com/Troglobitten/sgc/internal/sshd"
 	"github.com/Troglobitten/sgc/internal/wireguard"
@@ -114,7 +118,13 @@ const (
 	PackagesUpdates  = "updates"
 	PackagesLog2ram  = "log2ram"
 	PackagesVPN      = "vpn"
+	// fail2ban, for services reachable from the internet (docs/design.md §14).
+	PackagesFail2ban = "fail2ban"
 )
+
+type unbanRequest struct {
+	Address string `json:"address"`
+}
 
 type installPackagesRequest struct {
 	For string `json:"for"`
@@ -329,6 +339,18 @@ func (c *Client) VPNApply(ctx context.Context, cfg wireguard.Config) error {
 	return c.call(ctx, vpnTimeout, http.MethodPost, "/v1/vpn/apply", cfg, nil)
 }
 
+// PublicBans lists the addresses fail2ban has banned now.
+func (c *Client) PublicBans(ctx context.Context) ([]public.Ban, error) {
+	var bans []public.Ban
+	err := c.call(ctx, 30*time.Second, http.MethodGet, "/v1/public/bans", nil, &bans)
+	return bans, err
+}
+
+// PublicUnban lifts fail2ban's ban on one IPv4 address.
+func (c *Client) PublicUnban(ctx context.Context, address string) error {
+	return c.call(ctx, 30*time.Second, http.MethodPost, "/v1/public/unban", unbanRequest{Address: address}, nil)
+}
+
 func (c *Client) Logs(ctx context.Context, q journal.Query) (journal.Answer, error) {
 	var answer journal.Answer
 	err := c.call(ctx, 30*time.Second, http.MethodPost, "/v1/logs", q, &answer)
@@ -432,6 +454,9 @@ type Server struct {
 	// Logs reads the journal; only ever called with a query that passed
 	// journal.Query.Validate.
 	Logs func(q journal.Query) (journal.Answer, error)
+	// fail2ban's bans; PublicUnban is only ever called with an IPv4 address.
+	PublicBans  func() ([]public.Ban, error)
+	PublicUnban func(addr netip.Addr) error
 }
 
 type peerUIDKey struct{}
@@ -511,7 +536,8 @@ func (s *Server) Handler() http.Handler {
 		var req installPackagesRequest
 		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
 		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&req); err != nil || (req.For != PackagesFirewall && req.For != PackagesUpdates && req.For != PackagesLog2ram && req.For != PackagesVPN) {
+		if err := decoder.Decode(&req); err != nil || (req.For != PackagesFirewall && req.For != PackagesUpdates && req.For != PackagesLog2ram && req.For != PackagesVPN &&
+			req.For != PackagesFail2ban) {
 			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "the request could not be read"})
 			return
 		}
@@ -761,6 +787,37 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, answer)
+	})
+	mux.HandleFunc("GET /v1/public/bans", func(w http.ResponseWriter, _ *http.Request) {
+		allow(w, 30*time.Second)
+		bans, err := s.PublicBans()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, bans)
+	})
+	mux.HandleFunc("POST /v1/public/unban", func(w http.ResponseWriter, r *http.Request) {
+		// One address and nothing else; it reaches fail2ban's command line
+		// only in the form netip writes it.
+		var req unbanRequest
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "the request could not be read"})
+			return
+		}
+		addr, err := netip.ParseAddr(req.Address)
+		if err != nil || !addr.Is4() {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "the request could not be read"})
+			return
+		}
+		allow(w, 30*time.Second)
+		if err := s.PublicUnban(addr); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, struct{}{})
 	})
 	mux.HandleFunc("GET /v1/adguard/settings", func(w http.ResponseWriter, _ *http.Request) {
 		settings, err := s.AdguardSettings()

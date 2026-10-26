@@ -35,7 +35,11 @@ func hashPassword(password string, p hashParams) (string, error) {
 	if _, err := rand.Read(salt); err != nil {
 		return "", fmt.Errorf("generate salt: %w", err)
 	}
+	if !acquireCheck() {
+		return "", ErrBusy
+	}
 	key := argon2.IDKey([]byte(password), salt, p.passes, p.memoryKiB, p.threads, keyLength)
+	releaseCheck()
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
 		argon2.Version, p.memoryKiB, p.passes, p.threads,
 		base64.RawStdEncoding.EncodeToString(salt),
@@ -66,6 +70,10 @@ func verifyPassword(encoded, password string) (bool, error) {
 		return false, errors.New("stored password hash is unreadable")
 	}
 
+	if !acquireCheck() {
+		return false, ErrBusy
+	}
 	got := argon2.IDKey([]byte(password), salt, p.passes, p.memoryKiB, p.threads, uint32(len(want)))
+	releaseCheck()
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
 }

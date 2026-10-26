@@ -83,6 +83,12 @@ func newSourceDB(t *testing.T) (*sql.DB, string) {
 		`INSERT INTO notification (at, event, severity, title, body) VALUES (112, 'announce', 'warning', 'A new service', '')`,
 		`INSERT INTO person_session (token_hash, person_id, created_at, last_seen_at, expires_at, remote_addr, user_agent) VALUES (x'02', 1, 1, 1, 9999999999, '192.168.1.10', 'phone')`,
 		`INSERT INTO gate_pass (token_hash, host, person_id, created_at, expires_at) VALUES (x'03', 'media.domain.tld', 1, 1, 9999999999)`,
+		// The parts of 0.20.0: services reachable from the internet.
+		`UPDATE service SET mode = 'proxied', listen_port = 25565, exposure = 'public', proxy_protocol = 1, srv_service = 'minecraft' WHERE id = 2`,
+		`INSERT INTO setting (key, value) VALUES ('public.enabled', 'true'),
+			('public.settings', '{"requestsPerMinute":600,"connectionsPerMinute":120,"allow":["198.51.100.7"],"levels":["firehol_level1"],"countryMode":"allow","countries":["EE"],"fail2ban":{"enabled":true,"signIns":5,"refused":40,"findMinutes":10,"banMinutes":60}}'),
+			('public.records', '[{"provider":"zone","domain":"domain.tld","kind":"A","name":"game.domain.tld","id":"101","value":"203.0.113.10"}]'),
+			('public.lists', '{}'), ('public.state', '{}')`,
 	}
 	for _, statement := range statements {
 		if _, err := db.ExecContext(ctx, statement); err != nil {

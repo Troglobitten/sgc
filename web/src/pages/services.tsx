@@ -44,6 +44,7 @@ export function ServicesPage({ shell }: { shell: ShellProps }) {
   const [proxy] = usePolled(api.proxy, 15_000, quiet)
   const [people] = usePolled(api.people, 30_000, quiet)
   const [tokens] = usePolled(api.tokens, 60_000, quiet)
+  const [internet] = usePolled(api.publicStatus, 30_000, quiet)
 
   function setTab(next: Tab) {
     setTabState(next)
@@ -105,7 +106,7 @@ export function ServicesPage({ shell }: { shell: ShellProps }) {
 
       {tab === 'services' &&
         (data ? (
-          <ServicesManager data={data} people={people ?? []} refresh={refresh} onError={handleError} />
+          <ServicesManager data={data} people={people ?? []} internet={internet} refresh={refresh} onError={handleError} />
         ) : (
           <p className="text-sm text-muted-foreground">…</p>
         ))}

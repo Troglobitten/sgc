@@ -248,6 +248,27 @@ func (s *Service) Sync(ctx context.Context) {
 	}
 }
 
+// ApplyNow sends the configuration now, if it differs from what was last
+// sent, and says how it went: for a change the owner waits for (opening or
+// closing a service to the internet).
+func (s *Service) ApplyNow(ctx context.Context) error {
+	s.changes.Lock()
+	defer s.changes.Unlock()
+	wanted, err := s.wanted(ctx)
+	if err != nil {
+		return err
+	}
+	if !wanted {
+		return problem.New("The proxy is switched off.")
+	}
+	cfg, err := s.cfg.Build(ctx)
+	if err != nil {
+		return err
+	}
+	cfg.Enabled = true
+	return s.apply(ctx, cfg, false)
+}
+
 func hashOf(cfg proxy.Config) [32]byte {
 	data, _ := json.Marshal(cfg)
 	return sha256.Sum256(data)

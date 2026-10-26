@@ -2,13 +2,14 @@
 
 A secure front door for your home network, running on a Raspberry Pi or any small Debian machine.
 
-> **Status: beta.** Everything SGC is meant to do is built: the installer, the dashboard, self-updating, export and restore, the firewall, SSH keys, updates for the device, a maintenance window, DNS (AdGuard Home), the domain (at Zone.eu, Cloudflare, Porkbun or Namecheap) with a certificate from Let's Encrypt, names for your devices, the proxy (Traefik), servers that announce their services, the VPN (WireGuard) with people and their devices, a login in front of services, notifications, logs and daily backups. It has been tested on a test machine, not yet for weeks on a real home network.
+> **Status: beta.** Everything SGC is meant to do is built: the installer, the dashboard, self-updating, export and restore, the firewall, SSH keys, updates for the device, a maintenance window, DNS (AdGuard Home), the domain (at Zone.eu, Cloudflare, Porkbun or Namecheap) with a certificate from Let's Encrypt, names for your devices, the proxy (Traefik), servers that announce their services, the VPN (WireGuard) with people and their devices, a login in front of services, services reachable from the internet (opened by hand, with filters and fail2ban), notifications, logs and daily backups. It has been tested on a test machine, not yet for weeks on a real home network.
 
 ## What it does
 
 - **VPN** — WireGuard access to your network, with per-person access rules and QR codes for phones.
 - **DNS** — AdGuard Home for the whole network and for VPN devices.
-- **Reverse proxy** — every service on your network gets `service.yourdomain.tld` with a Let's Encrypt certificate, without being exposed to the internet.
+- **Reverse proxy** — every service on your network gets `service.yourdomain.tld` with a Let's Encrypt certificate, without being exposed to the internet, unless you open it.
+- **Internet access** — open chosen services to the internet one by one (websites and other ports), behind request limits, FireHOL's lists, a country filter and fail2ban; close them with one click.
 - **Dashboard** — system health, service status, updates and end-of-life warnings in one place.
 - **Export / import** — one file restores the whole setup on a fresh device.
 
@@ -227,7 +228,7 @@ It runs once when the compose file comes up. Several services go in one call (`-
 
 ### VPN and people
 
-On the People page, switch the VPN on (WireGuard), and **forward UDP port 51820 on your router to this device**: that is the only port of your home that faces the internet. SGC publishes one public name, `vpn.domain.tld`, at your DNS provider and keeps it pointing at your home's address, also when that changes. Inside the home it points at this device, so a phone that is always connected works at home too.
+On the People page, switch the VPN on (WireGuard), and **forward UDP port 51820 on your router to this device**: unless you open services to the internet (below), that is the only port of your home that faces the internet. SGC publishes one public name, `vpn.domain.tld`, at your DNS provider and keeps it pointing at your home's address, also when that changes. Inside the home it points at this device, so a phone that is always connected works at home too.
 
 Add people, and per person choose what their devices reach: the whole home network (for you), all services, or only the services you pick. A guest gets an end date, after which their devices and login stop. Add a device for a person, and scan its QR code with the WireGuard app (the code holds the device's secret key, so showing it needs your admin password and is recorded). For people with the whole home network, "use home's internet connection too" sends a device's internet traffic through home as well. People who reach services only always keep their own internet connection: only the services and SGC's DNS go through the tunnel.
 
@@ -236,6 +237,26 @@ What a device used is kept per minute for two days, per hour for 90 days and per
 ### SGC's login in front of a service
 
 Put a web service behind SGC's login (on the Services page). Opening it then asks to sign in first: as you, or as a person with a login you gave them whose list has that service. People sign in on a page of their own and never get into SGC's page; they can change their own password there (`https://sgc.domain.tld/gate`). You change yours on the System page, under Your account; either change ends the other sign-ins of that account. Each service gets its own pass, so one service cannot use the pass of another. A device that reaches the service by its address instead of its name skips the login.
+
+### Services reachable from the internet
+
+Off until you switch it on, on the System page, under Internet. It needs the proxy, the firewall and the domain; switching on asks for your password, and then the firewall's rules are brought up to date with the usual confirmation. After that, each service's ⋯ menu on the Services page can make it reachable from the internet (your password again) and close it. Nothing else becomes reachable: not SGC's page, not AdGuard Home, not any other service.
+
+**On your router**, forward TCP port 443 to this device's port 8446: that one forward serves every public website. A public service that is not a website (a game or voice server, mail, …) is reached on its own port: forward that port, TCP or UDP, to the same port on this device. Only services that go through the gateway can be public. The System page and `sudo sgc doctor` list exactly what to forward; try a public service from a phone with Wi-Fi off.
+
+SGC makes a public name for each public service at your DNS provider (`name.domain.tld`, kept pointing at your home's address) and, for a service that is not a website and has a name for SRV records, an SRV record, so programs that look those up find its port by themselves. Namecheap's API cannot make SRV records; the page shows the one to add there by hand.
+
+A public service relies on its own login, or on SGC's if it is behind it; visitors then sign in under the service's own name, and SGC's page never faces the internet. Visitors from the internet first pass what you set under Internet:
+
+- a limit on requests (600 a minute per visitor) and on new connections (120 a minute per visitor);
+- an allow list of addresses that pass every filter;
+- [FireHOL](https://iplists.firehol.org/)'s lists of attacking addresses, levels 1 to 4, each switched on by you, fetched daily in the maintenance window;
+- a country filter (only these countries, or all but these), from [IP to Country Lite by DB-IP](https://db-ip.com), licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/);
+- fail2ban, when you switch it on: an address with 5 failed sign-ins or 40 refused requests in 10 minutes is banned for an hour (all adjustable); bans are listed there and can be lifted.
+
+Home addresses and the VPN are never filtered or banned. Public services are reachable over IPv4 only.
+
+Closing a service cuts the connections that are open. Switching internet access off closes every public service, and so does restoring an export; an announcement that changes a public service closes it too. Only you open a service again, one by one; an announcement never can. Every change is in the history and sent to you as a notification. Keep public services up to date: one that is broken into is inside your home network, which SGC cannot stop. If your router can put such servers on a network of their own, that is the real safeguard.
 
 ### Notifications and logs
 
@@ -257,7 +278,7 @@ SGC looks once a day when Debian and Traefik stop getting security fixes, and wa
 sudo sgc doctor
 ```
 
-checks every part of SGC on the machine (the service, its page, the root helper, storage, the clock, the firewall, SSH, the device's updates, AdGuard Home, logs in memory, the domain's DNS provider, the certificate, the names, the proxy and the services, the VPN, backups, end-of-life dates, the ports SGC needs) and says what to do about each problem it finds. It asks the machine directly, so it also works when SGC's page does not answer.
+checks every part of SGC on the machine (the service, its page, the root helper, storage, the clock, the firewall, SSH, the device's updates, AdGuard Home, logs in memory, the domain's DNS provider, the certificate, the names, the proxy and the services, the VPN, internet access, backups, end-of-life dates, the ports SGC needs) and says what to do about each problem it finds. It asks the machine directly, so it also works when SGC's page does not answer.
 
 If the admin password is lost, `sudo sgc reset-admin` at the device gives the admin a new one and ends every sign-in.
 
@@ -308,6 +329,8 @@ To work on the interface, run `sgc serve --dev-insecure-http --state-dir <folder
 | AdGuard Home | its own unprivileged user, in a systemd sandbox | Answers DNS; may bind port 53 and write to its own folder, nothing else |
 | `sgc-helper os-updates` | root, as one-off systemd units | Writes SGC's one file among apt's settings; runs Debian's update tool to look for the device's updates or to install them |
 | `nft -f /etc/sgc/firewall.nft` | systemd, early at start-up | Loads the confirmed firewall rules; uses none of SGC's own programs |
+| `nft -f /etc/sgc/public.nft` | systemd, early at start-up, once internet access is on | Loads the rules for visitors from the internet (filters, bans, which ports are public) |
+| fail2ban | root (Debian's own service), only while you have it on | Bans addresses from the internet that fail SGC's login or are refused at the door too often; SGC writes its settings and nothing else |
 | `sgc setup-link` | from the installer or `sudo` | Prints the one-time link for creating the admin account |
 | `sgc update` | `sudo` | Looks for a newer version and installs it |
 | `sgc doctor`, `sgc firewall`, `sgc ssh` | `sudo` | Checks every part; shows the firewall's or SSH's state; switches the firewall off or allows SSH passwords again |
@@ -319,6 +342,8 @@ The firewall is split the same way. The web process can ask for "on" or "off" an
 Updating is split the same way: the unprivileged web process downloads a release, and the root updater, which never talks to the internet, verifies it again by itself before installing.
 
 So are the device's own updates: the web process can ask for "look" or "install" and choose between "by themselves" and "by hand". Which updates there are is worked out by Debian's update tool from the device's settings; no request carries a package name.
+
+Internet access too: the web process sends typed settings (numbers, addresses, country codes, the names of lists); the root side writes the rules and fail2ban's settings itself, loads a downloaded list only if it is the very file the web process checked, and has nftables check the rules before they are loaded.
 
 SSH is split the same way again, with one difference the owner chose: the web process may pass on public keys, which is more than a yes or no. The root side checks each one itself and accepts them for ordinary accounts only, never for root.
 

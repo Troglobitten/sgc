@@ -64,10 +64,20 @@ func (f *fakeDNS) values(name, kind string) []string {
 type conformance struct {
 	id string
 	// start returns the owner's values and the options that reach the
-	// stand-in, and a way to read what it holds.
-	start func(t *testing.T) (values map[string]string, opt Options, txt, a func(name string) []string)
+	// stand-in, and ways to read what it holds.
+	start func(t *testing.T) held
 	// wrong is a set of values the stand-in refuses.
 	wrong map[string]string
+	// srv: the provider's API has service records.
+	srv bool
+}
+
+// held is a started stand-in: what to open it with, and what it holds by
+// name. srv gives "priority weight port target".
+type held struct {
+	values      map[string]string
+	opt         Options
+	txt, a, srv func(name string) []string
 }
 
 func publicIP(context.Context) (netip.Addr, error) { return netip.MustParseAddr(homeIP), nil }
@@ -76,22 +86,23 @@ func conformances() []conformance {
 	return []conformance{
 		{
 			id: ZoneID,
-			start: func(t *testing.T) (map[string]string, Options, func(string) []string, func(string) []string) {
+			start: func(t *testing.T) held {
 				z := zonetest.New("alex", secretOne, "domain.tld")
 				server := httptest.NewServer(z)
 				t.Cleanup(server.Close)
-				return map[string]string{"username": "alex", "apiKey": secretOne},
-					Options{ZoneEndpoint: server.URL + "/v2/", StandIn: true}, z.TXT, z.A
+				return held{map[string]string{"username": "alex", "apiKey": secretOne},
+					Options{ZoneEndpoint: server.URL + "/v2/", StandIn: true}, z.TXT, z.A, z.SRV}
 			},
 			wrong: map[string]string{"username": "alex", "apiKey": secretTwo},
+			srv:   true,
 		},
 		{
 			id: "cloudflare",
-			start: func(t *testing.T) (map[string]string, Options, func(string) []string, func(string) []string) {
+			start: func(t *testing.T) held {
 				f := &fakeDNS{}
 				server := httptest.NewServer(fakeCloudflare(t, f, secretOne))
 				t.Cleanup(server.Close)
-				return map[string]string{"apiToken": secretOne}, Options{Endpoint: server.URL},
+				return held{map[string]string{"apiToken": secretOne}, Options{Endpoint: server.URL},
 					func(name string) []string {
 						// Cloudflare keeps a TXT record's text in quotes.
 						var out []string
@@ -104,31 +115,36 @@ func conformances() []conformance {
 						}
 						return out
 					},
-					func(name string) []string { return f.values(name, "A") }
+					func(name string) []string { return f.values(name, "A") },
+					func(name string) []string { return f.values(name, "SRV") }}
 			},
 			wrong: map[string]string{"apiToken": secretTwo},
+			srv:   true,
 		},
 		{
 			id: "porkbun",
-			start: func(t *testing.T) (map[string]string, Options, func(string) []string, func(string) []string) {
+			start: func(t *testing.T) held {
 				f := &fakeDNS{}
 				server := httptest.NewServer(fakePorkbun(t, f))
 				t.Cleanup(server.Close)
-				return map[string]string{"apiKey": secretOne, "secretKey": secretTwo}, Options{Endpoint: server.URL},
+				return held{map[string]string{"apiKey": secretOne, "secretKey": secretTwo}, Options{Endpoint: server.URL},
 					func(name string) []string { return f.values(name, "TXT") },
-					func(name string) []string { return f.values(name, "A") }
+					func(name string) []string { return f.values(name, "A") },
+					func(name string) []string { return f.values(name, "SRV") }}
 			},
 			wrong: map[string]string{"apiKey": secretOne, "secretKey": "a-made-up-wrong-key"},
+			srv:   true,
 		},
 		{
 			id: "namecheap",
-			start: func(t *testing.T) (map[string]string, Options, func(string) []string, func(string) []string) {
+			start: func(t *testing.T) held {
 				f := newFakeNamecheap(t)
 				server := httptest.NewServer(f)
 				t.Cleanup(server.Close)
-				return map[string]string{"username": "alex", "apiKey": secretOne}, Options{Endpoint: server.URL, PublicIP: publicIP},
+				return held{map[string]string{"username": "alex", "apiKey": secretOne}, Options{Endpoint: server.URL, PublicIP: publicIP},
 					func(name string) []string { return f.values(name, "TXT") },
-					func(name string) []string { return f.values(name, "A") }
+					func(name string) []string { return f.values(name, "A") },
+					func(name string) []string { return f.values(name, "SRV") }}
 			},
 			wrong: map[string]string{"username": "alex", "apiKey": secretTwo},
 		},
@@ -155,7 +171,8 @@ func TestEveryProviderDoesWhatSGCNeeds(t *testing.T) {
 	for _, c := range conformances() {
 		t.Run(c.id, func(t *testing.T) {
 			ctx := context.Background()
-			values, opt, txt, a := c.start(t)
+			h := c.start(t)
+			values, opt, txt, a := h.values, h.opt, h.txt, h.a
 			opt.HTTP = &http.Client{Timeout: 5 * time.Second}
 			if c.id != ZoneID {
 				opt.StandIn = false
@@ -210,6 +227,59 @@ func TestEveryProviderDoesWhatSGCNeeds(t *testing.T) {
 			records, _ = p.ARecords(ctx, "domain.tld")
 			if !slices.Contains(records, Record{ID: made.ID, Name: "vpn.domain.tld", Value: "203.0.113.8"}) {
 				t.Errorf("after UpdateA the record has another ID: %+v (was %s)", records, made.ID)
+			}
+
+			// A public service's name, made and removed again.
+			public, err := p.AddA(ctx, "domain.tld", "media.domain.tld", "203.0.113.8")
+			if err != nil {
+				t.Fatalf("AddA: %v", err)
+			}
+			if err := p.DeleteA(ctx, "domain.tld", public.ID); err != nil {
+				t.Fatalf("DeleteA: %v", err)
+			}
+			if got := a("media.domain.tld"); len(got) != 0 {
+				t.Errorf("after DeleteA the provider still holds %q", got)
+			}
+			if got := a("vpn.domain.tld"); !slices.Equal(got, []string{"203.0.113.8"}) {
+				t.Errorf("DeleteA of another name took the VPN's too: %q", got)
+			}
+			if err := p.DeleteA(ctx, "domain.tld", public.ID); err != nil {
+				t.Errorf("removing an A record that is already gone: %v", err)
+			}
+
+			// A service record, where the provider's API has them.
+			srv, has := SupportsSRV(p)
+			if has != c.srv {
+				t.Fatalf("SupportsSRV = %t, want %t", has, c.srv)
+			}
+			if has {
+				want := SRV{Name: "_minecraft._tcp.mc.domain.tld", Target: "mc.domain.tld", Priority: 0, Weight: 5, Port: 25566}
+				made, err := srv.AddSRV(ctx, "domain.tld", want)
+				if err != nil {
+					t.Fatalf("AddSRV: %v", err)
+				}
+				if got := h.srv("_minecraft._tcp.mc.domain.tld"); !slices.Equal(got, []string{"0 5 25566 mc.domain.tld"}) {
+					t.Errorf("the provider holds %q under the service record's name", got)
+				}
+				listed, err := srv.SRVRecords(ctx, "domain.tld")
+				if err != nil {
+					t.Fatalf("SRVRecords: %v", err)
+				}
+				want.ID = made.ID
+				if !slices.ContainsFunc(listed, func(r SRV) bool {
+					return r == want || (r.ID == want.ID && strings.EqualFold(r.Name, want.Name) && r.Target == want.Target && r.Port == want.Port)
+				}) {
+					t.Errorf("SRVRecords = %+v, want %+v", listed, want)
+				}
+				if err := srv.DeleteSRV(ctx, "domain.tld", made.ID); err != nil {
+					t.Fatalf("DeleteSRV: %v", err)
+				}
+				if got := h.srv("_minecraft._tcp.mc.domain.tld"); len(got) != 0 {
+					t.Errorf("after DeleteSRV the provider holds %q", got)
+				}
+				if err := srv.DeleteSRV(ctx, "domain.tld", made.ID); err != nil {
+					t.Errorf("removing a service record that is already gone: %v", err)
+				}
 			}
 
 			// Credentials that are not accepted.
@@ -401,7 +471,13 @@ func fakeCloudflare(t *testing.T, f *fakeDNS, token string) http.Handler {
 				f.mu.Lock()
 				for _, rec := range f.records {
 					if kind == "" || rec.kind == kind {
-						out = append(out, cfRecord{ID: rec.id, Type: rec.kind, Name: rec.name, Content: rec.value, TTL: 1})
+						listed := cfRecord{ID: rec.id, Type: rec.kind, Name: rec.name, Content: rec.value, TTL: 1}
+						if rec.kind == "SRV" {
+							var d cfSRVData
+							fmt.Sscanf(rec.value, "%d %d %d %s", &d.Priority, &d.Weight, &d.Port, &d.Target)
+							listed.Data, listed.Content = &d, strconv.Itoa(d.Weight)+" "+strconv.Itoa(d.Port)+" "+d.Target
+						}
+						out = append(out, listed)
 					}
 				}
 				f.mu.Unlock()
@@ -414,6 +490,14 @@ func fakeCloudflare(t *testing.T, f *fakeDNS, token string) http.Handler {
 				json.NewDecoder(r.Body).Decode(&rec)
 				if rec.Type == "A" && (rec.Proxied == nil || *rec.Proxied) {
 					t.Errorf("an A record was made through Cloudflare's proxy: %+v", rec)
+				}
+				if rec.Type == "SRV" {
+					if rec.Data == nil {
+						t.Errorf("a service record without its data: %+v", rec)
+						fail(w, http.StatusBadRequest, 9000, "data required")
+						return
+					}
+					rec.Content = fmt.Sprintf("%d %d %d %s", rec.Data.Priority, rec.Data.Weight, rec.Data.Port, rec.Data.Target)
 				}
 				id := f.add(rec.Name, rec.Type, rec.Content)
 				ok(w, cfRecord{ID: id, Type: rec.Type, Name: rec.Name, Content: rec.Content})
@@ -483,7 +567,11 @@ func fakePorkbun(t *testing.T, f *fakeDNS) http.Handler {
 			var out []pbRecord
 			f.mu.Lock()
 			for _, rec := range f.records {
-				out = append(out, pbRecord{ID: rec.id, Name: rec.name, Type: rec.kind, Content: rec.value, TTL: "300"})
+				listed := pbRecord{ID: rec.id, Name: rec.name, Type: rec.kind, Content: rec.value, TTL: "300"}
+				if rec.kind == "SRV" {
+					listed.Prio, listed.Content, _ = strings.Cut(rec.value, " ")
+				}
+				out = append(out, listed)
 			}
 			f.mu.Unlock()
 			writeJSONAnswer(w, http.StatusOK, map[string]any{"status": "SUCCESS", "records": out})
@@ -491,7 +579,14 @@ func fakePorkbun(t *testing.T, f *fakeDNS) http.Handler {
 			if strings.HasSuffix(body["name"], "domain.tld") {
 				t.Errorf("a record was made at Porkbun with its full name %q: Porkbun takes the name relative to the domain", body["name"])
 			}
-			id := f.add(full(body["name"]), body["type"], body["content"])
+			value := body["content"]
+			if body["type"] == "SRV" {
+				if len(strings.Fields(value)) != 3 {
+					t.Errorf("a service record at Porkbun whose content is not \"weight port target\": %q", value)
+				}
+				value = body["prio"] + " " + value
+			}
+			id := f.add(full(body["name"]), body["type"], value)
 			n, _ := strconv.Atoi(id)
 			writeJSONAnswer(w, http.StatusOK, map[string]any{"status": "SUCCESS", "id": n})
 		case "edit", "delete":

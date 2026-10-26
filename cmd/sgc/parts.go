@@ -21,11 +21,14 @@ import (
 	"github.com/Troglobitten/sgc/internal/helper"
 	"github.com/Troglobitten/sgc/internal/iconpack"
 	"github.com/Troglobitten/sgc/internal/layout"
+	"github.com/Troglobitten/sgc/internal/maintenance"
 	"github.com/Troglobitten/sgc/internal/netinfo"
 	"github.com/Troglobitten/sgc/internal/people"
 	"github.com/Troglobitten/sgc/internal/problem"
 	"github.com/Troglobitten/sgc/internal/proxy"
 	"github.com/Troglobitten/sgc/internal/proxycontrol"
+	"github.com/Troglobitten/sgc/internal/public"
+	"github.com/Troglobitten/sgc/internal/publiccontrol"
 	"github.com/Troglobitten/sgc/internal/services"
 	"github.com/Troglobitten/sgc/internal/vpncontrol"
 )
@@ -40,6 +43,14 @@ const publicIPVariable = "SGC_PUBLIC_IP_URL"
 // honoured like publicIPVariable only while Zone.eu is a stand-in too: the
 // whole-machine test, which must not fetch the real pack from GitHub.
 const iconPackVariable = "SGC_ICON_PACK_URL"
+
+// fireholVariable and dbipVariable name stand-ins for where FireHOL's and
+// DB-IP's lists are fetched, honoured like the others only while Zone.eu is
+// a stand-in too.
+const (
+	fireholVariable = "SGC_FIREHOL_URL"
+	dbipVariable    = "SGC_DBIP_URL"
+)
 
 // parts are the pieces of SGC that hand out names and let people in: the
 // gateway's own name, the services, the proxy, people and their VPN
@@ -57,6 +68,7 @@ type parts struct {
 	vpn       *vpncontrol.Service
 	endpoint  *vpncontrol.Endpoint
 	icons     *iconpack.Service
+	public    *publiccontrol.Service
 }
 
 type partsDeps struct {
@@ -70,6 +82,12 @@ type partsDeps struct {
 	cert     *certcontrol.Service
 	// alert reports something the owner should know at once.
 	alert func(ctx context.Context, title, body string)
+	// alertInternet is for what concerns the internet (a service opened or
+	// closed); alertLogins for someone guessing a password.
+	alertInternet func(ctx context.Context, title, body string)
+	alertLogins   func(ctx context.Context, title, body string)
+	// firewallOn reports whether SGC's firewall is on.
+	firewallOn func(ctx context.Context) bool
 }
 
 func newParts(d partsDeps) *parts {
@@ -105,6 +123,15 @@ func newParts(d partsDeps) *parts {
 	if d.alert == nil {
 		d.alert = func(ctx context.Context, title, body string) { d.log.Warn(title, "detail", body) }
 	}
+	if d.alertInternet == nil {
+		d.alertInternet = d.alert
+	}
+	if d.alertLogins == nil {
+		d.alertLogins = d.alert
+	}
+	if d.firewallOn == nil {
+		d.firewallOn = func(context.Context) bool { return false }
+	}
 	// Labels under the domain that other parts hold.
 	reserved := func(ctx context.Context) (map[string]string, error) {
 		name, err := gateway.Name(ctx, d.db)
@@ -121,6 +148,7 @@ func newParts(d partsDeps) *parts {
 		p.names.Kick()
 		p.proxy.Kick()
 		p.vpn.Kick()
+		p.public.Kick()
 		// The first service: the icon pack is fetched now, not tomorrow.
 		if !p.icons.Status().Installed {
 			p.icons.Kick()
@@ -153,8 +181,12 @@ func newParts(d partsDeps) *parts {
 			return []int{p.vpn.Settings(ctx).Port}
 		},
 		Changed: everythingChanged,
-		Icons:   services.NewIconFetcher(p.icons),
-		Log:     d.log,
+		Closed: func(ctx context.Context, name, why string) {
+			d.alertInternet(ctx, name+" was closed to the internet",
+				name+" was reachable from the internet, and SGC closed it: "+why+". Open it again in SGC's page if that is still wanted.")
+		},
+		Icons: services.NewIconFetcher(p.icons),
+		Log:   d.log,
 	})
 
 	p.announcer = announce.New(announce.Config{
@@ -170,7 +202,11 @@ func newParts(d partsDeps) *parts {
 		Audit:         d.audit,
 		Changed:       everythingChanged,
 		AdminUsername: d.auth.AdminUsername,
-		Log:           d.log,
+		Slowed: func(ctx context.Context, username, remote string) {
+			d.alertLogins(ctx, "Someone may be guessing a person's password",
+				"Wrong passwords for the login "+username+", the last from "+remote+". Its sign-ins are slowed down now.")
+		},
+		Log: d.log,
 	})
 
 	_, zoneStandIn := zoneEndpoint()
@@ -233,7 +269,16 @@ func newParts(d partsDeps) *parts {
 			if err != nil {
 				return proxy.Config{}, err
 			}
-			routes, err := p.catalog.ProxyServices(ctx, p.vpn.AllowFor(ctx))
+			// Internet access (docs/design.md §14): the public door, and how
+			// its visitors are filtered.
+			door := p.public.On(ctx)
+			var filters *public.Settings
+			if door {
+				if filters, err = p.public.BuildPublic(ctx); err != nil {
+					return proxy.Config{}, err
+				}
+			}
+			routes, err := p.catalog.ProxyServices(ctx, p.vpn.AllowFor(ctx), door)
 			if err != nil {
 				return proxy.Config{}, err
 			}
@@ -241,6 +286,7 @@ func newParts(d partsDeps) *parts {
 				Domain: domain, GatewayName: name, WebPort: layout.WebPort,
 				CertificatePEM: pair.CertificatePEM, PrivateKeyPEM: pair.PrivateKeyPEM,
 				Services: routes, Reserved: []int{22, p.vpn.Settings(ctx).Port},
+				Door: door, Public: filters,
 			}, nil
 		},
 		Applied: func() { p.names.Kick() },
@@ -267,6 +313,38 @@ func newParts(d partsDeps) *parts {
 		},
 		Log: d.log,
 	})
+	fireholBase, dbipBase := "", ""
+	if zoneStandIn {
+		if url := os.Getenv(fireholVariable); url != "" {
+			d.log.Warn("asking a stand-in for FireHOL's lists", "address", url)
+			fireholBase = url
+		}
+		if url := os.Getenv(dbipVariable); url != "" {
+			d.log.Warn("asking a stand-in for DB-IP's country list", "address", url)
+			dbipBase = url
+		}
+	}
+	p.public = publiccontrol.New(publiccontrol.Config{
+		DB:         d.db,
+		Audit:      d.audit,
+		Helper:     d.helper,
+		Catalog:    p.catalog,
+		FirewallOn: d.firewallOn,
+		ProxyOn:    func(ctx context.Context) bool { return p.proxy.On(ctx) },
+		Apply:      func(ctx context.Context) error { return p.proxy.ApplyNow(ctx) },
+		DNS:        d.domain.Open,
+		PublicIP:   homePublicIP(zoneStandIn),
+		LAN:        lan,
+		HTTP:       &http.Client{Timeout: 5 * time.Minute},
+		// Where the root side reads them (public.DefaultPaths().ListsDir
+		// for the service's own state folder).
+		ListsDir:    filepath.Join(d.stateDir, "public"),
+		FireHOLBase: fireholBase,
+		DBIPBase:    dbipBase,
+		Alert:       d.alertInternet,
+		Window:      func(ctx context.Context) (int, int, error) { return maintenance.Window(ctx, d.db) },
+		Log:         d.log,
+	})
 	p.gateway.UseNames(p.names)
 	return p
 }
@@ -279,4 +357,5 @@ func (p *parts) run(ctx context.Context, start func(func())) {
 	start(func() { p.proxy.Run(ctx) })
 	start(func() { p.people.Run(ctx) })
 	start(func() { p.vpn.Run(ctx) })
+	start(func() { p.public.Run(ctx) })
 }

@@ -103,6 +103,8 @@ func firewallSystem() *firewall.System {
 			applied := proxy.ReadApplied(proxy.DefaultPaths())
 			return applied.Enabled && proxy.Installed(proxy.DefaultPaths()), applied.ListenPorts
 		},
+		// Internet access: the proxy's public door is in place.
+		Door: func() bool { return proxy.ReadApplied(proxy.DefaultPaths()).Door },
 		// The VPN's port while it is on: the one port that faces the internet.
 		VPNPort: func() int {
 			if state := wireguard.ReadState(wireguard.DefaultPaths()); state.Enabled {

@@ -179,7 +179,7 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 		Expected: func(ctx context.Context) fwcontrol.Expected {
 			expected := fwcontrol.Expected{DNS: adguard.Installed(adguard.DefaultPaths())}
 			if status, err := helperClient.ProxyStatus(ctx); err == nil && status.On {
-				expected.Proxy, expected.ProxyPorts = true, status.ListenPorts
+				expected.Proxy, expected.ProxyPorts, expected.Door = true, status.ListenPorts, status.Door
 			}
 			if status, err := helperClient.VPNStatus(ctx); err == nil && status.On {
 				expected.VPNPort = status.Port
@@ -259,7 +259,18 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 	}
 
 	named := newParts(partsDeps{db: db, stateDir: opts.stateDir, helper: helperClient, audit: auditLog, auth: authService, log: log,
-		domain: domainControl, cert: certControl, alert: alertAs(notify.EventAnnounce)})
+		domain: domainControl, cert: certControl, alert: alertAs(notify.EventAnnounce),
+		alertInternet: alertAs(notify.EventInternet), alertLogins: alertAs(notify.EventLogins),
+		firewallOn: func(ctx context.Context) bool {
+			status, err := firewallControl.Status(ctx)
+			return err == nil && status.State == fwcontrol.StateOn
+		}})
+	if restored != nil {
+		// Nothing is opened to the internet by itself on a restored device.
+		if err := named.public.MarkRestored(ctx); err != nil {
+			return fail("note the restore for internet access", err)
+		}
+	}
 	named.run(runCtx, background.Go)
 
 	dnsControl := newDNSControl(db, opts.stateDir, helperClient, auditLog, log)
@@ -330,6 +341,7 @@ func serveOnce(ctx context.Context, opts serveOptions, log *slog.Logger, stdout 
 		Icons:            named.icons,
 		Guide:            guide.Store{DB: db},
 		Proxy:            named.proxy,
+		Public:           named.public,
 		Announcer:        named.announcer,
 		People:           named.people,
 		VPN:              named.vpn,

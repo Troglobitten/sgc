@@ -126,6 +126,25 @@ const (
 	ActionServiceApproved        = "service.approved"
 	ActionServiceSettingsChanged = "service.settings_changed"
 
+	// A service was made reachable from the internet, or closed again: by
+	// the admin, or by SGC itself (an announcement changed it, its token was
+	// removed, it was switched off; the detail says which).
+	ActionServicePublicOpened = "service.public_opened"
+	ActionServicePublicClosed = "service.public_closed"
+
+	// Internet access was switched on or off; its settings (limits, allow
+	// list, FireHOL's lists, the country filter, fail2ban) were changed; a
+	// list could not be fetched; a ban was lifted.
+	ActionPublicAccessOn        = "public.access_on"
+	ActionPublicAccessOff       = "public.access_off"
+	ActionPublicSettingsChanged = "public.settings_changed"
+	ActionPublicListFailed      = "public.list_failed"
+	ActionPublicUnbanned        = "public.unbanned"
+	// A record for a public name at the DNS provider was made, changed or
+	// removed, or could not be.
+	ActionPublicRecordChanged = "public.record_changed"
+	ActionPublicRecordFailed  = "public.record_failed"
+
 	// A server's token for announcing was made, removed, or pinned to a new
 	// address; an announcement came with a token SGC does not know.
 	ActionTokenCreated  = "token.created"

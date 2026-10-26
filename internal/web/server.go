@@ -72,8 +72,10 @@ type Server struct {
 	Icons       Icons
 	// Guide is the guided setup's state (internal/guide); nil in tests
 	// that do not need it.
-	Guide       Guide
-	Proxy       Proxy
+	Guide Guide
+	Proxy Proxy
+	// Public is internet access (public.go); nil in tests that do not need it.
+	Public      Public
 	Announcer   Announcer
 	People      People
 	VPN         VPN
@@ -160,6 +162,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/services/{id}", s.requireSession(s.handleServiceUpdate))
 	mux.HandleFunc("POST /api/services/{id}/remove", s.requireSession(s.handleServiceRemove))
 	mux.HandleFunc("POST /api/services/{id}/approve", s.requireSession(s.handleServiceApprove))
+	mux.HandleFunc("POST /api/services/{id}/public", s.requireSession(s.handleServicePublic))
+	mux.HandleFunc("GET /api/public", s.requireSession(s.handlePublicStatus))
+	mux.HandleFunc("POST /api/public/enabled", s.requireSession(s.handlePublicEnabled))
+	mux.HandleFunc("POST /api/public/settings", s.requireSession(s.handlePublicSettings))
+	mux.HandleFunc("GET /api/public/bans", s.requireSession(s.handlePublicBans))
+	mux.HandleFunc("POST /api/public/unban", s.requireSession(s.handlePublicUnban))
 	mux.HandleFunc("POST /api/services/{id}/icon", s.requireSession(s.handleServiceIconRefresh))
 	mux.HandleFunc("GET /api/services/{id}/icon", s.requireSession(s.handleServiceIcon))
 	mux.HandleFunc("GET /api/proxy", s.requireSession(s.handleProxyStatus))

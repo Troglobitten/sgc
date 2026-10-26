@@ -21,6 +21,8 @@ type People interface {
 	Remove(ctx context.Context, actor, remote string, id int64) error
 	// For the login gate (gate.go).
 	Login(ctx context.Context, username, password, remote, userAgent string) (*people.Session, error)
+	// For SGC's login on a public service (gate_public.go).
+	Verify(ctx context.Context, username, password, remote string) (*people.Person, error)
 	Authenticate(ctx context.Context, token string) (*people.Person, error)
 	Logout(ctx context.Context, token string) error
 	ChangePassword(ctx context.Context, personID int64, old, next, remote, keepToken string) error

@@ -95,7 +95,7 @@ func TestWhatGoesIn(t *testing.T) {
 	if names, _ := c.Names(ctx, false); len(names) != 1 {
 		t.Errorf("without the proxy: %+v", names)
 	}
-	routes, _ := c.ProxyServices(ctx, nil)
+	routes, _ := c.ProxyServices(ctx, nil, false)
 	if len(routes) != 2 {
 		t.Errorf("routes: %+v", routes)
 	}
@@ -105,7 +105,7 @@ func TestWhatGoesIn(t *testing.T) {
 	if _, err := c.Update(ctx, "alex", "", nas.ID, off); err != nil {
 		t.Fatal(err)
 	}
-	if routes, _ := c.ProxyServices(ctx, nil); len(routes) != 1 {
+	if routes, _ := c.ProxyServices(ctx, nil, false); len(routes) != 1 {
 		t.Errorf("routes after switching off: %+v", routes)
 	}
 }
@@ -252,5 +252,113 @@ func TestIconLinksInAPage(t *testing.T) {
 	}
 	if names := catalogueNames(Service{Name: "ha", Title: "Home Assistant"}); strings.Join(names, " ") != "ha home-assistant" {
 		t.Errorf("catalogue names: %v", names)
+	}
+}
+
+// A public service stays public only while the owner keeps it so: switching
+// it off, a server announcing it anew with other settings, or that server's
+// token being marked as moved or removed closes it, and the owner hears.
+func TestSGCClosesAPublicServiceByItself(t *testing.T) {
+	ctx := context.Background()
+	c := catalog(t)
+	var closed []string
+	c.cfg.Closed = func(_ context.Context, name, why string) { closed = append(closed, name+": "+why) }
+	db := c.cfg.DB
+	db.Exec("INSERT INTO announce_token (id, label, token_hash, hint, pinned_ip, created_at) VALUES (7, 'old-gateway', x'00', 'sgc_', '192.168.1.30', 0)")
+
+	isPublic := func(name string) bool {
+		var exposure string
+		db.QueryRow("SELECT exposure FROM service WHERE name = ?", name).Scan(&exposure)
+		return exposure == ExposurePublic
+	}
+	open := func(name string) {
+		var id int64
+		db.QueryRow("SELECT id FROM service WHERE name = ?", name).Scan(&id)
+		if err := c.SetExposure(ctx, id, ExposurePublic); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Switched off in the page.
+	web, err := c.Add(ctx, "alex", "", Input{Name: "media", UpstreamIP: "192.168.1.30", UpstreamPort: 8096, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	open("media")
+	if routes, _ := c.ProxyServices(ctx, nil, true); len(routes) != 1 || !routes[0].Public {
+		t.Fatalf("a public service is not public at the proxy: %+v", routes)
+	}
+	if routes, _ := c.ProxyServices(ctx, nil, false); routes[0].Public {
+		t.Error("a public service is public while internet access is off")
+	}
+	in := Input{Name: "media", UpstreamIP: "192.168.1.30", UpstreamPort: 8096, Enabled: false}
+	if _, err := c.Update(ctx, "alex", "", web.ID, in); err != nil {
+		t.Fatal(err)
+	}
+	if isPublic("media") {
+		t.Error("a public service switched off is still public")
+	}
+
+	// Announced anew by its server with another port.
+	if _, err := c.Announce(ctx, 7, "old-gateway", "192.168.1.30", []Announcement{{Name: "game", Port: 25565, Kind: "tcp", Mode: "proxied"}}); err != nil {
+		t.Fatal(err)
+	}
+	open("game")
+	results, err := c.Announce(ctx, 7, "old-gateway", "192.168.1.30", []Announcement{{Name: "game", Port: 25565, Kind: "tcp", Mode: "proxied"}})
+	if err != nil || results[0].Closed || !isPublic("game") {
+		t.Errorf("the same announcement again closed it: %+v, %v", results, err)
+	}
+	results, err = c.Announce(ctx, 7, "old-gateway", "192.168.1.30", []Announcement{{Name: "game", Port: 25566, Kind: "tcp", Mode: "proxied"}})
+	if err != nil || !results[0].Closed || isPublic("game") {
+		t.Errorf("an announcement with another port left it public: %+v, %v", results, err)
+	}
+
+	// The token marked as moved, then removed.
+	open("game")
+	c.CloseToken(ctx, "alex", "", 7, "its server was marked as moved")
+	if isPublic("game") {
+		t.Error("a moved server's service is still public")
+	}
+	open("game")
+	if err := c.ReleaseToken(ctx, 7, true); err != nil {
+		t.Fatal(err)
+	}
+	if isPublic("game") {
+		t.Error("a removed token's service is still public")
+	}
+	if len(closed) != 4 {
+		t.Errorf("the owner heard of %d closings, want 4: %q", len(closed), closed)
+	}
+}
+
+func TestTheNewSettingsOfAService(t *testing.T) {
+	ctx := context.Background()
+	c := catalog(t)
+	bad := map[string]Input{
+		"PROXY protocol on UDP": {Name: "g", Kind: "udp", Mode: "proxied", UpstreamIP: "192.168.1.20", UpstreamPort: 27015, ProxyProtocol: true},
+		"PROXY protocol direct": {Name: "g", Kind: "tcp", Mode: "direct", UpstreamIP: "192.168.1.20", UpstreamPort: 25565, ProxyProtocol: true},
+		"a quiet time on TCP":   {Name: "g", Kind: "tcp", Mode: "proxied", UpstreamIP: "192.168.1.20", UpstreamPort: 25565, UDPTimeout: 30},
+		"a quiet time of hours": {Name: "g", Kind: "udp", Mode: "proxied", UpstreamIP: "192.168.1.20", UpstreamPort: 27015, UDPTimeout: 7200},
+		"an SRV name of digits": {Name: "g", Kind: "tcp", Mode: "proxied", UpstreamIP: "192.168.1.20", UpstreamPort: 25565, SRVService: "1234"},
+		"an SRV name too long":  {Name: "g", Kind: "tcp", Mode: "proxied", UpstreamIP: "192.168.1.20", UpstreamPort: 25565, SRVService: "a-very-long-service"},
+		"an SRV name with _":    {Name: "g", Kind: "tcp", Mode: "proxied", UpstreamIP: "192.168.1.20", UpstreamPort: 25565, SRVService: "_minecraft"},
+		"the public door":       {Name: "g", Kind: "tcp", Mode: "proxied", UpstreamIP: "192.168.1.20", UpstreamPort: 8446},
+	}
+	for what, in := range bad {
+		if _, err := c.Add(ctx, "alex", "", in); err == nil {
+			t.Errorf("%s: accepted", what)
+		}
+	}
+	s, err := c.Add(ctx, "alex", "", Input{Name: "mc", Kind: "tcp", Mode: "proxied", UpstreamIP: "192.168.1.20", UpstreamPort: 25565,
+		ProxyProtocol: true, SRVService: "Minecraft", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.ProxyProtocol || s.SRVService != "minecraft" || s.Exposure != ExposureLAN {
+		t.Errorf("the service as kept: %+v", s)
+	}
+	routes, _ := c.ProxyServices(ctx, nil, true)
+	if len(routes) != 1 || !routes[0].ProxyProtocol || routes[0].Public {
+		t.Errorf("the route: %+v", routes)
 	}
 }

@@ -62,6 +62,10 @@ type pbRecord struct {
 	Type    string `json:"type"`
 	Content string `json:"content"`
 	TTL     string `json:"ttl,omitempty"`
+	// Prio is a service record's priority; its content is "weight port
+	// target" (Porkbun's help, "How to create an SRV record", and its API
+	// reference, read on 2026-10-25).
+	Prio string `json:"prio,omitempty"`
 }
 
 // call posts to one of Porkbun's calls and reads the answer into result.
@@ -146,7 +150,7 @@ func (p *porkbun) Check(ctx context.Context, domain string) error {
 }
 
 // create makes a record and returns its ID, which Porkbun gives as a number.
-func (p *porkbun) create(ctx context.Context, domain, kind, name, content string) (string, error) {
+func (p *porkbun) create(ctx context.Context, domain, kind, name, content string, extra ...string) (string, error) {
 	sub, ok := relative(name, domain)
 	if !ok {
 		return "", fmt.Errorf("%s is not under %s", name, domain)
@@ -154,8 +158,11 @@ func (p *porkbun) create(ctx context.Context, domain, kind, name, content string
 	var answer struct {
 		ID json.Number `json:"id"`
 	}
-	err := p.call(ctx, domain, []string{"dns", "create", domain},
-		map[string]string{"name": sub, "type": kind, "content": content, "ttl": "300"}, &answer)
+	fields := map[string]string{"name": sub, "type": kind, "content": content, "ttl": "300"}
+	for i := 0; i+1 < len(extra); i += 2 {
+		fields[extra[i]] = extra[i+1]
+	}
+	err := p.call(ctx, domain, []string{"dns", "create", domain}, fields, &answer)
 	if err != nil {
 		return "", err
 	}
@@ -174,6 +181,56 @@ func (p *porkbun) AddTXT(ctx context.Context, domain, name, value string) (Recor
 }
 
 func (p *porkbun) DeleteTXT(ctx context.Context, domain, id string) error {
+	return p.deleteRecord(ctx, domain, id)
+}
+
+func (p *porkbun) DeleteA(ctx context.Context, domain, id string) error {
+	return p.deleteRecord(ctx, domain, id)
+}
+
+func (p *porkbun) DeleteSRV(ctx context.Context, domain, id string) error {
+	return p.deleteRecord(ctx, domain, id)
+}
+
+func (p *porkbun) SRVRecords(ctx context.Context, domain string) ([]SRV, error) {
+	records, err := p.list(ctx, domain)
+	if err != nil {
+		return nil, err
+	}
+	var out []SRV
+	for _, r := range records {
+		if !strings.EqualFold(r.Type, "SRV") {
+			continue
+		}
+		parts := strings.Fields(r.Content)
+		if len(parts) != 3 {
+			continue
+		}
+		weight, err1 := strconv.Atoi(parts[0])
+		port, err2 := strconv.Atoi(parts[1])
+		prio, err3 := strconv.Atoi(r.Prio)
+		if r.Prio == "" {
+			prio, err3 = 0, nil
+		}
+		if err1 != nil || err2 != nil || err3 != nil {
+			continue
+		}
+		out = append(out, SRV{ID: r.ID, Name: r.Name, Target: strings.TrimSuffix(parts[2], "."), Priority: prio, Weight: weight, Port: port})
+	}
+	return out, nil
+}
+
+func (p *porkbun) AddSRV(ctx context.Context, domain string, r SRV) (SRV, error) {
+	content := strconv.Itoa(r.Weight) + " " + strconv.Itoa(r.Port) + " " + r.Target
+	id, err := p.create(ctx, domain, "SRV", r.Name, content, "prio", strconv.Itoa(r.Priority))
+	if err != nil {
+		return SRV{}, err
+	}
+	r.ID = id
+	return r, nil
+}
+
+func (p *porkbun) deleteRecord(ctx context.Context, domain, id string) error {
 	if _, err := strconv.ParseUint(id, 10, 64); err != nil {
 		return fmt.Errorf("%q is not one of Porkbun's record IDs", id)
 	}

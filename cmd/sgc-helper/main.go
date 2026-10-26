@@ -118,6 +118,8 @@ func runService() error {
 			Restart:              restartDevice,
 			StartUpdate:          startUpdate,
 			InstallPackages:      installPackages,
+			PublicBans:           publicBans,
+			PublicUnban:          publicUnban,
 			FirewallChange:       startFirewallChange,
 			FirewallConfirm:      confirmFirewallChange,
 			FirewallUndo:         undoFirewallChange,

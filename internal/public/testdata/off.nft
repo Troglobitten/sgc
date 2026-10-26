@@ -1,0 +1,3 @@
+#!/usr/sbin/nft -f
+# Written by SGC: no services are reachable from the internet.
+destroy table inet sgc_public

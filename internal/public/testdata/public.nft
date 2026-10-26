@@ -1,0 +1,99 @@
+#!/usr/sbin/nft -f
+# Written by SGC. Do not edit: SGC replaces this file.
+# Traffic from the internet to services the owner made public (docs/design.md §14).
+
+add table inet sgc_public
+# fail2ban's bans (it adds them through /etc/fail2ban/action.d/sgc.conf); kept when the rest is replaced.
+add set inet sgc_public banned4 { type ipv4_addr; flags timeout; }
+destroy chain inet sgc_public input
+destroy chain inet sgc_public visitors
+destroy set inet sgc_public inside4
+destroy set inet sgc_public allow4
+destroy set inet sgc_public blocked4
+destroy set inet sgc_public countries4
+destroy set inet sgc_public public_tcp
+destroy set inet sgc_public public_udp
+destroy set inet sgc_public closed_tcp
+destroy set inet sgc_public closed_udp
+destroy set inet sgc_public new4
+table inet sgc_public {
+	set inside4 {
+		type ipv4_addr
+		flags interval
+		elements = {
+			10.0.0.0-10.255.255.255, 169.254.0.0-169.254.255.255, 172.16.0.0-172.31.255.255, 192.168.0.0-192.168.255.255,
+		}
+	}
+	set allow4 {
+		type ipv4_addr
+		flags interval
+		elements = {
+			198.51.100.7, 203.0.113.0-203.0.113.15,
+		}
+	}
+	set blocked4 {
+		type ipv4_addr
+		flags interval
+		elements = {
+			1.2.3.0-1.2.3.255, 5.6.7.8,
+		}
+	}
+	set countries4 {
+		type ipv4_addr
+		flags interval
+		elements = {
+			2.56.0.0-2.56.3.255,
+		}
+	}
+	set public_tcp {
+		type inet_service
+		elements = {
+			8446, 25565,
+		}
+	}
+	set public_udp {
+		type inet_service
+		elements = {
+			27016,
+		}
+	}
+	set closed_tcp {
+		type inet_service
+		elements = {
+			7777,
+		}
+	}
+	set closed_udp {
+		type inet_service
+	}
+	set new4 {
+		type ipv4_addr
+		size 65535
+		flags dynamic,timeout
+		timeout 5m
+	}
+	# What a visitor from the internet must get past.
+	chain visitors {
+		ip saddr @allow4 meta mark set 0x53474301 accept
+		ip saddr @banned4 counter drop
+		ip saddr @blocked4 counter drop
+		ip saddr != @countries4 counter drop
+		ct state new add @new4 { ip saddr limit rate over 120/minute burst 120 packets } counter drop
+		meta mark set 0x53474301
+	}
+	chain input {
+		type filter hook input priority filter - 10; policy accept;
+		# IPv4 only, from outside only: nothing below can touch the device itself, the home
+		# network or the VPN. (FireHOL's level 1 lists 127.0.0.0/8 among its bogons.)
+		iif "lo" return
+		meta nfproto != ipv4 return
+		ip saddr @inside4 return
+		# Answers to what the device itself asked for.
+		ct direction reply return
+		tcp dport @public_tcp jump visitors
+		udp dport @public_udp jump visitors
+		# Traefik's other ports, connections already open included: a service just closed stops here.
+		tcp dport @closed_tcp counter drop
+		udp dport @closed_udp counter drop
+	}
+}

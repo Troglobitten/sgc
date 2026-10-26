@@ -18,6 +18,9 @@ import (
 //	export-schema2.age   SGC 0.6.0: admin, history, settings
 //	export-schema3.age   SGC 0.8.0: adds SSH keys, and the settings for the
 //	                     firewall and for "keys only"
+//	export-schema7.age   SGC 0.16.0: services, people, the VPN, backups
+//	export-schema8.age   SGC 0.20.0: services made public, their names for
+//	                     SRV records, and the settings for internet access
 //
 // They are kept forever: every later SGC must still be able to restore them,
 // which is the promise "a newer SGC can import an older export". When the
@@ -32,6 +35,7 @@ const (
 	fixtureFile       = "testdata/export-schema2.age"
 	fixtureSchema3    = "testdata/export-schema3.age"
 	fixtureSchema7    = "testdata/export-schema7.age"
+	fixtureSchema8    = "testdata/export-schema8.age"
 	fixturePassphrase = "fixture passphrase, not a secret"
 )
 
@@ -106,6 +110,50 @@ func TestRestoresAnExportMadeBySGC060(t *testing.T) {
 	var keys int
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM ssh_key").Scan(&keys); err != nil || keys != 0 {
 		t.Errorf("SSH keys = %d, %v", keys, err)
+	}
+}
+
+func TestRestoresAnExportMadeBySGC0200(t *testing.T) {
+	ctx := context.Background()
+	file, err := os.ReadFile(fixtureSchema8)
+	if err != nil {
+		t.Fatalf("the fixture is missing: %v", err)
+	}
+	targetDir := t.TempDir()
+	manifest, err := Stage(ctx, bytes.NewReader(file), fixturePassphrase, targetDir)
+	if err != nil {
+		t.Fatalf("an export made by SGC 0.20.0 can no longer be restored: %v", err)
+	}
+	if manifest.SGCVersion != "0.20.0" || manifest.SchemaVersion != 8 {
+		t.Errorf("manifest = %+v", manifest)
+	}
+	if err := Confirm(targetDir, manifest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyStaged(targetDir); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open(ctx, filepath.Join(targetDir, layout.DatabaseFile))
+	if err != nil {
+		t.Fatalf("open the restored database: %v", err)
+	}
+	defer db.Close()
+	for query, want := range map[string]string{
+		// What travels: which services are public and how, the owner's
+		// settings for visitors, the records SGC made (so that it can remove
+		// them). Internet access itself is switched off by SGC as it starts
+		// on a restored device (publiccontrol.MarkRestored), not here.
+		"SELECT exposure || ' ' || proxy_protocol || ' ' || srv_service FROM service WHERE name = 'game'": "public 1 minecraft",
+		"SELECT value FROM setting WHERE key = 'public.enabled'":                                          "true",
+		"SELECT json_extract(value, '$.countries[0]') FROM setting WHERE key = 'public.settings'":         "EE",
+		"SELECT json_extract(value, '$[0].name') FROM setting WHERE key = 'public.records'":               "game.domain.tld",
+		// What does not: how this device's downloads and look at the names went.
+		"SELECT COUNT(*) FROM setting WHERE key IN ('public.lists', 'public.state')": "0",
+	} {
+		var got string
+		if err := db.QueryRowContext(ctx, query).Scan(&got); err != nil || got != want {
+			t.Errorf("%s = %q, %v; want %q", query, got, err, want)
+		}
 	}
 }
 

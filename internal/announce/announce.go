@@ -174,6 +174,9 @@ func (s *Service) Repin(ctx context.Context, actor, remote string, id int64) err
 	var label string
 	s.cfg.DB.QueryRowContext(ctx, "SELECT label FROM announce_token WHERE id = ?", id).Scan(&label)
 	s.record(ctx, actor, audit.ActionTokenRepinned, label+": the next announcement pins it to its address", remote)
+	// Whatever announces next with this token is not known yet: its public
+	// services stay closed until the owner opens them again.
+	s.cfg.Services.CloseToken(ctx, actor, remote, id, "its server was marked as moved")
 	return nil
 }
 

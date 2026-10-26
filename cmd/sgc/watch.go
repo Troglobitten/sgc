@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Troglobitten/sgc/internal/backups"
@@ -34,6 +35,29 @@ type watched struct {
 // looked at once a minute (internal/notify).
 func (w watched) conditions() map[string]notify.Condition {
 	return map[string]notify.Condition{
+		// Internet access (docs/design.md §14): a public name that does not
+		// point at the home, a list switched on that has not been fetched
+		// for days.
+		"internet": func(ctx context.Context) ([]notify.Finding, error) {
+			if !w.named.public.On(ctx) {
+				return nil, nil
+			}
+			status, err := w.named.public.Status(ctx)
+			if err != nil {
+				return nil, err
+			}
+			var out []notify.Finding
+			if status.Problem != "" {
+				out = append(out, notify.Finding{Key: "names", Event: notify.EventInternet, Severity: notify.Warning,
+					Title: "A public name is not as it should be", Body: status.Problem})
+			}
+			if stale := w.named.public.StaleLists(ctx); len(stale) > 0 {
+				out = append(out, notify.Finding{Key: "lists", Event: notify.EventInternet, Severity: notify.Warning,
+					Title: "Lists of attackers are out of date",
+					Body:  "SGC could not fetch " + strings.Join(stale, ", ") + " for days; the last ones it has stay in use. The System page, Internet, says why."})
+			}
+			return out, nil
+		},
 		"certificate": func(ctx context.Context) ([]notify.Finding, error) {
 			status, err := w.cert.Status(ctx)
 			if err != nil {

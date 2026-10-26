@@ -147,6 +147,20 @@ type settings struct {
 	start, end          string
 }
 
+// Window returns when the window starts and ends, in minutes after midnight
+// of the device's own time, whether or not it is switched on: other parts
+// do their daily work at its time (FireHOL's lists, internal/publiccontrol).
+func Window(ctx context.Context, db *sql.DB) (start, end int, err error) {
+	s := &Service{cfg: Config{DB: db}}
+	cfg, err := s.settings(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	start, _ = minutes(cfg.start)
+	end, _ = minutes(cfg.end)
+	return start, end, nil
+}
+
 func (s *Service) settings(ctx context.Context) (settings, error) {
 	cfg := settings{start: DefaultStart, end: DefaultEnd}
 	for key, target := range map[string]*string{SettingStart: &cfg.start, SettingEnd: &cfg.end} {

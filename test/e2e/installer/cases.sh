@@ -71,6 +71,14 @@
 #   gate           SGC's login in front of a service: the way to the
 #                  sign-in and back, a pass for that name only, a way back
 #                  that works once, a person whose login lacks the service
+#   public         internet access: off until switched on; a website, a TCP
+#                  and a UDP service made public through the door and their
+#                  own ports (public names and SRV records at the stand-in),
+#                  nothing else reachable; request and connection limits,
+#                  FireHOL's lists and the allow list, the country filter;
+#                  SGC's login from the internet; fail2ban banning and the
+#                  page lifting the ban; an announcement that closes a public
+#                  service; closing cuts what is open; the doctor
 #   notify         ntfy (a stand-in), a service that stops answering in the
 #                  bell, as a banner and at ntfy, and gone when it answers
 #                  again; the logs of SGC's parts
@@ -419,6 +427,8 @@ authority_address=127.0.0.1:9144
 # Where the stand-in keeps the certificate its two authorities show. SGC is
 # told to trust it, so SGC's user must be able to read it.
 standin_state=/etc/sgc-test
+# Where it publishes FireHOL's and DB-IP's lists (made by make_standin_lists).
+lists_address=127.0.0.1:9600
 
 # What makes SGC ask this machine instead of the outside world: the lines of
 # its service's environment.
@@ -430,6 +440,8 @@ standin_environment=(
     "SGC_ACME_DNS=$dns_address"
     "SGC_PUBLIC_IP_URL=http://$zone_address/ip"
     "SGC_ICON_PACK_URL=http://127.0.0.1:9500/icons/icons.json"
+    "SGC_FIREHOL_URL=http://$lists_address/firehol/"
+    "SGC_DBIP_URL=http://$lists_address/dbip/"
 )
 
 # install_standin: puts the program in place. Copied as a program: what the
@@ -445,7 +457,7 @@ start_standin() {
     sudo systemctl reset-failed sgc-test-standin.service 2>/dev/null || true
     sudo systemd-run --quiet --unit sgc-test-standin "$standin" --state "$standin_state" \
         --listen "$zone_address" --dns "$dns_address" --trial "$trial_address" --authority "$authority_address" \
-        --username "$zone_user" --api-key "$1" --domain domain.tld || return 1
+        --lists "$lists_address" --username "$zone_user" --api-key "$1" --domain domain.tld || return 1
     wait_for 10 curl -s -o /dev/null "http://$zone_address/" &&
         wait_for 10 curl -sk -o /dev/null "https://$authority_address/dir"
 }
@@ -703,6 +715,208 @@ banner_gone() { [ "$(http GET /api/notifications/summary)" = 200 ] && ! grep -q 
 # shellcheck disable=SC2317  # called indirectly through wait_for()
 notified() { [ "$(http GET /api/notifications)" = 200 ] && grep -q "$1" /tmp/sgc-test-body; }
 
+# --- Internet access -----------------------------------------------------------
+
+# The proxy's door for the internet: the router forwards the internet's
+# port 443 here. In the test the public neighbour plays the internet and
+# comes straight to this port.
+door_port=8446
+
+# door_answers: something speaks TLS on the door (asked from this machine).
+# shellcheck disable=SC2317  # called indirectly through wait_for()
+door_answers() { echo | timeout 5 openssl s_client -connect "127.0.0.1:$door_port" -servername web.domain.tld >/dev/null 2>&1; }
+
+# from_outside <label> <path> [curl arguments...]: the HTTP status the
+# internet gets for label.domain.tld on the door, 000 when nothing answers.
+# The page goes to /tmp/sgc-test-outside.
+from_outside() {
+    local label="$1" path="$2"
+    shift 2
+    sudo ip netns exec "$outside_net" curl -sk --max-time 5 -o /tmp/sgc-test-outside -w '%{http_code}' "$@" \
+        --resolve "$label.domain.tld:$door_port:$outside_gateway" "https://$label.domain.tld:$door_port$path"
+}
+
+# outside_gets <label> <path> <status> [curl arguments...]: the internet gets that status.
+# shellcheck disable=SC2317  # called indirectly through check() and wait_for()
+outside_gets() {
+    local label="$1" path="$2" wanted="$3"
+    shift 3
+    [ "$(from_outside "$label" "$path" "$@")" = "$wanted" ]
+}
+
+# outside_refused <label>: the internet gets no answer at all on the door.
+# shellcheck disable=SC2317  # called indirectly through check() and wait_for()
+outside_refused() { outside_gets "$1" / 000; }
+
+# outside_answered <label>: the internet gets some answer on the door.
+# shellcheck disable=SC2317  # called indirectly through check() and wait_for()
+outside_answered() { ! outside_refused "$1"; }
+
+# outside_sees <label> <path> <text> [curl arguments...]: the internet gets a page with the text.
+# shellcheck disable=SC2317  # called indirectly through check() and wait_for()
+outside_sees() {
+    local label="$1" path="$2" text="$3"
+    shift 3
+    from_outside "$label" "$path" "$@" >/dev/null && sudo grep -qi "$text" /tmp/sgc-test-outside
+}
+
+# outside_redirected <label> <path> <text>: the internet is sent to an address containing the text.
+# shellcheck disable=SC2317  # called indirectly through check() and wait_for()
+outside_redirected() {
+    local to
+    to="$(sudo ip netns exec "$outside_net" curl -sk --max-time 5 -o /dev/null -w '%{redirect_url}' \
+        --resolve "$1.domain.tld:$door_port:$outside_gateway" "https://$1.domain.tld:$door_port$2")"
+    [[ "$to" == *"$3"* ]]
+}
+
+# outside_greeted <port>: the internet connects to the port and is greeted
+# by the TCP server in the home neighbour.
+# shellcheck disable=SC2317  # called indirectly through check() and wait_for()
+outside_greeted() {
+    sudo ip netns exec "$outside_net" timeout 5 bash -c "exec 3<>/dev/tcp/$outside_gateway/$1; read -r line <&3; [ \"\$line\" = hello-from-the-game ]"
+}
+
+# outside_echoed <port>: a datagram from the internet to the port comes back
+# from the UDP server in the home neighbour.
+# shellcheck disable=SC2317  # called indirectly through check() and wait_for()
+outside_echoed() {
+    sudo ip netns exec "$outside_net" python3 -c '
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(2)
+s.sendto(b"hello", (sys.argv[1], int(sys.argv[2])))
+sys.exit(0 if s.recvfrom(2048)[0] == b"echo:hello" else 1)
+' "$outside_gateway" "$1"
+}
+# shellcheck disable=SC2317  # called indirectly through check()
+outside_not_echoed() { ! outside_echoed "$@"; }
+
+# sign_in_from_outside <username> <password> [cookie jar]: the status of a
+# sign-in at SGC's login on the website, from the internet.
+sign_in_from_outside() {
+    sudo ip netns exec "$outside_net" curl -sk --max-time 10 -o /dev/null -w '%{http_code}' -c "${3:-/dev/null}" \
+        --resolve "web.domain.tld:$door_port:$outside_gateway" --data-urlencode "username=$1" --data-urlencode "password=$2" \
+        --data-urlencode "rd=/" "https://web.domain.tld:$door_port/.sgc-gate/sign-in"
+}
+# shellcheck disable=SC2317  # called indirectly through check()
+sign_in_gives() { [ "$(sign_in_from_outside "$1" "$2" "${4:-/dev/null}")" = "$3" ]; }
+
+# zone_has <a|srv> <name> <text>: the stand-in Zone.eu holds a record of
+# that kind with that name, whose fields contain the text.
+# shellcheck disable=SC2317  # called indirectly through check() and wait_for()
+zone_has() {
+    curl -s -u "$zone_user:$zone_key" "http://$zone_address/v2/dns/domain.tld/$1" | python3 -c '
+import json, sys
+records = json.load(sys.stdin)
+sys.exit(0 if any(r["name"] == sys.argv[1] and sys.argv[2] in json.dumps(r) for r in records) else 1)
+' "$2" "$3"
+}
+# shellcheck disable=SC2317  # called indirectly through wait_for()
+zone_lacks() { ! zone_has "$@"; }
+
+# banned <address> <jail>: the page lists the address as banned by that jail.
+# shellcheck disable=SC2317  # called indirectly through wait_for()
+banned() { [ "$(http GET /api/public/bans)" = 200 ] && grep -q "\"address\":\"$1\",\"jail\":\"$2\"" /tmp/sgc-test-body; }
+
+# only_sgcs_jails: fail2ban runs SGC's two jails, and not Debian's for SSH.
+# shellcheck disable=SC2317  # called indirectly through check()
+only_sgcs_jails() {
+    local jails
+    jails="$(sudo fail2ban-client status 2>&1)"
+    [[ "$jails" == *sgc-signin* && "$jails" == *sgc-door* && "$jails" != *sshd* ]]
+}
+
+# public_settings <requests> <connections> <allow list> <levels> <country mode> <countries> <fail2ban on>:
+# the settings for visitors from the internet, as the page sends them.
+public_settings() {
+    printf '{"requestsPerMinute":%s,"connectionsPerMinute":%s,"allow":[%s],"levels":[%s],"countryMode":"%s","countries":[%s],"fail2ban":{"enabled":%s,"signIns":3,"refused":5,"findMinutes":1,"banMinutes":10}}' \
+        "$1" "$2" "$3" "$4" "$5" "$6" "$7"
+}
+default_public_settings="$(public_settings 600 120 '' '' '' '' false)"
+
+# service_body <name> <kind> <upstream port> <listen port> <protected> [SRV name] [UDP quiet seconds]:
+# a proxied service in the home neighbour, as the page sends it.
+service_body() {
+    printf '{"name":"%s","title":"","kind":"%s","mode":"proxied","upstreamIp":"%s","upstreamPort":%s,"scheme":"http","verifyTls":false,"listenPort":%s,"category":"Test","protected":%s,"enabled":true,"proxyProtocol":false,"udpTimeout":%s,"srvService":"%s"}' \
+        "$1" "$2" "$inside_peer" "$3" "$4" "$5" "${7:-0}" "${6:-}"
+}
+
+# opening <password>: the body that opens a service to the internet.
+opening() { printf '{"public":true,"password":"%s"}' "$1"; }
+closing='{"public":false,"password":""}'
+
+# make_standin_lists: what the stand-in publishes as FireHOL's lists and
+# DB-IP's country list. Level 2 names the public neighbour; the country
+# list puts it in the Netherlands. Made-up addresses only. Level 4 is
+# missing on purpose.
+make_standin_lists() {
+    local dir="$standin_state/lists" level
+    sudo mkdir -p "$dir/firehol" "$dir/dbip"
+    for level in 1 2 3; do
+        {
+            printf '#\n# firehol_level%s\n#\n198.51.100.0/24\n' "$level"
+            if [ "$level" = 2 ]; then echo "$outside_peer"; fi
+        } | sudo tee "$dir/firehol/firehol_level$level.netset" >/dev/null
+    done
+    sudo rm -f "$dir/firehol/firehol_level4.netset"
+    python3 -c '
+import gzip, sys
+rows = ["192.0.2.0,192.0.2.255,EE", "203.0.113.0,203.0.113.255,NL"]
+rows += ["%d.%d.0.0,%d.%d.255.255,ZZ" % (100 + i // 250, i % 250, 100 + i // 250, i % 250) for i in range(1200)]
+sys.stdout.buffer.write(gzip.compress(("\n".join(rows) + "\n").encode()))
+' | sudo tee "$dir/dbip/dbip-country-lite-$(date -u +%Y-%m).csv.gz" >/dev/null
+}
+
+# start_udp_neighbour <port>: a UDP server in the home neighbour that
+# answers every datagram.
+start_udp_neighbour() {
+    sudo systemctl stop sgc-test-udp.service 2>/dev/null || true
+    sudo systemctl reset-failed sgc-test-udp.service 2>/dev/null || true
+    sudo systemd-run --quiet --unit sgc-test-udp ip netns exec "$inside_net" python3 -c '
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.bind((sys.argv[1], int(sys.argv[2])))
+while True:
+    data, peer = s.recvfrom(2048)
+    s.sendto(b"echo:" + data, peer)
+' "$inside_peer" "$1"
+}
+
+# start_echo_neighbour <port>: a TCP server in the home neighbour that
+# keeps each connection open and answers every line.
+start_echo_neighbour() {
+    sudo systemctl stop sgc-test-echo.service 2>/dev/null || true
+    sudo systemctl reset-failed sgc-test-echo.service 2>/dev/null || true
+    sudo systemd-run --quiet --unit sgc-test-echo ip netns exec "$inside_net" python3 -c '
+import socketserver, sys
+class Echo(socketserver.StreamRequestHandler):
+    def handle(self):
+        for line in self.rfile:
+            self.wfile.write(line)
+class Server(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+Server((sys.argv[1], int(sys.argv[2])), Echo).serve_forever()
+' "$inside_peer" "$1"
+}
+
+# A visitor that keeps a connection open, sending a line a second: prints
+# "cut" when no answer comes any more, "open" if it lasts twenty seconds.
+hold_connection='
+import socket, sys, time
+s = socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=5)
+s.settimeout(3)
+for _ in range(20):
+    try:
+        s.sendall(b"ping\n")
+        if not s.recv(100):
+            print("cut (closed)"); sys.exit(0)
+    except OSError as e:
+        print("cut (%s)" % e); sys.exit(0)
+    time.sleep(1)
+print("open")
+'
+
 case "$mode" in
 refused)
     echo "Altered files must be refused before anything is installed"
@@ -745,6 +959,15 @@ accepted)
     check "and the program it copies with" test -x /usr/bin/rsync
     check "it is not part of start-up" sh -c '! systemctl is-enabled --quiet log2ram.service && ! systemctl is-enabled --quiet log2ram-daily.timer'
     check "the logs are on the disk" logs_on_disk
+
+    echo "fail2ban came with it too, switched off"
+    check "the installer says that it installs fail2ban" grep -q '^Installing fail2ban from Debian' /tmp/install.log
+    check "and that it is switched off" grep -q '^fail2ban is installed and switched off' /tmp/install.log
+    check "Debian's package is installed" test -x /usr/bin/fail2ban-client
+    check "it does not run" sh -c '! systemctl is-active --quiet fail2ban.service'
+    check "it is not part of start-up" sh -c '! systemctl is-enabled --quiet fail2ban.service'
+    check "SGC's settings for it keep Debian's SSH jail off" sudo grep -Pzq '\[sshd\]\nenabled = false' /etc/fail2ban/jail.d/zz-sgc.local
+    check "internet access is off" sh -c "[ ! -e /etc/sgc/public.nft ] && ! sudo /usr/sbin/nft list table inet sgc_public"
 
     echo "The installer hands over a one-time setup link"
     link="$(grep -o 'https://[^ ]*/setup#[A-Za-z0-9_-]*' /tmp/install.log)"
@@ -815,6 +1038,7 @@ accepted)
     check "no new setup link was printed" sh -c "! grep -q '/setup#' /tmp/install2.log"
     check "and AdGuard Home is not installed a second time" sh -c "! grep -q 'Installing AdGuard Home' /tmp/install2.log"
     check "nor log2ram" sh -c "! grep -q 'Installing log2ram' /tmp/install2.log"
+    check "nor fail2ban" sh -c "! grep -q 'Installing fail2ban' /tmp/install2.log"
     check "service is still running" systemctl is-active --quiet sgc
     sleep 1
     expect_status "the earlier sign-in still works" 200 GET /api/health
@@ -1908,6 +2132,15 @@ restore)
     check "and switched on" body_has '"enabled":true'
     expect_status "the notifications are available" 200 GET /api/notifications/settings
     check "with ntfy as it was set up" body_has '"topic":"sgc-test-made-up-topic"'
+
+    echo "Internet access was on on the old machine; here nothing is reachable from the internet unasked"
+    expect_status "the state of internet access is available" 200 GET /api/public
+    check "it is off" body_has '"wanted":false'
+    check "no rules for the internet are loaded" sh -c "[ ! -e /etc/sgc/public.nft ] && ! sudo /usr/sbin/nft list table inet sgc_public"
+    check "the proxy has no door for the internet" sh -c "! ss -Hltn sport = :$door_port | grep -q ."
+    check "the service that was public is closed" service_has game '"exposure":"lan"'
+    expect_in_audit "which is in the history" 'the device was restored from an export'
+    check "fail2ban is installed here, and off" sh -c "test -x /usr/bin/fail2ban-client && ! systemctl is-active --quiet fail2ban.service"
     check "service is running" systemctl is-active --quiet sgc
     check "the database is still private to sgc" sudo sh -c "[ \"\$(stat -c %U:%a /var/lib/sgc/sgc.db)\" = sgc:600 ]"
     check "nothing is left waiting to be restored" sudo sh -c "[ ! -e /var/lib/sgc/restore ]"
@@ -2001,6 +2234,20 @@ after-restart)
     check "no restart is needed right after one" body_has '"restartNeeded":false'
     expect_status "the certificate's state is available" 200 GET /api/certificate
     check "the certificate is still there after the restart" body_has '"forDomain":true'
+
+    echo "Internet access, after the restart"
+    check "the rules for the internet were loaded at start-up" sudo /usr/sbin/nft list chain inet sgc_public input
+    check "by the unit made for that" systemctl is-active --quiet sgc-public.service
+    check "after the firewall's rules" sh -c "[ \"\$(systemctl show -p ActiveEnterTimestampMonotonic --value sgc-firewall.service)\" -le \"\$(systemctl show -p ActiveEnterTimestampMonotonic --value sgc-public.service)\" ]"
+    check "and before the network came up" sh -c "[ \"\$(systemctl show -p ActiveEnterTimestampMonotonic --value sgc-public.service)\" -lt \"\$(systemctl show -p ActiveEnterTimestampMonotonic --value network-pre.target)\" ]"
+    if wait_for 60 door_answers; then pass "the door answers again"; else fail "the door does not answer after the restart"; fi
+    if ! neighbour "$outside_net" "$outside_gateway" "$outside_peer" || ! neighbour "$inside_net" "$inside_gateway" "$inside_peer"; then
+        fail "the stand-in neighbours could not be set up again"
+    fi
+    start_tcp_neighbour 25565
+    if wait_for 60 outside_greeted 25565; then pass "the public TCP service is reachable from the internet again"; else fail "the public TCP service is out of reach after the restart"; fi
+    check "SGC's page is not" does_not_reach "$outside_net" "$outside_gateway" 8443
+    check "nor SSH" does_not_reach "$outside_net" "$outside_gateway" 22
 
     echo "Logs in memory, after the restart"
     check "the logs are in memory" logs_in_memory
@@ -2190,6 +2437,7 @@ cli)
         indent <<<"$output"
     fi
     check "the firewall does not depend on SGC running" rules_loaded
+    check "nor does a public service: the internet still reaches it" outside_greeted 25565
     sudo systemctl start sgc
     if wait_for 30 firewall_is on; then pass "SGC is back"; else fail "SGC did not come back"; fi
 
@@ -2564,6 +2812,226 @@ gate)
     expect_status "the service comes out from behind the login again" 200 POST "/api/services/$web_id" \
         "{\"name\":\"web\",\"title\":\"Web\",\"kind\":\"http\",\"mode\":\"proxied\",\"upstreamIp\":\"$inside_peer\",\"upstreamPort\":8080,\"scheme\":\"http\",\"verifyTls\":false,\"listenPort\":0,\"category\":\"Test\",\"protected\":false,\"enabled\":true}"
     http POST "/api/people/$sam_id/remove" '{}' >/dev/null
+    ;;
+
+public)
+    echo "Internet access: off until switched on (the public neighbour plays the internet)"
+    if ! neighbour "$outside_net" "$outside_gateway" "$outside_peer" || ! neighbour "$inside_net" "$inside_gateway" "$inside_peer"; then
+        fail "the stand-in neighbours could not be set up"
+    fi
+    start_web_neighbour
+    start_tcp_neighbour 25565
+    start_udp_neighbour 9987
+    start_echo_neighbour 25567
+    make_standin_lists
+    password="$(cat "$password_file")"
+    web_body() { # web_body <protected>
+        printf '{"name":"web","title":"Web","kind":"http","mode":"proxied","upstreamIp":"%s","upstreamPort":8080,"scheme":"http","verifyTls":false,"listenPort":0,"category":"Test","protected":%s,"enabled":true,"proxyProtocol":false,"udpTimeout":0,"srvService":""}' "$inside_peer" "$1"
+    }
+    expect_status "the state of internet access is available" 200 GET /api/public
+    check "it is off" body_has '"wanted":false'
+    check "and the door is not there" sh -c "! ss -Hltn sport = :$door_port | grep -q ."
+    web_id="$(service_id web)"
+    expect_status "a service cannot be made public while it is off" 400 POST "/api/services/$web_id/public" "$(opening "$password")"
+    expect_status "switching on needs the admin password again" 403 POST /api/public/enabled '{"enabled":true,"password":"not-the-password"}'
+    expect_status "switching on" 200 POST /api/public/enabled "{\"enabled\":true,\"password\":\"$password\"}"
+    if wait_for 30 door_answers; then pass "the proxy has its door for the internet, on port $door_port"; else fail "the door does not answer"; fi
+    check "the rules for the internet are loaded" sudo /usr/sbin/nft list chain inet sgc_public input
+    check "and kept for start-up" sudo test -s /etc/sgc/public.nft
+    expect_status "the firewall's state is available" 200 GET /api/firewall
+    check "it says it lags behind internet access" body_has 'internet access'
+    expect_status "bringing the firewall up to date" 202 POST /api/firewall/change '{"enabled":true,"again":true}'
+    expect_status "confirmed" 200 POST /api/firewall/confirm '{}'
+    check "the firewall lets in what the rules for the internet mark" sh -c "sudo /usr/sbin/nft list table inet sgc | grep -q 'meta mark 0x53474301 accept'"
+    check "nothing is public yet: the internet gets nothing on the door" outside_refused web
+    check "nor on the TCP service's port" does_not_reach "$outside_net" "$outside_gateway" 25565
+    check "nor SGC's page" does_not_reach "$outside_net" "$outside_gateway" 8443
+
+    echo "A website made public"
+    expect_status "making it public needs the admin password again" 403 POST "/api/services/$web_id/public" "$(opening not-the-password)"
+    expect_status "made public" 200 POST "/api/services/$web_id/public" "$(opening "$password")"
+    check "the page says so" service_has web '"exposure":"public"'
+    if wait_for 30 outside_sees web / 'served by the test neighbour'; then pass "the internet reaches it through the door"; else fail "the website does not answer from the internet"; fi
+    check "with HSTS" sh -c "sudo ip netns exec $outside_net curl -sk -D - -o /dev/null --resolve web.domain.tld:$door_port:$outside_gateway https://web.domain.tld:$door_port/ | grep -qi strict-transport-security"
+    check "and from home as before" through_proxy web / 'served by the test neighbour'
+    expect_status "a service for home only" 200 POST /api/services "$(service_body home http 8080 0 false)"
+    wait_for 30 through_proxy home / 'served' || true
+    check "asked for by name on the door, a service for home only gives nothing" outside_gets home / 404
+    check "nor does SGC's own name" outside_gets sgc /api/state 404
+    check "nor AdGuard Home's" outside_gets adguard / 404
+    check "nor a name SGC does not know" outside_gets nothing / 404
+    check "the door works from home too (a router that loops a home request back)" reaches "$inside_net" "$inside_gateway" "$door_port"
+    if wait_for 60 zone_has a web.domain.tld 203.0.113.7; then pass "its public name points at the home's address, at the stand-in Zone.eu"; else fail "no public name for web"; fi
+
+    echo "A TCP service (not a website) made public, with a name for SRV records"
+    game_id="$(service_id game)"
+    expect_status "it is given a name for SRV records" 200 POST "/api/services/$game_id" "$(service_body game tcp 25565 25565 false minecraft)"
+    expect_status "made public" 200 POST "/api/services/$game_id/public" "$(opening "$password")"
+    if wait_for 30 outside_greeted 25565; then pass "the internet reaches it on its own port"; else fail "the TCP service does not answer from the internet"; fi
+    if wait_for 60 zone_has srv _minecraft._tcp.game.domain.tld 25565; then pass "its SRV record names the port, at the stand-in Zone.eu"; else fail "no SRV record for the TCP service"; fi
+    check "and its own public name" zone_has a game.domain.tld 203.0.113.7
+    check "SGC's page is still refused from the internet" does_not_reach "$outside_net" "$outside_gateway" 8443
+
+    echo "A UDP service made public"
+    expect_status "a UDP service through the gateway" 200 POST /api/services "$(service_body talk udp 9987 9988 false voice 60)"
+    talk_id="$(json_get "d['id']")"
+    wait_for 30 sh -c "ss -Hlun sport = :9988 | grep -q ." || true
+    check "not public: the internet gets no answer" outside_not_echoed 9988
+    expect_status "made public" 200 POST "/api/services/$talk_id/public" "$(opening "$password")"
+    if wait_for 30 outside_echoed 9988; then pass "the internet gets its answers"; else fail "the UDP service does not answer from the internet"; fi
+    if wait_for 60 zone_has srv _voice._udp.talk.domain.tld 9988; then pass "with its SRV record"; else fail "no SRV record for the UDP service"; fi
+    voice_id="$(service_id voice)"
+    expect_status "one that does not pass through the gateway cannot be made public" 400 POST "/api/services/$voice_id/public" "$(opening "$password")"
+    expect_status "the UDP service closed" 200 POST "/api/services/$talk_id/public" "$closing"
+    if wait_for 30 outside_not_echoed 9988; then pass "and the internet gets no answer again"; else fail "the closed UDP service still answers the internet"; fi
+    http POST "/api/services/$talk_id/remove" '{}' >/dev/null
+
+    echo "Limits for visitors from the internet"
+    expect_status "ten requests a minute per visitor" 200 POST /api/public/settings "$(public_settings 10 120 '' '' '' '' false)"
+    sleep 3
+    throttled=0
+    for _ in $(seq 1 16); do [ "$(from_outside web /)" = 429 ] && throttled=$((throttled + 1)); done
+    if [ "$throttled" -gt 0 ]; then pass "more are answered 429 ($throttled of 16)"; else fail "sixteen quick requests were all answered"; fi
+    expect_status "five new connections a minute per visitor" 200 POST /api/public/settings "$(public_settings 600 5 '' '' '' '' false)"
+    made=0
+    for _ in $(seq 1 12); do reaches "$outside_net" "$outside_gateway" 25565 && made=$((made + 1)); done
+    if [ "$made" -ge 1 ] && [ "$made" -le 6 ]; then pass "more are dropped ($made of 12 got through)"; else fail "$made of 12 new connections got through"; fi
+    check "home is not limited" reaches "$inside_net" "$inside_gateway" 25565
+    expect_status "the limits back to what SGC starts with" 200 POST /api/public/settings "$default_public_settings"
+
+    echo "FireHOL's lists and the allow list"
+    expect_status "a list the stand-in does not have is refused" 400 POST /api/public/settings "$(public_settings 600 120 '' '"firehol_level4"' '' '' false)"
+    expect_status "level 2, which names the neighbour, switched on" 200 POST /api/public/settings "$(public_settings 600 120 '' '"firehol_level2"' '' '' false)"
+    check "it was fetched from the stand-in" sudo test -s /var/lib/sgc/public/firehol_level2.netset
+    if wait_for 20 outside_refused web; then pass "a visitor on the list gets nothing"; else fail "a listed address still gets in"; fi
+    check "home addresses are never on it" through_proxy web / 'served'
+    expect_status "the neighbour on the allow list" 200 POST /api/public/settings "$(public_settings 600 120 '"203.0.113.2"' '"firehol_level2"' '' '' false)"
+    if wait_for 20 outside_gets web / 200; then pass "the allow list comes first"; else fail "the allow list did not let the neighbour in"; fi
+    expect_status "a range wider than /8 on the allow list is refused" 400 POST /api/public/settings "$(public_settings 600 120 '"0.0.0.0/1"' '' '' '' false)"
+
+    echo "Countries (the stand-in's country list puts the neighbour in NL)"
+    expect_status "only visitors from Estonia" 200 POST /api/public/settings "$(public_settings 600 120 '' '' allow '"EE"' false)"
+    check "the country list was fetched from the stand-in" sudo test -s /var/lib/sgc/public/dbip-country.csv.gz
+    if wait_for 20 outside_refused web; then pass "a visitor from elsewhere gets nothing"; else fail "a visitor from the Netherlands got in"; fi
+    expect_status "visitors from anywhere but Estonia" 200 POST /api/public/settings "$(public_settings 600 120 '' '' block '"EE"' false)"
+    if wait_for 20 outside_gets web / 200; then pass "a visitor from elsewhere gets in"; else fail "a visitor from the Netherlands was refused"; fi
+    expect_status "visitors from anywhere but the Netherlands" 200 POST /api/public/settings "$(public_settings 600 120 '' '' block '"NL"' false)"
+    if wait_for 20 outside_refused web; then pass "a visitor from the Netherlands gets nothing"; else fail "a visitor from a blocked country got in"; fi
+    check "home is never affected" through_proxy web / 'served'
+    expect_status "the country filter off" 200 POST /api/public/settings "$default_public_settings"
+    if wait_for 20 outside_gets web / 200; then pass "and the visitor gets in again"; else fail "still refused with the filters off"; fi
+
+    echo "SGC's login, from the internet"
+    expect_status "the website put behind SGC's login" 200 POST "/api/services/$web_id" "$(web_body true)"
+    check "and still public" service_has web '"exposure":"public"'
+    if wait_for 30 outside_redirected web /movies '/.sgc-gate/sign-in?rd=%2Fmovies'; then
+        pass "a visitor without a pass is sent to the sign-in under the service's own name"
+    else fail "the sign-in from the internet is not under the service's own name"; fi
+    check "the sign-in page is there" outside_sees web /.sgc-gate/sign-in 'Sign in to'
+    expect_status "Kim, whose login has the website" 200 POST /api/people \
+        "{\"name\":\"Kim\",\"network\":\"services\",\"allServices\":false,\"serviceIds\":[$web_id],\"loginEnabled\":true,\"username\":\"kim\",\"password\":\"a-made-up-password\",\"expiresAt\":null,\"disabled\":false}"
+    kim_id="$(json_get "d['id']")"
+    check "Lee, whose login does not have it, is refused" sign_in_gives lee another-made-up-password 403
+    check "a wrong password is refused" sign_in_gives kim not-the-password 401
+    outside_jar="$HOME/sgc-test-outside-cookies"
+    rm -f "$outside_jar"
+    check "Kim signs in" sign_in_gives kim a-made-up-password 303 "$outside_jar"
+    check "and gets in with the pass" outside_sees web / 'served by the test neighbour' -b "$outside_jar"
+    check "the admin can sign in from the internet too" sign_in_gives "$username" "$password" 303
+    expect_in_audit "the history has the sign-in from the internet" 'from the internet (203.0.113.2)'
+
+    echo "fail2ban: repeat offenders from the internet are banned"
+    # Starting, fail2ban also reads what was logged within its window (one
+    # minute here): the refused requests of the checks above must be out of it.
+    sleep 65
+    expect_status "switched on: three failed sign-ins or five refused requests" 200 POST /api/public/settings "$(public_settings 600 120 '' '' '' '' true)"
+    check "it runs" systemctl is-active --quiet fail2ban
+    check "with SGC's two jails, and not Debian's for SSH" only_sgcs_jails
+    for _ in 1 2 3 4; do sign_in_from_outside kim not-the-password >/dev/null; done
+    if wait_for 30 banned 203.0.113.2 sgc-signin; then pass "wrong passwords from the internet get the address banned"; else fail "no ban after failed sign-ins"; fi
+    check "the banned address gets nothing" outside_refused web
+    check "home is not banned" reaches "$inside_net" "$inside_gateway" 443
+    expect_status "the ban is lifted in the page" 200 POST /api/public/unban '{"address":"203.0.113.2"}'
+    if wait_for 20 outside_answered web; then pass "and the address gets in again"; else fail "still banned after the unban"; fi
+    expect_in_audit "the history has the lifted ban" '"action":"public.unbanned"'
+    expect_status "the website out from behind the login" 200 POST "/api/services/$web_id" "$(web_body false)"
+    wait_for 30 outside_gets web / 200 || true
+    for _ in 1 2 3 4 5 6 7; do from_outside web /wp-login.php >/dev/null; done
+    if wait_for 30 banned 203.0.113.2 sgc-door; then pass "requests for what is not there get the address banned too"; else fail "no ban after refused requests"; fi
+    http POST /api/public/unban '{"address":"203.0.113.2"}' >/dev/null
+    expect_status "fail2ban switched off again" 200 POST /api/public/settings "$default_public_settings"
+    check "it is stopped" sh -c '! systemctl is-active --quiet fail2ban'
+    check "and is not part of start-up" sh -c '! systemctl is-enabled --quiet fail2ban'
+    http POST "/api/people/$kim_id/remove" '{}' >/dev/null
+
+    echo "An announcement never opens a service, and one that changes a public service closes it"
+    expect_status "a token for a server" 200 POST /api/tokens '{"label":"arcade server"}'
+    arcade_token="$(grep -o '"secret":"[^"]*"' /tmp/sgc-test-body | cut -d'"' -f4)"
+    answer="$(announce_from "$inside_net" "https://$inside_gateway:8443" "$arcade_token" -d service=arcade:8080)"
+    if [[ "$answer" == *"arcade: https://arcade.domain.tld"* ]]; then pass "it announces a website"; else fail "the announcement: $answer"; fi
+    check "which is for home only" service_has arcade '"exposure":"lan"'
+    arcade_id="$(service_id arcade)"
+    expect_status "the owner makes it public" 200 POST "/api/services/$arcade_id/public" "$(opening "$password")"
+    announce_from "$inside_net" "https://$inside_gateway:8443" "$arcade_token" -d service=arcade:8081 >/dev/null
+    check "announced anew with another port, it is closed" service_has arcade '"exposure":"lan"'
+    if wait_for 20 notified 'arcade was closed to the internet'; then pass "and the owner is told"; else fail "no notification about the closed service"; fi
+    expect_status "made public again" 200 POST "/api/services/$arcade_id/public" "$(opening "$password")"
+    http GET /api/tokens >/dev/null
+    tokens_id="$(json_get "[t['id'] for t in d if t['label'] == 'arcade server'][0]")"
+    expect_status "its token removed, the service kept" 200 POST "/api/tokens/$tokens_id/remove" '{"keep":true}'
+    check "closes it" service_has arcade '"exposure":"lan"'
+    http POST "/api/services/$arcade_id/remove" '{}' >/dev/null
+
+    echo "Closing cuts what is open"
+    sudo dd if=/dev/urandom of="$web_root/big.bin" bs=1M count=20 status=none
+    # -Y/-y: a download that gets nothing for ten seconds ends too (a
+    # connection the rules drop gets no end from the device).
+    sudo ip netns exec "$outside_net" curl -sk --limit-rate 100k --max-time 120 -Y 1 -y 10 -o /tmp/sgc-test-download \
+        --resolve "web.domain.tld:$door_port:$outside_gateway" "https://web.domain.tld:$door_port/big.bin" &
+    download=$!
+    sleep 3
+    expect_status "the website closed (no password asked)" 200 POST "/api/services/$web_id/public" "$closing"
+    closed_at="$(date +%s)"
+    wait "$download"
+    if [ $(($(date +%s) - closed_at)) -lt 30 ]; then pass "a download under way was cut"; else fail "a download under way carried on after closing"; fi
+    check "the website is not reachable from the internet any more" sh -c "! sudo ip netns exec $outside_net curl -sk --max-time 5 --resolve web.domain.tld:$door_port:$outside_gateway https://web.domain.tld:$door_port/ | grep -q served"
+    if wait_for 60 zone_lacks a web.domain.tld 203.0.113.7; then pass "its public name is removed"; else fail "the closed website still has a public name"; fi
+    expect_status "a service that keeps its connections open" 200 POST /api/services "$(service_body echo tcp 25567 25567 false)"
+    echo_id="$(json_get "d['id']")"
+    expect_status "made public" 200 POST "/api/services/$echo_id/public" "$(opening "$password")"
+    wait_for 30 reaches "$outside_net" "$outside_gateway" 25567 || true
+    # shellcheck disable=SC2024  # the file is the test's own, written as its user
+    sudo ip netns exec "$outside_net" python3 -c "$hold_connection" "$outside_gateway" 25567 >/tmp/sgc-test-hold 2>&1 &
+    holder=$!
+    sleep 3
+    expect_status "closed" 200 POST "/api/services/$echo_id/public" "$closing"
+    wait "$holder"
+    if grep -q '^cut' /tmp/sgc-test-hold; then pass "a connection from the internet that was open is cut"; else fail "an open connection carried on: $(cat /tmp/sgc-test-hold)"; fi
+    http POST "/api/services/$echo_id/remove" '{}' >/dev/null
+
+    echo "The doctor"
+    output="$(sudo sgc doctor 2>&1)"
+    for line in "The public door answers on port $door_port" "The firewall lets in what the rules for the internet allow" \
+        "The rules for the internet are loaded" "Public, if your router forwards them: game (port 25565/tcp"; do
+        if echo "$output" | grep -q "ok    $line"; then pass "it says: $line"; else
+            fail "it does not say: $line"
+            indent <<<"$output"
+        fi
+    done
+    sudo /usr/sbin/nft destroy table inet sgc_public
+    check "with the rules for the internet gone, the internet gets nothing" does_not_reach "$outside_net" "$outside_gateway" 25565
+    output="$(sudo sgc doctor 2>&1)"
+    if echo "$output" | grep -q 'FAIL  The rules for the internet are not loaded'; then pass "and the doctor says so"; else
+        fail "the doctor does not see the rules for the internet gone"
+        indent <<<"$output"
+    fi
+    sudo systemctl restart sgc-public.service
+    check "its advice brings them back" sudo /usr/sbin/nft list chain inet sgc_public input
+    if wait_for 20 outside_greeted 25565; then pass "and the TCP service is reachable again"; else fail "the TCP service stayed out of reach"; fi
+    expect_in_audit "the history has a service made public" '"action":"service.public_opened"'
+    expect_in_audit "and one closed" '"action":"service.public_closed"'
+    # Internet access stays on with the TCP service public: the restart and
+    # the restore look at what becomes of them.
     ;;
 
 notify)

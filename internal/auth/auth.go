@@ -58,6 +58,9 @@ type Service struct {
 	now     func() time.Time
 	params  hashParams
 	limiter *limiter
+	// accounts slows down guessing the admin's password at SGC's login on
+	// a public service (CheckAdmin).
+	accounts *AccountThrottle
 
 	// A hash to verify against when the username is unknown, so that a wrong
 	// username takes as long to reject as a wrong password.
@@ -73,7 +76,7 @@ func newService(db *sql.DB, now func() time.Time, params hashParams) (*Service, 
 	if err != nil {
 		return nil, err
 	}
-	return &Service{db: db, now: now, params: params, limiter: newLimiter(), decoyHash: decoy}, nil
+	return &Service{db: db, now: now, params: params, limiter: newLimiter(), accounts: NewAccountThrottle(), decoyHash: decoy}, nil
 }
 
 // SetupRequired reports whether SGC still has no admin account.
@@ -227,6 +230,46 @@ func (s *Service) VerifyAdminPassword(ctx context.Context, password, remoteAddr 
 		return ErrWrongPassword
 	}
 	return nil
+}
+
+// CheckAdmin checks the admin's username and password without starting a
+// session: for SGC's login on a public service (docs/design.md §14), whose
+// pass opens services only, never SGC's page. Wrong attempts count towards
+// the same lock-out per address as wrong sign-ins, and slow down guessing
+// at the account (AccountThrottle). It returns the admin's username, and
+// whether this failure started the slowing down.
+func (s *Service) CheckAdmin(ctx context.Context, username, password, remoteAddr string) (string, bool, error) {
+	now := s.now()
+	if wait := s.limiter.retryAfter(remoteAddr, now); wait > 0 {
+		return "", false, &TooManyAttemptsError{RetryAfter: wait}
+	}
+	if wait := s.accounts.RetryAfter(username); wait > 0 {
+		return "", false, &TooManyAttemptsError{RetryAfter: wait}
+	}
+	var storedName, storedHash string
+	err := s.db.QueryRowContext(ctx, "SELECT username, password_hash FROM admin WHERE id = 1").Scan(&storedName, &storedHash)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", false, fmt.Errorf("read admin account: %w", err)
+	}
+	nameMatches := err == nil && subtle.ConstantTimeCompare([]byte(username), []byte(storedName)) == 1
+	hashToCheck := storedHash
+	if !nameMatches {
+		hashToCheck = s.decoyHash
+	}
+	passwordMatches := false
+	if len(password) <= maxPasswordLength {
+		passwordMatches, err = verifyPassword(hashToCheck, password)
+		if err != nil {
+			return "", false, err
+		}
+	}
+	if !nameMatches || !passwordMatches {
+		s.limiter.fail(remoteAddr, now)
+		return "", s.accounts.Fail(username), ErrInvalidCredentials
+	}
+	s.limiter.succeed(remoteAddr)
+	s.accounts.Succeed(username)
+	return storedName, false, nil
 }
 
 // AdminUsername returns the admin's username, or "" before setup.

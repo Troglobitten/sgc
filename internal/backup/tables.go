@@ -64,6 +64,8 @@ var transientSettings = []string{
 	"backups.last",                // how this device's last scheduled backup went
 	"eol.state",                   // what this device last learnt about end-of-life dates
 	"guide.state",                 // where the owner is in the guided setup; a restored device needs none
+	"public.lists",                // how this device's downloads of FireHOL's and DB-IP's lists went
+	"public.state",                // what this device last saw of the public names at the DNS provider
 }
 
 func cleanupStatements() []string {

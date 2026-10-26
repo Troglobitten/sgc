@@ -1,0 +1,29 @@
+[Unit]
+Description=Server Gateway Control: rules for services reachable from the internet
+Documentation=https://github.com/Troglobitten/sgc
+# The table for traffic from the internet (internal/public), as the proxy's
+# last change left it. SGC's own firewall table refuses everything from
+# outside that this table has not marked, so until this has run nothing
+# from the internet gets in: the safe order whatever happens at start-up.
+DefaultDependencies=no
+Wants=network-pre.target
+After=sgc-firewall.service
+Before=network-pre.target shutdown.target
+Conflicts=shutdown.target
+# Only once the owner has switched internet access on in SGC's page.
+ConditionPathExists=/etc/sgc/public.nft
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/sgc/public.nft
+
+# --- Sandboxing ---------------------------------------------------------
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_NET_ADMIN
+ProtectSystem=full
+ProtectHome=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=sysinit.target

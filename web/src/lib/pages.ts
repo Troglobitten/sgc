@@ -2,6 +2,7 @@ import {
   Archive,
   Bell,
   Cpu,
+  Earth,
   Globe,
   LayoutDashboard,
   LayoutGrid,
@@ -33,6 +34,11 @@ export const pageNames = Object.keys(pages) as Page[]
  */
 export const systemSections = {
   security: { label: 'Security', lead: 'Who can reach this device, and who can sign in.', icon: Shield },
+  internet: {
+    label: 'Internet',
+    lead: 'Services reachable from the internet, and how visitors from it are limited and filtered.',
+    icon: Earth,
+  },
   domain: {
     label: 'Domain and names',
     lead: 'Your domain, its certificate, and the names SGC hands out under it.',

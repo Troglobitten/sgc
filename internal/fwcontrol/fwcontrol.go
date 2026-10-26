@@ -113,6 +113,8 @@ type Expected struct {
 	Proxy      bool
 	ProxyPorts []string
 	VPNPort    int
+	// Door: internet access is on at the proxy (docs/design.md §14).
+	Door bool
 }
 
 type Status struct {
@@ -207,6 +209,9 @@ func behind(want Expected, have firewall.Config) []string {
 	}
 	if want.VPNPort != 0 && have.VPNPort != want.VPNPort {
 		out = append(out, fmt.Sprintf("the VPN (port %d/udp, from the internet)", want.VPNPort))
+	}
+	if want.Door && !have.Door {
+		out = append(out, "internet access (services you made public)")
 	}
 	return out
 }

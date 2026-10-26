@@ -1,0 +1,58 @@
+==> jail.d/zz-sgc.local
+# Written by SGC. Do not edit: SGC replaces this file (docs/design.md §14).
+
+# Debian switches this on. SSH is reachable from home only (SGC's firewall),
+# and a ban there could lock the owner out of the device.
+[sshd]
+enabled = false
+
+# Failed sign-ins at SGC's login on a public service.
+[sgc-signin]
+enabled = true
+backend = systemd
+journalmatch = _SYSTEMD_UNIT=sgc.service
+filter = sgc-signin
+action = sgc
+maxretry = 5
+findtime = 600
+bantime = 3600
+ignoreip = 127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 198.51.100.7/32
+
+# Requests the public door refuses (401, 403, 404, 405, 429): someone trying addresses.
+[sgc-door]
+enabled = true
+backend = systemd
+journalmatch = _SYSTEMD_UNIT=sgc-traefik.service
+filter = sgc-door
+action = sgc
+maxretry = 40
+findtime = 600
+bantime = 3600
+ignoreip = 127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 198.51.100.7/32
+
+
+==> filter.d/sgc-signin.conf
+# Written by SGC. Do not edit: SGC replaces this file (docs/design.md §14).
+
+[Definition]
+failregex = msg="gate sign-in failed" visitor=<HOST>(?: |$)
+ignoreregex =
+
+==> filter.d/sgc-door.conf
+# Written by SGC. Do not edit: SGC replaces this file (docs/design.md §14).
+
+[Definition]
+failregex = "ClientHost":"<HOST>",.*"DownstreamStatus":(?:401|403|404|405|429),.*"entryPointName":"public"
+ignoreregex =
+
+==> action.d/sgc.conf
+# Written by SGC. Do not edit: SGC replaces this file (docs/design.md §14).
+
+[Definition]
+actionstart = /usr/sbin/nft add table inet sgc_public
+              /usr/sbin/nft 'add set inet sgc_public banned4 { type ipv4_addr; flags timeout; }'
+actionstop =
+actioncheck =
+actionban = /usr/sbin/nft 'add element inet sgc_public banned4 { <ip> timeout <bantime>s }'
+actionunban = /usr/sbin/nft 'delete element inet sgc_public banned4 { <ip> }'
+
