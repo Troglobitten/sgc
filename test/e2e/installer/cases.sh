@@ -2946,7 +2946,11 @@ public)
     sleep 65
     expect_status "switched on: three failed sign-ins or five refused requests" 200 POST /api/public/settings "$(public_settings 600 120 '' '' '' '' true)"
     check "it runs" systemctl is-active --quiet fail2ban
-    check "with SGC's two jails, and not Debian's for SSH" only_sgcs_jails
+    # At once: SGC answers only once fail2ban answers.
+    if only_sgcs_jails; then pass "with SGC's two jails, and not Debian's for SSH"; else
+        fail "fail2ban's jails are not SGC's two"
+        sudo fail2ban-client status 2>&1 | indent
+    fi
     for _ in 1 2 3 4; do sign_in_from_outside kim not-the-password >/dev/null; done
     if wait_for 30 banned 203.0.113.2 sgc-signin; then pass "wrong passwords from the internet get the address banned"; else fail "no ban after failed sign-ins"; fi
     check "the banned address gets nothing" outside_refused web
