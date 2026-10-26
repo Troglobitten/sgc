@@ -233,6 +233,9 @@ func (s *System) applyFail2ban(ctx context.Context, settings Settings) error {
 		if !changed {
 			return nil
 		}
+		if err := s.fail2banAnswers(ctx); err != nil {
+			return err
+		}
 		if output, err := s.Run(ctx, fail2banClient, "reload"); err != nil {
 			return fmt.Errorf("fail2ban did not take its new settings: %s", lastLine(output, err))
 		}
@@ -241,7 +244,29 @@ func (s *System) applyFail2ban(ctx context.Context, settings Settings) error {
 	if output, err := s.Run(ctx, systemctl, "start", fail2banUnit); err != nil {
 		return fmt.Errorf("fail2ban could not be started: %s", lastLine(output, err))
 	}
-	return nil
+	return s.fail2banAnswers(ctx)
+}
+
+// fail2banAnswers waits until fail2ban answers on its socket. systemd says
+// it is running at once (Debian's unit is Type=simple), and it answers about
+// half a second later (test machine, 2026-10-26); until then neither the
+// page's list of bans nor lifting one would work.
+func (s *System) fail2banAnswers(ctx context.Context) error {
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		output, err := s.Run(ctx, fail2banClient, "ping")
+		if err == nil && strings.Contains(string(output), "pong") {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("fail2ban started but does not answer: %s", lastLine(output, err))
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
 }
 
 // fail2banStartUp makes fail2ban part of start-up or takes it out. Without
