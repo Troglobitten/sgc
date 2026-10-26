@@ -10,8 +10,10 @@ package zonetest
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,6 +28,16 @@ type record struct {
 	Destination string `json:"destination"`
 }
 
+// srvRecord is a service record as Zone.eu's API writes it.
+type srvRecord struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Destination string `json:"destination"`
+	Priority    int    `json:"priority"`
+	Weight      int    `json:"weight"`
+	Port        int    `json:"port"`
+}
+
 // Server is the stand-in. It is an http.Handler serving the API under /v2/,
 // and a dns.Handler answering for the account's zones.
 type Server struct {
@@ -35,6 +47,7 @@ type Server struct {
 	domains  map[string]bool     // name -> active
 	txt      map[string][]record // zone -> TXT records
 	a        map[string][]record // zone -> A records
+	srv      map[string][]srvRecord
 	nextID   int
 	requests int
 	// Answer every request with this status instead (0: answer normally).
@@ -55,7 +68,8 @@ type snapshot struct {
 
 // New returns a stand-in for an account with the given DNS zones, all active.
 func New(username, apiKey string, domains ...string) *Server {
-	s := &Server{username: username, apiKey: apiKey, domains: map[string]bool{}, txt: map[string][]record{}, a: map[string][]record{}, nextID: 100}
+	s := &Server{username: username, apiKey: apiKey, domains: map[string]bool{}, txt: map[string][]record{}, a: map[string][]record{},
+		srv: map[string][]srvRecord{}, nextID: 100}
 	for _, domain := range domains {
 		s.domains[domain] = true
 	}
@@ -132,12 +146,41 @@ func (s *Server) A(name string) []string {
 	return values
 }
 
+// SRV returns the service records with the given name as
+// "priority weight port target".
+func (s *Server) SRV(name string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var values []string
+	for _, records := range s.srv {
+		for _, r := range records {
+			if strings.EqualFold(r.Name, name) {
+				values = append(values, fmt.Sprintf("%d %d %d %s", r.Priority, r.Weight, r.Port, r.Destination))
+			}
+		}
+	}
+	return values
+}
+
 // AddA makes an A record as the owner would in Zone.eu's own page.
 func (s *Server) AddA(domain, name, address string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nextID++
 	s.a[domain] = append(s.a[domain], record{ID: strconv.Itoa(s.nextID), Name: name, Destination: address})
+}
+
+// RemoveByHand removes the A and SRV records with the given name, as the
+// owner would in Zone.eu's own page.
+func (s *Server) RemoveByHand(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for zone, records := range s.a {
+		s.a[zone] = slices.DeleteFunc(records, func(r record) bool { return strings.EqualFold(r.Name, name) })
+	}
+	for zone, records := range s.srv {
+		s.srv[zone] = slices.DeleteFunc(records, func(r srvRecord) bool { return strings.EqualFold(r.Name, name) })
+	}
 }
 
 // Records is how many TXT records the account's zones hold.
@@ -177,6 +220,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"delete": true,
 				"modify": true,
 			})
+		}
+		json.NewEncoder(w).Encode(out)
+	}
+	answerSRV := func(status int, records []srvRecord) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		out := make([]map[string]any, 0, len(records))
+		for _, r := range records {
+			out = append(out, map[string]any{"id": r.ID, "name": r.Name, "destination": r.Destination,
+				"priority": r.Priority, "weight": r.Weight, "port": r.Port, "delete": true, "modify": true})
 		}
 		json.NewEncoder(w).Encode(out)
 	}
@@ -257,6 +310,36 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			records[i].Name, records[i].Destination = body.Name, body.Destination
 			answer(http.StatusOK, []record{records[i]})
 			return
+		}
+		refuse(http.StatusNotFound, "Not found")
+
+	case len(parts) == 3 && parts[2] == "srv" && r.Method == http.MethodGet:
+		answerSRV(http.StatusOK, s.srv[domain])
+
+	case len(parts) == 3 && parts[2] == "srv" && r.Method == http.MethodPost:
+		var body srvRecord
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
+			refuse(http.StatusBadRequest, "invalid request")
+			return
+		}
+		if body.Destination == "" || body.Port < 1 || body.Port > 65535 || !strings.HasPrefix(body.Name, "_") ||
+			!strings.HasSuffix(body.Name, "."+domain) {
+			refuse(http.StatusUnprocessableEntity, "invalid input")
+			return
+		}
+		s.nextID++
+		body.ID = strconv.Itoa(s.nextID)
+		s.srv[domain] = append(s.srv[domain], body)
+		answerSRV(http.StatusCreated, []srvRecord{body})
+
+	case len(parts) == 4 && parts[2] == "srv" && r.Method == http.MethodDelete:
+		records := s.srv[domain]
+		for i, existing := range records {
+			if existing.ID == parts[3] {
+				s.srv[domain] = append(records[:i:i], records[i+1:]...)
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
 		}
 		refuse(http.StatusNotFound, "Not found")
 

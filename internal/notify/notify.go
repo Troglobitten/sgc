@@ -47,6 +47,7 @@ const (
 	EventLogins      = "logins"
 	EventAnnounce    = "announce"
 	EventBackup      = "backup"
+	EventInternet    = "internet"
 )
 
 // Events lists every kind, with what the page calls it.
@@ -66,6 +67,7 @@ var Events = []struct {
 	{EventLogins, "Failed sign-ins and lock-outs"},
 	{EventAnnounce, "New services announced, tokens misused"},
 	{EventBackup, "Backups fail or are overdue"},
+	{EventInternet, "A service opened to the internet or closed, public names, lists"},
 }
 
 // Severities.

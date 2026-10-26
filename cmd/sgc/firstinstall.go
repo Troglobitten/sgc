@@ -26,6 +26,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/logcontrol"
 	"github.com/Troglobitten/sgc/internal/proxy"
 	"github.com/Troglobitten/sgc/internal/proxycontrol"
+	"github.com/Troglobitten/sgc/internal/public"
 	"github.com/Troglobitten/sgc/internal/store"
 )
 
@@ -41,6 +42,9 @@ func newLogControl(db *sql.DB, helperClient *helper.Client, auditLog *audit.Log,
 //
 //   - log2ram (logs in memory, for a device on an SD card), from Debian:
 //     installed and left switched off;
+//   - Traefik (the proxy): installed and left switched off;
+//   - fail2ban (for services made public), from Debian: installed with
+//     SGC's settings first (Debian's SSH jail off) and left switched off;
 //   - AdGuard Home (DNS): installed and switched on.
 //
 // It only does that on a device nobody has decided about yet: one without an
@@ -104,6 +108,15 @@ func firstInstallCommand(ctx context.Context, args []string, stdout, stderr io.W
 			fmt.Fprintln(stdout, answer.Message)
 		}
 	}
+	if !public.Fail2banInstalled() {
+		fmt.Fprintln(stdout, "Installing fail2ban from Debian (for services you make public; switched off until you switch it on) ...")
+		var answer firstInstallAnswer
+		if err := work("first-install", "fail2ban", &answer); err != nil {
+			fmt.Fprintln(stdout, "fail2ban could not be installed just now; the reason is above. Switching it on, on SGC's System page (Internet), installs it.")
+		} else {
+			fmt.Fprintln(stdout, answer.Message)
+		}
+	}
 	if due.DNS {
 		if !adguard.Installed(adguard.DefaultPaths()) {
 			fmt.Fprintf(stdout, "Installing AdGuard Home %s, the DNS server (about a minute) ...\n", components.AdGuardHome.Version)
@@ -163,6 +176,11 @@ func firstInstallWorker(ctx context.Context, task, stateDir, helperSocket string
 			return fail(err)
 		}
 		answer.Message = "log2ram is installed and switched off. If this device runs from an SD card, switch on \"Logs in memory\" on SGC's System page."
+	case "fail2ban":
+		if err := helperClient.InstallPackages(ctx, helper.PackagesFail2ban); err != nil {
+			return fail(err)
+		}
+		answer.Message = "fail2ban is installed and switched off. It is for services you make reachable from the internet (System, Internet)."
 	case "proxy":
 		control := proxycontrol.New(proxycontrol.Config{
 			DB: db, Helper: helperClient, Audit: audit.New(db), HTTP: &http.Client{Timeout: 10 * time.Minute},

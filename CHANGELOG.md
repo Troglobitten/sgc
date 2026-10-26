@@ -2,6 +2,18 @@
 
 What changed in each version of SGC, newest first. The section for a version is what SGC shows before you update to it, so it is written for the person running SGC, not for developers.
 
+## 0.20.0
+
+**Services reachable from the internet.** Until now nothing at home faced the internet but the VPN. Now you can open chosen services, one by one, and close them again.
+
+- **Off until you switch it on**, on the System page, under Internet (it needs the proxy, the firewall and your domain, and asks for your password). Then each service's ⋯ menu on the Services page has "Make reachable from the internet", with your password again, and closing it is one click. Nothing else becomes reachable: not SGC's page, not AdGuard Home, not any other service.
+- **On your router:** forward TCP port 443 to this device's port 8446 for every public website, and for a service that is not a website (a game or voice server, …) its own port. The page says exactly what to forward.
+- **Public names** are made at your DNS provider and follow your home's address; services that are not websites can get an **SRV record**, so programs that look those up find the port by themselves.
+- **Filters for visitors from the internet,** set under Internet: request and connection limits per visitor, an allow list, FireHOL's lists of attacking addresses (levels 1 to 4, each switched on by you, fetched daily in the maintenance window), a country filter, and **fail2ban**, which bans addresses that fail your login or knock on doors that are not there too often. Your home and the VPN are never filtered.
+- **SGC's login works from the internet** for a public service behind it: you and the people you gave a login sign in under the service's own name. Wrong passwords are slowed down, and you are told at once if someone seems to be guessing yours. SGC's page itself never faces the internet.
+- **Closing cuts open connections.** Switching internet access off closes every public service, and so does restoring an export; a server that announces a public service anew with other settings has it closed. You get a notification for every change.
+- fail2ban comes with a new installation, switched off. On a device you update, it is installed when you switch it on.
+
 ## 0.19.1
 
 - **`https://sgc.your-domain` no longer shows "No service by this name" now and then.** A browser that had a connection open to one of your services sometimes reused it for SGC's page (the certificate covers both names), and the proxy could not pass that on to SGC. Both ends now answer such a request with a code that makes the browser open a connection of its own, by itself, without you noticing. The same goes the other way round: a service never opens as SGC's page by mistake.

@@ -90,6 +90,7 @@ Invoke-Cases proxy $new
 Invoke-Cases announce $new
 Invoke-Cases vpn $new
 Invoke-Cases gate $new
+Invoke-Cases public $new
 Invoke-Cases notify $new
 Invoke-Cases backups $new
 Invoke-Cases restart $new

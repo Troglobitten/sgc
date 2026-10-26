@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -47,6 +48,26 @@ const (
 	ModeProxied = "proxied"
 	ModeDirect  = "direct"
 )
+
+// Exposure: who can reach a service (docs/design.md §14). Only the admin
+// makes a service public, in SGC's page; nothing an announcement says can.
+const (
+	ExposureLAN    = "lan"
+	ExposurePublic = "public"
+)
+
+// maxUDPTimeout is the longest a quiet UDP connection is kept, in seconds.
+const maxUDPTimeout = 3600
+
+// srvServicePattern is a service's name in an SRV record (RFC 6335: 1 to 15
+// letters, digits and hyphens, at least one letter, no hyphen at either end
+// or two in a row), as SGC takes it: lower case.
+var srvServicePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,13}[a-z0-9])?$`)
+
+// ValidSRVService reports whether s can be a service's name in an SRV record.
+func ValidSRVService(s string) bool {
+	return srvServicePattern.MatchString(s) && !strings.Contains(s, "--") && strings.ContainsAny(s, "abcdefghijklmnopqrstuvwxyz")
+}
 
 // Health is how a service answered the probes.
 type Health struct {
@@ -85,6 +106,11 @@ type Service struct {
 	Health      Health     `json:"health"`
 	// URL is how to open it ("" until a domain is set up).
 	URL string `json:"url"`
+	// Exposure is ExposureLAN or ExposurePublic.
+	Exposure      string `json:"exposure"`
+	ProxyProtocol bool   `json:"proxyProtocol"`
+	UDPTimeout    int    `json:"udpTimeout"`
+	SRVService    string `json:"srvService"`
 }
 
 // Input is what the owner sets for a service in the page.
@@ -101,6 +127,12 @@ type Input struct {
 	Category     string `json:"category"`
 	Protected    bool   `json:"protected"`
 	Enabled      bool   `json:"enabled"`
+	// For a proxied TCP service: tell it who each visitor is.
+	ProxyProtocol bool `json:"proxyProtocol"`
+	// For a proxied UDP service: how long a quiet connection is kept.
+	UDPTimeout int `json:"udpTimeout"`
+	// For a proxied TCP or UDP service: its name in an SRV record.
+	SRVService string `json:"srvService"`
 }
 
 // Config is what the catalogue needs.
@@ -118,6 +150,9 @@ type Config struct {
 	ReservedPorts func(ctx context.Context) []int
 	// Changed is called after anything that changes names or routes.
 	Changed func()
+	// Closed is told when SGC itself closed a public service (why says
+	// why), which the owner should hear about at once.
+	Closed func(ctx context.Context, name, why string)
 	// Probe tries to reach a service; nil means a TCP connection.
 	Probe func(ctx context.Context, address string) error
 	// Icons fetches icons; nil means none are fetched (tests).
@@ -140,13 +175,16 @@ func New(cfg Config) *Catalog {
 	if cfg.ReservedPorts == nil {
 		cfg.ReservedPorts = func(context.Context) []int { return nil }
 	}
+	if cfg.Closed == nil {
+		cfg.Closed = func(context.Context, string, string) {}
+	}
 	return &Catalog{cfg: cfg}
 }
 
 const selectColumns = `s.id, s.name, s.title, s.kind, s.mode, s.upstream_ip, s.upstream_port, s.scheme, s.verify_tls,
 	s.listen_port, s.category, s.protected, s.enabled, s.pending, s.token_id, COALESCE(t.label, ''),
 	s.created_at, s.updated_at, s.announced_at, i.service_id IS NOT NULL,
-	h.up, h.since, h.checked_at, h.last_up_at`
+	h.up, h.since, h.checked_at, h.last_up_at, s.exposure, s.proxy_protocol, s.udp_timeout, s.srv_service`
 
 const fromTables = ` FROM service s
 	LEFT JOIN announce_token t ON t.id = s.token_id
@@ -162,7 +200,8 @@ func (c *Catalog) scan(row scanner, abandonedAfter time.Duration, domain string)
 	var up, since, checked, lastUp sql.NullInt64
 	if err := row.Scan(&s.ID, &s.Name, &s.Title, &s.Kind, &s.Mode, &s.UpstreamIP, &s.UpstreamPort, &s.Scheme, &s.VerifyTLS,
 		&s.ListenPort, &s.Category, &s.Protected, &s.Enabled, &s.Pending, &tokenID, &s.TokenLabel,
-		&created, &updated, &announced, &s.HasIcon, &up, &since, &checked, &lastUp); err != nil {
+		&created, &updated, &announced, &s.HasIcon, &up, &since, &checked, &lastUp, &s.Exposure, &s.ProxyProtocol,
+		&s.UDPTimeout, &s.SRVService); err != nil {
 		return Service{}, err
 	}
 	if tokenID.Valid {
@@ -288,6 +327,7 @@ func (c *Catalog) normalise(ctx context.Context, in Input, exceptID int64) (Inpu
 	switch in.Kind {
 	case "", proxy.KindHTTP:
 		in.Kind, in.Mode, in.ListenPort = proxy.KindHTTP, ModeProxied, 0
+		in.ProxyProtocol, in.UDPTimeout, in.SRVService = false, 0, ""
 		if in.Scheme == "" {
 			in.Scheme = "http"
 		}
@@ -298,6 +338,15 @@ func (c *Catalog) normalise(ctx context.Context, in Input, exceptID int64) (Inpu
 		in.Scheme, in.VerifyTLS = "http", false
 		if in.Protected {
 			return in, problem.New("Only web services can be behind SGC's login.")
+		}
+		in.SRVService = strings.ToLower(strings.TrimSpace(in.SRVService))
+		switch {
+		case in.ProxyProtocol && (in.Kind != proxy.KindTCP || in.Mode == ModeDirect):
+			return in, problem.New("Only a TCP service that goes through SGC can be told who the visitor is.")
+		case in.UDPTimeout != 0 && (in.Kind != proxy.KindUDP || in.Mode == ModeDirect || in.UDPTimeout < 1 || in.UDPTimeout > maxUDPTimeout):
+			return in, problem.Newf("How long a quiet connection is kept is for a UDP service that goes through SGC: 1 to %d seconds.", maxUDPTimeout)
+		case in.SRVService != "" && !ValidSRVService(in.SRVService):
+			return in, problem.New("A service's name for SRV records is 1 to 15 lower-case letters, digits and hyphens, with at least one letter (for example minecraft).")
 		}
 		if in.Mode == "" {
 			in.Mode = ModeDirect
@@ -347,7 +396,8 @@ func (c *Catalog) nameFree(ctx context.Context, name string, exceptID int64) err
 }
 
 func (c *Catalog) portFree(ctx context.Context, kind string, port int, exceptID int64) error {
-	gatewayPorts := []int{22, 53, 80, 443, 3000, 8082, 8443, 8444}
+	// 8445 and 8446: SGC's listener for its own name, and the public door.
+	gatewayPorts := []int{22, 53, 80, 443, 3000, 8082, 8443, 8444, 8445, 8446}
 	gatewayPorts = append(gatewayPorts, c.cfg.ReservedPorts(ctx)...)
 	if slices.Contains(gatewayPorts, port) {
 		return problem.Newf("Port %d is used by the gateway itself. Choose another port on the gateway.", port)
@@ -390,10 +440,10 @@ func (c *Catalog) Add(ctx context.Context, actor, remote string, in Input) (Serv
 	}
 	now := c.cfg.Now().Unix()
 	result, err := c.cfg.DB.ExecContext(ctx, `INSERT INTO service (name, title, kind, mode, upstream_ip, upstream_port, scheme,
-		verify_tls, listen_port, category, protected, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		verify_tls, listen_port, category, protected, enabled, proxy_protocol, udp_timeout, srv_service, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		in.Name, in.Title, in.Kind, in.Mode, in.UpstreamIP, in.UpstreamPort, in.Scheme, in.VerifyTLS, in.ListenPort,
-		in.Category, in.Protected, in.Enabled, now, now)
+		in.Category, in.Protected, in.Enabled, in.ProxyProtocol, in.UDPTimeout, in.SRVService, now, now)
 	if err != nil {
 		return Service{}, err
 	}
@@ -414,11 +464,28 @@ func (c *Catalog) Update(ctx context.Context, actor, remote string, id int64, in
 	if in, err = c.normalise(ctx, in, id); err != nil {
 		return Service{}, err
 	}
+	// A public service that is switched off, or no longer goes through SGC,
+	// is closed: it is opened again only by the owner's own step.
+	exposure := before.Exposure
+	closeIt := exposure == ExposurePublic && (!in.Enabled || (in.Kind != proxy.KindHTTP && in.Mode != ModeProxied))
+	if closeIt {
+		exposure = ExposureLAN
+	}
 	if _, err := c.cfg.DB.ExecContext(ctx, `UPDATE service SET name = ?, title = ?, kind = ?, mode = ?, upstream_ip = ?,
-		upstream_port = ?, scheme = ?, verify_tls = ?, listen_port = ?, category = ?, protected = ?, enabled = ?, updated_at = ?
+		upstream_port = ?, scheme = ?, verify_tls = ?, listen_port = ?, category = ?, protected = ?, enabled = ?,
+		proxy_protocol = ?, udp_timeout = ?, srv_service = ?, exposure = ?, updated_at = ?
 		WHERE id = ?`, in.Name, in.Title, in.Kind, in.Mode, in.UpstreamIP, in.UpstreamPort, in.Scheme, in.VerifyTLS,
-		in.ListenPort, in.Category, in.Protected, in.Enabled, c.cfg.Now().Unix(), id); err != nil {
+		in.ListenPort, in.Category, in.Protected, in.Enabled, in.ProxyProtocol, in.UDPTimeout, in.SRVService, exposure,
+		c.cfg.Now().Unix(), id); err != nil {
 		return Service{}, err
+	}
+	if closeIt {
+		why := "switched off"
+		if in.Enabled {
+			why = "no longer goes through the gateway"
+		}
+		c.record(ctx, actor, audit.ActionServicePublicClosed, in.Name+": "+why, remote)
+		c.cfg.Closed(ctx, in.Name, why)
 	}
 	detail := describe(in)
 	if before.Name != in.Name {
@@ -519,8 +586,9 @@ func displayName(s Service) string {
 }
 
 // ProxyServices are the routes Traefik should have. allow returns, for a
-// service, who may reach it ("" range list: everyone inside).
-func (c *Catalog) ProxyServices(ctx context.Context, allow func(serviceID int64) []string) ([]proxy.Service, error) {
+// service, who may reach it ("" range list: everyone inside). door: internet
+// access is on, so public services are public.
+func (c *Catalog) ProxyServices(ctx context.Context, allow func(serviceID int64) []string, door bool) ([]proxy.Service, error) {
 	live, err := c.live(ctx)
 	if err != nil {
 		return nil, err
@@ -530,9 +598,15 @@ func (c *Catalog) ProxyServices(ctx context.Context, allow func(serviceID int64)
 		if s.Kind != proxy.KindHTTP && s.Mode != ModeProxied {
 			continue
 		}
-		ps := proxy.Service{Name: s.Name, Kind: s.Kind, Upstream: s.UpstreamIP, Port: s.UpstreamPort, ListenPort: s.ListenPort}
-		if s.Kind == proxy.KindHTTP {
+		ps := proxy.Service{Name: s.Name, Kind: s.Kind, Upstream: s.UpstreamIP, Port: s.UpstreamPort, ListenPort: s.ListenPort,
+			Public: door && s.Exposure == ExposurePublic}
+		switch s.Kind {
+		case proxy.KindHTTP:
 			ps.Scheme, ps.VerifyTLS, ps.Protected = s.Scheme, s.VerifyTLS, s.Protected
+		case proxy.KindTCP:
+			ps.ProxyProtocol = s.ProxyProtocol
+		case proxy.KindUDP:
+			ps.UDPTimeout = s.UDPTimeout
 		}
 		if allow != nil {
 			ps.AllowFrom = allow(s.ID)
@@ -540,6 +614,105 @@ func (c *Catalog) ProxyServices(ctx context.Context, allow func(serviceID int64)
 		out = append(out, ps)
 	}
 	return out, nil
+}
+
+// PublicServices are the services in use that the owner made public.
+func (c *Catalog) PublicServices(ctx context.Context) ([]Service, error) {
+	live, err := c.live(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := []Service{}
+	for _, s := range live {
+		if s.Exposure == ExposurePublic && (s.Kind == proxy.KindHTTP || s.Mode == ModeProxied) {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+// SetExposure makes a service public or home-only. The caller (internal/
+// publiccontrol) has checked that it may be, and records it.
+func (c *Catalog) SetExposure(ctx context.Context, id int64, exposure string) error {
+	if exposure != ExposureLAN && exposure != ExposurePublic {
+		return fmt.Errorf("unknown exposure %q", exposure)
+	}
+	result, err := c.cfg.DB.ExecContext(ctx, "UPDATE service SET exposure = ?, updated_at = ? WHERE id = ?", exposure, c.cfg.Now().Unix(), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	c.cfg.Changed()
+	return nil
+}
+
+// closePublic closes the public services the query selects (with its
+// arguments), and records and reports each. It returns whether it closed any.
+func (c *Catalog) closePublic(ctx context.Context, actor, remote, why, where string, args ...any) bool {
+	closed, _ := c.closeMatching(ctx, actor, remote, why, where, args...)
+	for _, name := range closed {
+		c.cfg.Closed(ctx, name, why)
+	}
+	return len(closed) > 0
+}
+
+// CloseAll closes every public service: internet access was switched off, or
+// the device was restored from an export. Each is recorded; the caller tells
+// the owner once. Only the owner's own step opens one again.
+func (c *Catalog) CloseAll(ctx context.Context, actor, remote, why string) (int, error) {
+	closed, err := c.closeMatching(ctx, actor, remote, why, "1 = 1")
+	if len(closed) > 0 {
+		c.cfg.Changed()
+	}
+	return len(closed), err
+}
+
+// closeMatching makes the public services the query selects home-only, and
+// records each. It returns the names of those it closed.
+func (c *Catalog) closeMatching(ctx context.Context, actor, remote, why, where string, args ...any) ([]string, error) {
+	rows, err := c.cfg.DB.QueryContext(ctx, "SELECT id, name FROM service WHERE exposure = 'public' AND "+where, args...)
+	if err != nil {
+		c.cfg.Log.Error("find public services to close", "error", err)
+		return nil, err
+	}
+	type closing struct {
+		id   int64
+		name string
+	}
+	var found []closing
+	for rows.Next() {
+		var item closing
+		if rows.Scan(&item.id, &item.name) == nil {
+			found = append(found, item)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	var closed []string
+	var failed error
+	for _, item := range found {
+		if _, err := c.cfg.DB.ExecContext(ctx, "UPDATE service SET exposure = 'lan', updated_at = ? WHERE id = ?", c.cfg.Now().Unix(), item.id); err != nil {
+			c.cfg.Log.Error("close a public service", "service", item.name, "error", err)
+			failed = err
+			continue
+		}
+		c.record(ctx, actor, audit.ActionServicePublicClosed, item.name+": "+why, remote)
+		closed = append(closed, item.name)
+	}
+	return closed, failed
+}
+
+// CloseToken closes the public services a token announced: its server was
+// marked as moved, so whatever announces next with it is not known yet.
+func (c *Catalog) CloseToken(ctx context.Context, actor, remote string, tokenID int64, why string) {
+	if c.closePublic(ctx, actor, remote, why, "token_id = ?", tokenID) {
+		c.cfg.Changed()
+	}
 }
 
 // HasName reports what holds a label among the services ("" if none), for

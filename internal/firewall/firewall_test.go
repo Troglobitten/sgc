@@ -26,6 +26,9 @@ func TestRender(t *testing.T) {
 		{"on-proxy", Config{Enabled: true, SSHPorts: []int{22}, WebPort: 8443, DNS: true, Proxy: true,
 			ProxyPorts: []string{"27015/udp", "25565/tcp", "7777/tcp", "25565/tcp"}}},
 		{"on-vpn", Config{Enabled: true, SSHPorts: []int{22}, WebPort: 8443, DNS: true, Proxy: true, VPNPort: 51820}},
+		// Internet access on: what the table for the internet marks is let in.
+		{"on-door", Config{Enabled: true, SSHPorts: []int{22}, WebPort: 8443, DNS: true, Proxy: true,
+			ProxyPorts: []string{"25565/tcp"}, VPNPort: 51820, Door: true}},
 		{"off", Config{Enabled: false, SSHPorts: []int{22}, WebPort: 8443}},
 	}
 	for _, c := range cases {

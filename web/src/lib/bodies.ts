@@ -4,6 +4,7 @@ import type {
   LogQuery,
   NotificationChannels,
   PersonInput,
+  PublicSettings,
   ServiceInput,
   ServicesSettings,
   VpnSettings,
@@ -31,6 +32,25 @@ export const serviceBody = (s: ServiceInput): ServiceInput => ({
   category: s.category,
   protected: s.protected,
   enabled: s.enabled,
+  proxyProtocol: s.proxyProtocol,
+  udpTimeout: s.udpTimeout,
+  srvService: s.srvService,
+})
+
+export const publicSettingsBody = (s: PublicSettings): PublicSettings => ({
+  requestsPerMinute: s.requestsPerMinute,
+  connectionsPerMinute: s.connectionsPerMinute,
+  allow: [...s.allow],
+  levels: [...s.levels],
+  countryMode: s.countryMode,
+  countries: [...s.countries],
+  fail2ban: {
+    enabled: s.fail2ban.enabled,
+    signIns: s.fail2ban.signIns,
+    refused: s.fail2ban.refused,
+    findMinutes: s.fail2ban.findMinutes,
+    banMinutes: s.fail2ban.banMinutes,
+  },
 })
 
 export const servicesSettingsBody = (s: ServicesSettings): ServicesSettings => ({

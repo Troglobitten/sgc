@@ -69,6 +69,7 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		checkCertificate(*stateDir),
 		checkNames(*stateDir),
 		checkProxy(*stateDir),
+		checkInternet(*stateDir),
 		checkVPN(*stateDir),
 		checkBackupsAndSoftware(*stateDir),
 		checkPorts,

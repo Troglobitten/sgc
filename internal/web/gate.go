@@ -101,6 +101,10 @@ var gateTickets ticketBox
 // gateRoutes adds the gate's routes to the second listener.
 func (s *Server) gateRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/gate/check", s.gateCheck)
+	// A request from the internet (the public door): the sign-in is under
+	// the service's own name (gate_public.go).
+	mux.HandleFunc("/gate/check-public", s.gateCheckPublic)
+	mux.HandleFunc(proxy.GatePath+"sign-in", s.gatePublicSignIn)
 	mux.HandleFunc("GET "+proxy.GatePath+"return", s.gateReturn)
 	mux.HandleFunc("GET "+proxy.GatePath+"sign-out", s.gateSignOut)
 }

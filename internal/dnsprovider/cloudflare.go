@@ -62,9 +62,19 @@ type cfRecord struct {
 	ID      string `json:"id,omitempty"`
 	Type    string `json:"type"`
 	Name    string `json:"name"`
-	Content string `json:"content"`
+	Content string `json:"content,omitempty"`
 	TTL     int    `json:"ttl"`
 	Proxied *bool  `json:"proxied,omitempty"`
+	// Data holds a service record's parts (Cloudflare's API reference, read
+	// on 2026-10-25: port, priority, target, weight).
+	Data *cfSRVData `json:"data,omitempty"`
+}
+
+type cfSRVData struct {
+	Priority int    `json:"priority"`
+	Weight   int    `json:"weight"`
+	Port     int    `json:"port"`
+	Target   string `json:"target"`
 }
 
 func (c *cloudflare) do(ctx context.Context, method, path string, query url.Values, body, result any) error {
@@ -206,6 +216,61 @@ func (c *cloudflare) AddTXT(ctx context.Context, domain, name, value string) (Re
 }
 
 func (c *cloudflare) DeleteTXT(ctx context.Context, domain, recordID string) error {
+	return c.deleteRecord(ctx, domain, recordID)
+}
+
+func (c *cloudflare) DeleteA(ctx context.Context, domain, recordID string) error {
+	return c.deleteRecord(ctx, domain, recordID)
+}
+
+func (c *cloudflare) DeleteSRV(ctx context.Context, domain, recordID string) error {
+	return c.deleteRecord(ctx, domain, recordID)
+}
+
+func (c *cloudflare) SRVRecords(ctx context.Context, domain string) ([]SRV, error) {
+	id, err := c.zoneID(ctx, domain)
+	if err != nil {
+		return nil, err
+	}
+	var out []SRV
+	for page := 1; page <= 50; page++ {
+		var records []cfRecord
+		query := url.Values{"type": {"SRV"}, "per_page": {"100"}, "page": {strconv.Itoa(page)}}
+		if err := c.do(ctx, http.MethodGet, c.records(id), query, nil, &records); err != nil {
+			return nil, err
+		}
+		for _, r := range records {
+			if r.Data != nil {
+				out = append(out, SRV{ID: r.ID, Name: r.Name, Target: strings.TrimSuffix(r.Data.Target, "."),
+					Priority: r.Data.Priority, Weight: r.Data.Weight, Port: r.Data.Port})
+			}
+		}
+		if len(records) < 100 {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (c *cloudflare) AddSRV(ctx context.Context, domain string, r SRV) (SRV, error) {
+	id, err := c.zoneID(ctx, domain)
+	if err != nil {
+		return SRV{}, err
+	}
+	var created cfRecord
+	body := cfRecord{Type: "SRV", Name: r.Name, TTL: 1,
+		Data: &cfSRVData{Priority: r.Priority, Weight: r.Weight, Port: r.Port, Target: r.Target}}
+	if err := c.do(ctx, http.MethodPost, c.records(id), nil, body, &created); err != nil {
+		return SRV{}, err
+	}
+	if created.ID == "" {
+		return SRV{}, fmt.Errorf("Cloudflare did not say which record it made")
+	}
+	r.ID = created.ID
+	return r, nil
+}
+
+func (c *cloudflare) deleteRecord(ctx context.Context, domain, recordID string) error {
 	id, err := c.zoneID(ctx, domain)
 	if err != nil {
 		return err

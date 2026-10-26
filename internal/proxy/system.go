@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Troglobitten/sgc/internal/components"
+	"github.com/Troglobitten/sgc/internal/public"
 )
 
 const (
@@ -47,6 +48,8 @@ type Paths struct {
 	// RequestFile is where the helper puts the web process's Config for
 	// the job that applies it.
 	RequestFile string
+	// Public is where the parts for traffic from the internet live.
+	Public public.Paths
 }
 
 func DefaultPaths() Paths {
@@ -55,6 +58,7 @@ func DefaultPaths() Paths {
 		ConfigDir:   "/etc/sgc/traefik",
 		SpoolDir:    "/var/lib/sgc/components",
 		RequestFile: "/run/sgc-requests/proxy.json",
+		Public:      public.DefaultPaths(),
 	}
 }
 
@@ -90,8 +94,14 @@ func InstalledVersion(paths Paths) string {
 // Applied is what is in place, as the firewall and the page need it (no
 // key, no routes).
 type Applied struct {
-	Enabled     bool      `json:"enabled"`
-	ListenPorts []string  `json:"listenPorts"`
+	Enabled     bool     `json:"enabled"`
+	ListenPorts []string `json:"listenPorts"`
+	// Door: internet access is on; PublicPorts are reachable from the
+	// internet (the firewall lets in what is marked as such).
+	Door        bool     `json:"door,omitempty"`
+	PublicPorts []string `json:"publicPorts,omitempty"`
+	// PublicNames are the web services on the public door.
+	PublicNames []string  `json:"publicNames,omitempty"`
 	At          time.Time `json:"at"`
 }
 
@@ -104,6 +114,9 @@ func ReadApplied(paths Paths) Applied {
 	}
 	if applied.ListenPorts == nil {
 		applied.ListenPorts = []string{}
+	}
+	if applied.PublicPorts == nil {
+		applied.PublicPorts = []string{}
 	}
 	return applied
 }
@@ -134,12 +147,16 @@ type Status struct {
 	Enabled     bool     `json:"enabled"`
 	Running     bool     `json:"running"`
 	ListenPorts []string `json:"listenPorts"`
+	Door        bool     `json:"door"`
+	PublicPorts []string `json:"publicPorts"`
 }
 
 func (s *System) Status(ctx context.Context) Status {
 	applied := ReadApplied(s.Paths)
-	status := Status{Installed: Installed(s.Paths), Version: InstalledVersion(s.Paths), ListenPorts: applied.ListenPorts}
+	status := Status{Installed: Installed(s.Paths), Version: InstalledVersion(s.Paths), ListenPorts: applied.ListenPorts,
+		PublicPorts: applied.PublicPorts}
 	status.On = applied.Enabled && status.Installed
+	status.Door = status.On && applied.Door
 	if status.Installed {
 		_, err := s.Run(ctx, systemctl, "is-active", "--quiet", ServiceUnit)
 		status.Running = err == nil
@@ -332,11 +349,15 @@ func (s *System) Apply(ctx context.Context, cfg Config) error {
 		return err
 	}
 	if !cfg.Enabled {
+		// Nothing from the internet without the proxy.
+		if err := s.applyPublic(ctx, cfg, nil, nil); err != nil {
+			return err
+		}
 		os.Remove(s.Paths.onFile())
 		if output, err := s.Run(ctx, systemctl, "disable", "--now", ServiceUnit); err != nil {
 			return fmt.Errorf("Traefik could not be stopped: %s", lastLine(output, err))
 		}
-		return s.recordApplied(cfg)
+		return s.recordApplied(cfg, nil)
 	}
 	if err := s.prepareConfigDir(); err != nil {
 		return err
@@ -355,9 +376,35 @@ func (s *System) Apply(ctx context.Context, cfg Config) error {
 		s.Paths.certFile():    []byte(cfg.CertificatePEM),
 		s.Paths.keyFile():     []byte(cfg.PrivateKeyPEM),
 	}
+	// Ports that stop being public are closed before Traefik changes, and
+	// new ones opened only once Traefik has taken the change: a moment in
+	// between is closed, never open.
+	previously := ReadApplied(s.Paths)
+	nextPublic := cfg.PublicPorts()
+	var kept []string
+	for _, p := range previously.PublicPorts {
+		if slices.Contains(nextPublic, p) {
+			kept = append(kept, p)
+		}
+	}
+	if len(kept) < len(previously.PublicPorts) && cfg.Door {
+		if err := s.applyPublic(ctx, cfg, kept, previously.ListenPorts); err != nil {
+			return err
+		}
+	}
+
 	before := s.readFiles()
 	wasRunning := s.Status(ctx).Running
 	restart := !wasRunning || !bytes.Equal(before[s.Paths.staticFile()], static)
+	// A website that stops being public: Traefik keeps a download or a
+	// stream that is under way going when its route goes (seen with 3.7.16
+	// on 2026-10-25), and the door stays open for the other public ones. A
+	// restart ends every connection, so closing means closed.
+	for _, name := range previously.PublicNames {
+		if !slices.Contains(cfg.publicWebNames(), name) {
+			restart = true
+		}
+	}
 	if !wasRunning {
 		// Something else on the proxy's ports would keep Traefik from
 		// starting; say who, in words, instead of a failed start.
@@ -412,7 +459,37 @@ func (s *System) Apply(ctx context.Context, cfg Config) error {
 	if err := s.checkRouters(ctx, cfg); err != nil {
 		return undo(err)
 	}
-	return s.recordApplied(cfg)
+	// Traefik has the change; now the internet may reach what it should. If
+	// this fails, the ports are as they were or fewer: closed, not open.
+	if err := s.applyPublic(ctx, cfg, nextPublic, previously.ListenPorts); err != nil {
+		s.recordApplied(cfg, kept)
+		return err
+	}
+	return s.recordApplied(cfg, nextPublic)
+}
+
+// applyPublic puts the table for traffic from the internet in place, with
+// these ports public. alsoClosed are Traefik's ports of before, which stay
+// closed to the internet while they may still have connections open.
+func (s *System) applyPublic(ctx context.Context, cfg Config, publicPorts, alsoClosed []string) error {
+	in := public.Input{On: cfg.Enabled && cfg.Door && cfg.Public != nil}
+	if in.On {
+		in.Settings = *cfg.Public
+		in.Public = toPorts(publicPorts)
+		var closed []string
+		for _, p := range slices.Concat(cfg.ListenPorts(), alsoClosed, []string{strconv.Itoa(public.DoorPort) + "/tcp"}) {
+			if !slices.Contains(publicPorts, p) {
+				closed = append(closed, p)
+			}
+		}
+		slices.Sort(closed)
+		in.Closed = toPorts(slices.Compact(closed))
+		for _, p := range append(slices.Clone(cfg.Reserved), cfg.WebPort) {
+			in.Reserved = append(in.Reserved, public.Port{Number: p, Protocol: "tcp"}, public.Port{Number: p, Protocol: "udp"})
+		}
+	}
+	system := &public.System{Paths: s.Paths.Public, Run: s.Run, Log: s.Log}
+	return system.Apply(ctx, in)
 }
 
 // waitForGeneration waits until Traefik reports the label of the routes
@@ -432,8 +509,9 @@ func (s *System) waitForGeneration(ctx context.Context, label string) error {
 	return errors.New("Traefik did not take up the new configuration within 30 seconds; it may have refused the file (its log: sudo journalctl -u sgc-traefik --no-pager -n 30)")
 }
 
-func (s *System) recordApplied(cfg Config) error {
-	data, err := json.Marshal(Applied{Enabled: cfg.Enabled, ListenPorts: cfg.ListenPorts(), At: s.Now().UTC()})
+func (s *System) recordApplied(cfg Config, publicPorts []string) error {
+	data, err := json.Marshal(Applied{Enabled: cfg.Enabled, ListenPorts: cfg.ListenPorts(), Door: cfg.Enabled && cfg.Door,
+		PublicPorts: publicPorts, PublicNames: cfg.publicWebNames(), At: s.Now().UTC()})
 	if err != nil {
 		return err
 	}

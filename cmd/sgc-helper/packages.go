@@ -14,6 +14,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/helper"
 	"github.com/Troglobitten/sgc/internal/log2ram"
 	"github.com/Troglobitten/sgc/internal/osupdate"
+	"github.com/Troglobitten/sgc/internal/public"
 	"github.com/Troglobitten/sgc/internal/wireguard"
 )
 
@@ -50,6 +51,8 @@ var requiredPackages = map[string][]debianPackage{
 	// WireGuard itself is in the kernel; wg is its tool. The VPN's own
 	// firewall table needs nftables, also with SGC's firewall off.
 	helper.PackagesVPN: {{"wireguard-tools", wireguard.WG}, {"nftables", firewall.NftProgram}},
+	// For services reachable from the internet. It brings Python with it.
+	helper.PackagesFail2ban: {{"fail2ban", "/usr/bin/fail2ban-client"}},
 }
 
 type packagesRequest struct {
@@ -121,6 +124,19 @@ func runPackages() error {
 		return nil
 	}
 	fmt.Println("installing:", strings.Join(missing, " "))
+	// Debian's fail2ban starts as soon as it is installed, with its SSH jail
+	// on: a few wrong SSH logins from home would then lock that address out
+	// of the device. SGC's own settings are put in place first, with that
+	// jail and SGC's own switched off (internal/public).
+	if slices.Contains(missing, "fail2ban") {
+		files, err := public.Fail2banFileSet(public.Defaults().Fail2ban, nil)
+		if err != nil {
+			return err
+		}
+		if _, err := public.WriteFail2banFiles(public.DefaultPaths().Fail2banDir, files); err != nil {
+			return fmt.Errorf("put SGC's settings for fail2ban in place: %w", err)
+		}
+	}
 
 	install := append([]string{"install", "--yes", "--no-install-recommends"}, missing...)
 	if err := apt(install...); err != nil {
@@ -147,6 +163,12 @@ func runPackages() error {
 	if slices.Contains(missing, "log2ram") {
 		if err := runSystemctl("disable", log2ram.ServiceUnit, log2ram.TimerUnit); err != nil {
 			return fmt.Errorf("log2ram was installed, but could not be switched off again: %w", err)
+		}
+	}
+	// fail2ban is switched on in SGC's page, with internet access.
+	if slices.Contains(missing, "fail2ban") {
+		if err := runSystemctl("disable", "--now", "fail2ban.service"); err != nil {
+			return fmt.Errorf("fail2ban was installed, but could not be switched off again: %w", err)
 		}
 	}
 	return nil

@@ -11,6 +11,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/adguard"
 	"github.com/Troglobitten/sgc/internal/doctor"
 	"github.com/Troglobitten/sgc/internal/firewall"
+	"github.com/Troglobitten/sgc/internal/public"
 )
 
 const adguardLog = "Its log: sudo journalctl -u sgc-adguard --no-pager -n 30"
@@ -66,6 +67,7 @@ var neededPorts = []struct {
 	{53, "DNS (AdGuard Home)"},
 	{80, "the proxy"},
 	{443, "the proxy"},
+	{public.DoorPort, "the proxy's door for the internet"},
 	{51820, "the VPN"},
 }
 
@@ -77,7 +79,7 @@ func ownPart(port int, protocol, program string, hasProgram bool) bool {
 	switch {
 	case program == "AdGuardHome" || program == "systemd-resolve":
 		return true
-	case program == "traefik" && (port == 80 || port == 443):
+	case program == "traefik" && (port == 80 || port == 443 || port == public.DoorPort):
 		return true
 	case port == 51820 && protocol == "udp" && !hasProgram:
 		return true
@@ -92,7 +94,7 @@ func checkPorts(ctx context.Context) []doctor.Result {
 	}
 	taken := takenPorts(output)
 	if len(taken) == 0 {
-		return one(doctor.Good("The ports SGC needs, now or later, are free (53, 80, 443, 51820)"))
+		return one(doctor.Good(fmt.Sprintf("The ports SGC needs, now or later, are free (53, 80, 443, %d, 51820)", public.DoorPort)))
 	}
 	return one(doctor.Warn("In use by another program: port "+strings.Join(taken, "; port "),
 		"SGC's part for that port cannot start while it is taken. Which program: sudo ss -lntup"))

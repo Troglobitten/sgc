@@ -58,6 +58,10 @@ type System struct {
 	// Proxy reports whether the proxy is switched on, and the ports of its
 	// proxied services; the rules then let those in from inside.
 	Proxy func() (bool, []string)
+	// Door reports whether internet access is on (the proxy's public entry
+	// point is in place); the rules then let in what the table for the
+	// internet marked.
+	Door func() bool
 	// VPNPort reports the VPN's port while it is on, 0 otherwise.
 	VPNPort func() int
 	Uptime  func() (float64, error)
@@ -133,6 +137,9 @@ func (s *System) begin(ctx context.Context) (*Pending, error) {
 	cfg := Config{Enabled: request.Enabled, SSHPorts: ports, WebPort: s.WebPort, DNS: s.DNSInstalled != nil && s.DNSInstalled()}
 	if s.Proxy != nil {
 		cfg.Proxy, cfg.ProxyPorts = s.Proxy()
+	}
+	if s.Door != nil {
+		cfg.Door = cfg.Proxy && s.Door()
 	}
 	if s.VPNPort != nil {
 		cfg.VPNPort = s.VPNPort()

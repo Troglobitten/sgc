@@ -16,9 +16,12 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Troglobitten/sgc/internal/public"
 )
 
 // go test ./internal/proxy -update rewrites the expected files. Read the
@@ -100,6 +103,162 @@ func TestRender(t *testing.T) {
 	}
 }
 
+// withDoor is the sample with internet access on: one web service public
+// and protected, one public game port told who the visitor is, one UDP port
+// public with a longer quiet time; nas stays home-only.
+func withDoor(t *testing.T) Config {
+	cfg := sample(t)
+	cfg.CertificatePEM = "the certificate of the expected files"
+	settings := public.Defaults()
+	cfg.Door, cfg.Public = true, &settings
+	for i := range cfg.Services {
+		switch cfg.Services[i].Name {
+		case "media":
+			cfg.Services[i].Public = true
+		case "minecraft":
+			cfg.Services[i].Public, cfg.Services[i].ProxyProtocol = true, true
+		case "game":
+			cfg.Services[i].Public, cfg.Services[i].UDPTimeout = true, 60
+		}
+	}
+	return cfg
+}
+
+func TestRenderWithTheDoor(t *testing.T) {
+	cfg := withDoor(t)
+	static, err := RenderStatic(cfg, "/etc/sgc/traefik/dynamic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dynamic, err := RenderDynamic(cfg, "/etc/sgc/traefik/certs/wildcard.crt", "/etc/sgc/traefik/certs/wildcard.key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, got := range map[string][]byte{"static-door.yml": static, "dynamic-door.yml": dynamic} {
+		golden := filepath.Join("testdata", name)
+		if *update {
+			if err := os.WriteFile(golden, got, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want, err := os.ReadFile(golden)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != string(want) {
+			t.Errorf("%s differs from what is expected:\n%s", name, got)
+		}
+	}
+	if got := cfg.PublicPorts(); !slices.Equal(got, []string{"25565/tcp", "27016/udp", "8446/tcp"}) {
+		t.Errorf("PublicPorts = %v", got)
+	}
+}
+
+// The public door carries routes for public services and nothing else: not
+// SGC's page, not AdGuard Home's, not a home-only service, not the "unknown"
+// page that names SGC. A name asked for there that is not public gets
+// Traefik's plain "not found".
+func TestTheDoorCarriesOnlyPublicServices(t *testing.T) {
+	cfg := withDoor(t)
+	dynamic, err := RenderDynamic(cfg, "/c.crt", "/c.key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		HTTP struct {
+			Routers map[string]struct {
+				Rule        string   `json:"rule"`
+				EntryPoints []string `json:"entryPoints"`
+			} `json:"routers"`
+		} `json:"http"`
+		TCP struct {
+			Routers map[string]struct {
+				EntryPoints []string `json:"entryPoints"`
+			} `json:"routers"`
+		} `json:"tcp"`
+	}
+	if err := json.Unmarshal(dynamic[strings.IndexByte(string(dynamic), '\n')+1:], &parsed); err != nil {
+		t.Fatal(err)
+	}
+	onDoor := 0
+	for name, router := range parsed.HTTP.Routers {
+		if !slices.Contains(router.EntryPoints, "public") {
+			continue
+		}
+		onDoor++
+		if len(router.EntryPoints) != 1 {
+			t.Errorf("router %s is on the door and elsewhere", name)
+		}
+		if !strings.Contains(router.Rule, "media.domain.tld") {
+			t.Errorf("router %s on the door is not for the public service: %s", name, router.Rule)
+		}
+	}
+	// media is behind SGC's login in the sample: the service and its sign-in.
+	if onDoor != 2 {
+		t.Errorf("%d routers on the door, want the public service's two", onDoor)
+	}
+	for name, router := range parsed.TCP.Routers {
+		if slices.Contains(router.EntryPoints, "public") {
+			t.Errorf("TCP router %s is on the door: SGC's page would face the internet", name)
+		}
+	}
+	// With the gate, its sign-in comes on the door too, under the service's
+	// own name.
+	for i := range cfg.Services {
+		if cfg.Services[i].Name == "media" {
+			cfg.Services[i].Protected = true
+		}
+	}
+	dynamic, _ = RenderDynamic(cfg, "/c.crt", "/c.key")
+	if !strings.Contains(string(dynamic), `"public-gate-media"`) || !strings.Contains(string(dynamic), "/gate/check-public") {
+		t.Error("a protected public service has no sign-in on the door")
+	}
+}
+
+func TestWhatTheDoorRefuses(t *testing.T) {
+	cases := map[string]func(*Config){
+		"a public service with internet access off": func(c *Config) { c.Door, c.Public = false, nil },
+		"internet access without its settings":      func(c *Config) { c.Public = nil },
+		"settings that do not pass":                 func(c *Config) { c.Public.RequestsPerMinute = 0 },
+		"the PROXY protocol on UDP": func(c *Config) {
+			for i := range c.Services {
+				if c.Services[i].Kind == KindUDP {
+					c.Services[i].ProxyProtocol = true
+				}
+			}
+		},
+		"a quiet time on TCP": func(c *Config) {
+			for i := range c.Services {
+				if c.Services[i].Kind == KindTCP {
+					c.Services[i].UDPTimeout = 30
+				}
+			}
+		},
+		"a game on the door's port": func(c *Config) {
+			for i := range c.Services {
+				if c.Services[i].Kind == KindTCP {
+					c.Services[i].ListenPort = public.DoorPort
+				}
+			}
+		},
+	}
+	for name, change := range cases {
+		cfg := withDoor(t)
+		settings := *cfg.Public
+		cfg.Public = &settings
+		change(&cfg)
+		cfg.CertificatePEM, cfg.PrivateKeyPEM = certificate(t, "*.domain.tld")
+		if err := cfg.Validate(now); err == nil {
+			t.Errorf("%s: taken", name)
+		}
+	}
+	cfg := withDoor(t)
+	cfg.CertificatePEM, cfg.PrivateKeyPEM = certificate(t, "*.domain.tld")
+	if err := cfg.Validate(now); err != nil {
+		t.Errorf("the sample with the door: %v", err)
+	}
+}
+
 // Without this setting a visitor's "X_SGC_User" reaches PHP and CGI services
 // as the gate's user header (seen with Traefik 3.7.16 on 2026-10-23), so it
 // is checked here and not only through the expected file, which -update
@@ -141,7 +300,13 @@ func TestEveryHTTPEntryPointDropsLookAlikeHeaders(t *testing.T) {
 // did, in the whole-machine test of 2026-10-25, and every visit to SGC's name
 // got the router's answer instead of SGC's page.
 func TestNoHTTPRouterNamesTheGateway(t *testing.T) {
-	cfg := sample(t)
+	for _, cfg := range []Config{sample(t), withDoor(t)} {
+		noRouterNamesTheGateway(t, cfg)
+	}
+}
+
+func noRouterNamesTheGateway(t *testing.T, cfg Config) {
+	t.Helper()
 	dynamic, err := RenderDynamic(cfg, "/c.crt", "/c.key")
 	if err != nil {
 		t.Fatal(err)

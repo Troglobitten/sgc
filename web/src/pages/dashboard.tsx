@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { BadgeCheck, ChevronRight, Globe, KeyRound, Route, Shield, ShieldCheck, TriangleAlert } from 'lucide-react'
+import { BadgeCheck, ChevronRight, Earth, Globe, KeyRound, Route, Shield, ShieldCheck, TriangleAlert } from 'lucide-react'
 
 import { AppShell, type ShellProps } from '@/components/app-shell'
 import { GuideChecklist } from '@/components/guide-checklist'
@@ -18,6 +18,7 @@ import {
   type Health,
   type Notification,
   type ProxyStatus,
+  type PublicStatus,
   type Service,
   type SshStatus,
   type VpnStatus,
@@ -44,6 +45,7 @@ export function DashboardPage({ shell, onOpenGuide }: { shell: ShellProps; onOpe
   const [services, setServices] = useState<Service[] | null>(null)
   const [proxyStatus, setProxyStatus] = useState<ProxyStatus | null>(null)
   const [vpn, setVpn] = useState<VpnStatus | null>(null)
+  const [internet, setInternet] = useState<PublicStatus | null>(null)
   const [attention, setAttention] = useState<Notification[] | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
   // While an update runs: the number of the attempt before it (or null).
@@ -103,6 +105,7 @@ export function DashboardPage({ shell, onOpenGuide }: { shell: ShellProps; onOpe
       api.services().then((data) => !stopped && setServices(data.services), quiet)
       api.proxy().then((s) => !stopped && setProxyStatus(s), quiet)
       api.vpn().then((s) => !stopped && setVpn(s), quiet)
+      api.publicStatus().then((s) => !stopped && setInternet(s), quiet)
     }
     load()
     const timer = setInterval(load, activityInterval)
@@ -139,12 +142,13 @@ export function DashboardPage({ shell, onOpenGuide }: { shell: ShellProps; onOpe
       {attention && attention.length > 0 && <NeedsAttention items={attention} onNavigate={onNavigate} />}
 
       <Section title="Status">
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
           <Tile icon={<Shield />} label="Firewall" {...firewallWord(firewall)} onOpen={() => onNavigate('system', 'security')} />
           <Tile icon={<KeyRound />} label="SSH" {...sshWord(ssh)} onOpen={() => onNavigate('system', 'security')} />
           <Tile icon={<Globe />} label="DNS" {...dnsWord(dns)} onOpen={() => onNavigate('system', 'dns')} />
           <Tile icon={<Route />} label="Proxy" {...proxyWord(proxyStatus)} onOpen={() => onNavigate('services')} />
           <Tile icon={<ShieldCheck />} label="VPN" {...vpnWord(vpn)} onOpen={() => onNavigate('people')} />
+          <Tile icon={<Earth />} label="Internet" {...internetWord(internet)} onOpen={() => onNavigate('system', 'internet')} />
           <Tile
             icon={<BadgeCheck />}
             label="Certificate"
@@ -291,6 +295,8 @@ function whereFor(n: Notification): { label: string; page: Page; section?: Syste
       return { label: 'Updates', page: 'system', section: 'updates' }
     case 'backup':
       return { label: 'Backups', page: 'system', section: 'backups' }
+    case 'internet':
+      return { label: 'Internet', page: 'system', section: 'internet' }
     case 'core_down':
       if (/DNS|AdGuard/i.test(n.title)) return { label: 'DNS', page: 'system', section: 'dns' }
       if (/proxy|Traefik/i.test(n.title)) return { label: 'Services', page: 'services' }
@@ -363,6 +369,14 @@ function proxyWord(s: ProxyStatus | null): Word {
   if (s.running && s.lastApply?.ok !== false) return { text: 'Running', tone: 'ok' }
   if (s.running) return { text: 'Last change failed', tone: 'warn' }
   return { text: 'Not running', tone: 'warn' }
+}
+
+function internetWord(s: PublicStatus | null): Word {
+  if (!s) return waiting
+  if (!s.wanted) return { text: 'Nothing public', tone: 'muted' }
+  if (s.problem) return { text: 'Needs a look', tone: 'warn' }
+  const count = s.services.length
+  return { text: count === 0 ? 'On, nothing public' : `${count} public`, tone: 'ok' }
 }
 
 function vpnWord(s: VpnStatus | null): Word {
@@ -614,6 +628,15 @@ const laterActions: Record<string, string> = {
   'service.announce_refused': 'An announcement was refused',
   'service.approved': '{who} approved a service',
   'service.settings_changed': '{who} changed how services are handled',
+  'service.public_opened': '{who} made a service reachable from the internet',
+  'service.public_closed': 'A service was closed to the internet',
+  'public.access_on': '{who} switched internet access on',
+  'public.access_off': 'Internet access was switched off',
+  'public.settings_changed': '{who} changed how visitors from the internet are filtered',
+  'public.list_failed': 'A list of attackers could not be fetched',
+  'public.unbanned': '{who} lifted a ban',
+  'public.record_changed': 'A public name was updated',
+  'public.record_failed': 'A public name could not be updated',
   'token.created': '{who} made a token for a server',
   'token.removed': '{who} removed a server’s token',
   'token.repinned': '{who} let a server’s token move',

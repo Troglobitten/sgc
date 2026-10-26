@@ -26,6 +26,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Troglobitten/sgc/internal/public"
 )
 
 // Fixed places and numbers.
@@ -80,6 +82,18 @@ type Service struct {
 	Protected bool `json:"protected,omitempty"`
 	// AllowFrom, if not empty, is who may reach it; nobody else may.
 	AllowFrom []string `json:"allowFrom,omitempty"`
+	// Public: reachable from the internet too (docs/design.md §14), through
+	// the public door for a web service, at its own port for a TCP or UDP
+	// one. Only with Config.Door. The owner's choice in SGC's page; an
+	// announcement can never set it.
+	Public bool `json:"public,omitempty"`
+	// ProxyProtocol: the TCP service is told who each visitor is, with a
+	// PROXY protocol header (version 2) in front of every connection. Only
+	// for servers that expect one: others take it for garbage.
+	ProxyProtocol bool `json:"proxyProtocol,omitempty"`
+	// UDPTimeout is how long a quiet UDP "connection" is kept, in seconds (0:
+	// Traefik's 3).
+	UDPTimeout int `json:"udpTimeout,omitempty"`
 }
 
 // Config is everything that goes into Traefik's configuration.
@@ -97,7 +111,16 @@ type Config struct {
 	// Reserved are ports the gateway itself uses, which no proxied service
 	// may take (SSH, DNS, the VPN's).
 	Reserved []int `json:"reserved,omitempty"`
+	// Door: internet access is on. Traefik gets its public entry point
+	// (public.DoorPort, where the router sends the internet's 443), and the
+	// device the table for traffic from the internet (internal/public).
+	Door bool `json:"door,omitempty"`
+	// Public is how visitors from the internet are filtered; with Door only.
+	Public *public.Settings `json:"public,omitempty"`
 }
+
+// maxUDPTimeout is the longest a quiet UDP connection is kept, in seconds.
+const maxUDPTimeout = 3600
 
 // The ports SGC and its parts always use.
 var alwaysReserved = []int{53, 80, 443, 3000, 8082, 8443, 8444}
@@ -186,6 +209,18 @@ func (c Config) Validate(now time.Time) error {
 		}
 		reserved[p] = true
 	}
+	switch {
+	case c.Door && c.Public == nil:
+		return errors.New("internet access is on without its settings")
+	case !c.Door && c.Public != nil:
+		return errors.New("settings for internet access while it is off")
+	case c.Door:
+		if err := c.Public.Validate(); err != nil {
+			return fmt.Errorf("internet access: %w", err)
+		}
+		// SGC's own listener for its name is there too.
+		reserved[public.DoorPort], reserved[8445] = true, true
+	}
 	names := map[string]bool{c.GatewayName: true, "adguard": true}
 	listen := map[string]bool{}
 	for _, s := range c.Services {
@@ -224,6 +259,15 @@ func (c Config) Validate(now time.Time) error {
 			listen[key] = true
 		default:
 			return fmt.Errorf("%s: unknown kind %q", s.Name, s.Kind)
+		}
+		if s.Public && !c.Door {
+			return fmt.Errorf("%s: public while internet access is off", s.Name)
+		}
+		if s.ProxyProtocol && s.Kind != KindTCP {
+			return fmt.Errorf("%s: only a TCP service can be told who the visitor is", s.Name)
+		}
+		if s.UDPTimeout != 0 && (s.Kind != KindUDP || s.UDPTimeout < 1 || s.UDPTimeout > maxUDPTimeout) {
+			return fmt.Errorf("%s: a quiet time is for UDP services, 1 to %d seconds", s.Name, maxUDPTimeout)
 		}
 		if len(s.AllowFrom) > maxAllowList {
 			return fmt.Errorf("%s: too many entries in who may reach it", s.Name)
@@ -271,7 +315,73 @@ func (c Config) ListenPorts() []string {
 	return slices.Compact(out)
 }
 
+// PublicPorts are the ports reachable from the internet with this
+// configuration, as "port/protocol", sorted: the public door while a web
+// service is public, and each public TCP or UDP service's port.
+func (c Config) PublicPorts() []string {
+	var out []string
+	if !c.Enabled || !c.Door {
+		return out
+	}
+	for _, s := range c.Services {
+		switch {
+		case !s.Public:
+		case s.Kind == KindHTTP:
+			out = append(out, strconv.Itoa(public.DoorPort)+"/tcp")
+		default:
+			out = append(out, strconv.Itoa(s.ListenPort)+"/"+s.Kind)
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// publicWebNames are the web services on the public door, sorted.
+func (c Config) publicWebNames() []string {
+	var out []string
+	if !c.Enabled || !c.Door {
+		return out
+	}
+	for _, s := range c.Services {
+		if s.Public && s.Kind == KindHTTP {
+			out = append(out, s.Name)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// closedPorts are Traefik's ports that are not public: never from the
+// internet.
+func (c Config) closedPorts() []string {
+	var out []string
+	if !c.Enabled || !c.Door {
+		return out
+	}
+	publicPorts := c.PublicPorts()
+	for _, p := range append(c.ListenPorts(), strconv.Itoa(public.DoorPort)+"/tcp") {
+		if !slices.Contains(publicPorts, p) {
+			out = append(out, p)
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+func toPorts(ports []string) []public.Port {
+	out := make([]public.Port, 0, len(ports))
+	for _, p := range ports {
+		if parsed, ok := public.ParsePort(p); ok {
+			out = append(out, parsed)
+		}
+	}
+	return out
+}
+
 func entryPointName(port string) string { return strings.ReplaceAll(port, "/", "-") }
+
+// publicEntryPoint is the door's name in Traefik's settings.
+const publicEntryPoint = "public"
 
 // RenderStatic writes Traefik's own settings: where it listens, where its
 // routes are, what it logs. Only the entry points depend on the request.
@@ -286,6 +396,12 @@ func RenderStatic(cfg Config, dynamicDir string) ([]byte, error) {
 		// Traefik's own API and health answer, on this device only.
 		"traefik": map[string]any{"address": TraefikAPI, "http": noAliasHeaders()},
 	}
+	udpTimeouts := map[string]int{}
+	for _, s := range cfg.Services {
+		if s.Kind == KindUDP && s.UDPTimeout > 0 {
+			udpTimeouts[strconv.Itoa(s.ListenPort)+"/udp"] = s.UDPTimeout
+		}
+	}
 	for _, port := range cfg.ListenPorts() {
 		number, protocol, _ := strings.Cut(port, "/")
 		entryPoint := map[string]any{"address": ":" + number + "/" + protocol}
@@ -293,7 +409,15 @@ func RenderStatic(cfg Config, dynamicDir string) ([]byte, error) {
 			// Traefik can serve HTTP on any TCP entry point, so the same rule.
 			entryPoint["http"] = noAliasHeaders()
 		}
+		if seconds := udpTimeouts[port]; seconds > 0 {
+			entryPoint["udp"] = map[string]any{"timeout": strconv.Itoa(seconds) + "s"}
+		}
 		entryPoints[entryPointName(port)] = entryPoint
+	}
+	if cfg.Enabled && cfg.Door {
+		// The public door: the router sends the internet's 443 here. Only
+		// routes for services the owner made public are on it.
+		entryPoints[publicEntryPoint] = map[string]any{"address": ":" + strconv.Itoa(public.DoorPort), "http": noAliasHeaders()}
 	}
 	static := map[string]any{
 		"global":      map[string]any{"checkNewVersion": false, "sendAnonymousUsage": false},
@@ -350,6 +474,19 @@ func RenderDynamic(cfg Config, certFile, keyFile string) ([]byte, error) {
 		"unknown-name":   map[string]any{"replacePath": map[string]any{"path": "/proxy-unknown"}},
 	}
 	tlsOn := map[string]any{}
+	door := cfg.Door && cfg.Public != nil
+	if door {
+		// Every request on the public door counts against its visitor.
+		middlewares["public-limit"] = map[string]any{"rateLimit": map[string]any{
+			"average": cfg.Public.RequestsPerMinute, "period": "1m", "burst": cfg.Public.RequestsPerMinute}}
+		// Browsers that came once over the internet keep to https.
+		middlewares["public-hsts"] = map[string]any{"headers": map[string]any{"stsSeconds": 31536000}}
+		// The login gate for a request from the internet: its sign-in is on
+		// the service's own name (SGC's own name never faces the internet).
+		middlewares["login-gate-public"] = map[string]any{"forwardAuth": map[string]any{
+			"address": internal + "/gate/check-public", "trustForwardHeader": false,
+			"authResponseHeaders": []string{"X-SGC-User"}, "maxResponseBodySize": gateAnswerLimit}}
+	}
 	httpRouters["adguard"] = map[string]any{"rule": host("adguard"), "entryPoints": []string{"websecure"},
 		"service": "noop@internal", "middlewares": []string{"to-adguard-page"}, "tls": tlsOn}
 	// Any other name under the domain: SGC says that it does not know it.
@@ -397,6 +534,21 @@ func RenderDynamic(cfg Config, certFile, keyFile string) ([]byte, error) {
 			chain = append(chain, "friendly-errors")
 			httpRouters[name] = map[string]any{"rule": host(s.Name), "entryPoints": []string{"websecure"},
 				"service": name, "middlewares": chain, "tls": tlsOn, "priority": 100}
+			if door && s.Public {
+				// The same service on the public door, for visitors from the
+				// internet. Who may reach it from home (AllowFrom) does not
+				// apply there: public means anyone, through the filters.
+				publicChain := []string{"public-limit", "no-user-header"}
+				if s.Protected {
+					publicChain = append(publicChain, "login-gate-public")
+					httpRouters["public-gate-"+s.Name] = map[string]any{"rule": host(s.Name) + " && PathPrefix(`" + GatePath + "`)",
+						"entryPoints": []string{publicEntryPoint}, "service": "sgc-internal", "middlewares": []string{"public-limit"},
+						"tls": tlsOn, "priority": 10000}
+				}
+				publicChain = append(publicChain, "public-hsts", "friendly-errors")
+				httpRouters["public-"+name] = map[string]any{"rule": host(s.Name), "entryPoints": []string{publicEntryPoint},
+					"service": name, "middlewares": publicChain, "tls": tlsOn, "priority": 100}
+			}
 			balancer := map[string]any{"servers": []any{map[string]any{"url": s.Scheme + "://" + s.Upstream + ":" + strconv.Itoa(s.Port)}},
 				"passHostHeader": true}
 			if s.Scheme == "https" && !s.VerifyTLS {
@@ -411,8 +563,12 @@ func RenderDynamic(cfg Config, certFile, keyFile string) ([]byte, error) {
 				router["middlewares"] = []string{"allow-" + s.Name}
 			}
 			tcpRouters[name] = router
-			tcpServices[name] = map[string]any{"loadBalancer": map[string]any{"servers": []any{
-				map[string]any{"address": s.Upstream + ":" + strconv.Itoa(s.Port)}}}}
+			balancer := map[string]any{"servers": []any{map[string]any{"address": s.Upstream + ":" + strconv.Itoa(s.Port)}}}
+			if s.ProxyProtocol {
+				// The visitor's address, for a server that expects to be told.
+				balancer["serversTransport"] = "with-visitor"
+			}
+			tcpServices[name] = map[string]any{"loadBalancer": balancer}
 		case KindUDP:
 			// UDP has no middlewares in Traefik; who may reach a UDP port is
 			// left to the firewall.
@@ -430,7 +586,8 @@ func RenderDynamic(cfg Config, certFile, keyFile string) ([]byte, error) {
 		},
 	}
 	tcp := map[string]any{"routers": tcpRouters, "services": tcpServices,
-		// Says who the visitor is, for the gateway's name only.
+		// Says who the visitor is: for the gateway's name, and for TCP
+		// services that asked for it.
 		"serversTransports": map[string]any{"with-visitor": map[string]any{"proxyProtocol": map[string]any{"version": 2}}}}
 	if len(tcpMiddlewares) > 0 {
 		tcp["middlewares"] = tcpMiddlewares
@@ -498,6 +655,12 @@ func ExpectedRouters(cfg Config) map[string][]string {
 		out[s.Kind] = append(out[s.Kind], routerName(s)+"@file")
 		if s.Protected {
 			out["http"] = append(out["http"], "gate-"+s.Name+"@file")
+		}
+		if cfg.Door && cfg.Public != nil && s.Public && s.Kind == KindHTTP {
+			out["http"] = append(out["http"], "public-"+routerName(s)+"@file")
+			if s.Protected {
+				out["http"] = append(out["http"], "public-gate-"+s.Name+"@file")
+			}
 		}
 	}
 	for kind := range out {

@@ -113,3 +113,32 @@ func (z zoneProvider) AddA(ctx context.Context, domain, name, address string) (R
 func (z zoneProvider) UpdateA(ctx context.Context, domain, id, name, address string) error {
 	return zoneError(z.c.UpdateA(ctx, domain, id, name, address))
 }
+
+func (z zoneProvider) DeleteA(ctx context.Context, domain, id string) error {
+	return zoneError(z.c.DeleteA(ctx, domain, id))
+}
+
+func (z zoneProvider) SRVRecords(ctx context.Context, domain string) ([]SRV, error) {
+	found, err := z.c.SRVRecords(ctx, domain)
+	if err != nil {
+		return nil, zoneError(err)
+	}
+	out := make([]SRV, 0, len(found))
+	for _, r := range found {
+		out = append(out, SRV{ID: r.ID, Name: r.Name, Target: r.Target, Priority: r.Priority, Weight: r.Weight, Port: r.Port})
+	}
+	return out, nil
+}
+
+func (z zoneProvider) AddSRV(ctx context.Context, domain string, r SRV) (SRV, error) {
+	made, err := z.c.AddSRV(ctx, domain, zone.SRVRecord{Name: r.Name, Target: r.Target, Priority: r.Priority, Weight: r.Weight, Port: r.Port})
+	if err != nil {
+		return SRV{}, zoneError(err)
+	}
+	r.ID = made.ID
+	return r, nil
+}
+
+func (z zoneProvider) DeleteSRV(ctx context.Context, domain, id string) error {
+	return zoneError(z.c.DeleteSRV(ctx, domain, id))
+}

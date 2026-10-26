@@ -13,6 +13,7 @@ udp UNCONN 0      0                    [::]:51820    [::]:*
 tcp LISTEN 0      4096                    *:80          *:* users:(("traefik",pid=2087,fd=7))
 tcp LISTEN 0      4096                    *:53          *:* users:(("AdGuardHome",pid=1908,fd=12))
 tcp LISTEN 0      4096                    *:443         *:* users:(("traefik",pid=2087,fd=8))
+tcp LISTEN 0      4096                    *:8446        *:* users:(("traefik",pid=2087,fd=9))
 `
 
 func TestSGCsOwnPartsAreNotOtherPrograms(t *testing.T) {
@@ -26,14 +27,16 @@ func TestOtherProgramsOnThePortsSGCNeeds(t *testing.T) {
 tcp LISTEN 0      5               127.0.0.1:53    0.0.0.0:* users:(("python3",pid=2,fd=3))
 udp UNCONN 0      0                 0.0.0.0:51820 0.0.0.0:* users:(("wg-quick-ish",pid=3,fd=4))
 tcp LISTEN 0      5               127.0.0.1:8080  0.0.0.0:* users:(("python3",pid=4,fd=3))
+tcp LISTEN 0      5                 0.0.0.0:8446  0.0.0.0:* users:(("caddy",pid=5,fd=3))
 `
 	taken := takenPorts(output)
-	for _, want := range []string{"80 (the proxy) by nginx", "53 (DNS (AdGuard Home)) by python3", "51820 (the VPN) by wg-quick-ish"} {
+	for _, want := range []string{"80 (the proxy) by nginx", "53 (DNS (AdGuard Home)) by python3", "51820 (the VPN) by wg-quick-ish",
+		"8446 (the proxy's door for the internet) by caddy"} {
 		if !slices.Contains(taken, want) {
 			t.Errorf("not pointed out: %s (got %v)", want, taken)
 		}
 	}
-	if len(taken) != 3 {
-		t.Errorf("taken = %v, want exactly the three", taken)
+	if len(taken) != 4 {
+		t.Errorf("taken = %v, want exactly the four", taken)
 	}
 }

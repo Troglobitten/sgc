@@ -1,7 +1,9 @@
 // Package dnsprovider is SGC's side of the company that holds the owner's
 // DNS (docs/design.md §11): one interface for the little SGC asks of it
 // (check the account, publish and remove a TXT record for the certificate's
-// proof, keep the VPN's A record), and a list of the providers SGC knows.
+// proof, keep the VPN's A record and those of public services, and, where the
+// provider's API has them, service records), and a list of the providers SGC
+// knows.
 //
 // Adding a provider is one file: a type that implements Provider, and a
 // Register call in that file's init with its Kind (what the page asks the
@@ -46,6 +48,37 @@ type Provider interface {
 	ARecords(ctx context.Context, domain string) ([]Record, error)
 	AddA(ctx context.Context, domain, name, address string) (Record, error)
 	UpdateA(ctx context.Context, domain, id, name, address string) error
+	// DeleteA removes an A record SGC made; one already gone is not an error.
+	DeleteA(ctx context.Context, domain, id string) error
+}
+
+// SRV is a service record: under Name ("_minecraft._tcp.mc.domain.tld") it
+// says that the service is on Target at Port. ID is the provider's, as for
+// Record.
+type SRV struct {
+	ID       string
+	Name     string
+	Target   string
+	Priority int
+	Weight   int
+	Port     int
+}
+
+// SRVProvider is what a provider whose API has service records offers as
+// well (docs/design.md §14). Not every one does: Namecheap's documented API
+// has no SRV among the types it writes.
+type SRVProvider interface {
+	SRVRecords(ctx context.Context, domain string) ([]SRV, error)
+	AddSRV(ctx context.Context, domain string, r SRV) (SRV, error)
+	// DeleteSRV removes a service record SGC made; one already gone is not
+	// an error.
+	DeleteSRV(ctx context.Context, domain, id string) error
+}
+
+// SupportsSRV returns the provider's service records, if its API has them.
+func SupportsSRV(p Provider) (SRVProvider, bool) {
+	s, ok := p.(SRVProvider)
+	return s, ok
 }
 
 // Record is a record as SGC keeps track of it. ID is whatever the provider

@@ -277,6 +277,17 @@ var migrations = []string{
 	);
 	CREATE INDEX gate_pass_expires ON gate_pass (expires_at);
 	`,
+
+	// 8: services reachable from the internet (docs/design.md §14). Whether
+	// one is, is service.exposure ('lan' or 'public'), there since 1.
+	`
+	-- A proxied TCP service is told who each visitor is (PROXY protocol).
+	ALTER TABLE service ADD COLUMN proxy_protocol INTEGER NOT NULL DEFAULT 0;
+	-- How long a quiet UDP connection is kept, in seconds (0: Traefik's 3).
+	ALTER TABLE service ADD COLUMN udp_timeout INTEGER NOT NULL DEFAULT 0;
+	-- The service's name in an SRV record ("minecraft"), '' for none.
+	ALTER TABLE service ADD COLUMN srv_service TEXT NOT NULL DEFAULT '';
+	`,
 }
 
 // Setting reads one setting. found is false if it was never set, in which

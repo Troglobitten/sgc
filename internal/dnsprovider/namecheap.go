@@ -364,6 +364,21 @@ func (n *namecheap) AddA(ctx context.Context, domain, name, address string) (Rec
 	return Record{ID: "a|" + strings.ToLower(h), Name: name, Value: address}, nil
 }
 
+// DeleteA removes SGC's A record: the whole list is written back without it.
+func (n *namecheap) DeleteA(ctx context.Context, domain, id string) error {
+	kind, h, _ := strings.Cut(id, "|")
+	if kind != "a" || h == "" {
+		return fmt.Errorf("%q is not one of SGC's names for a Namecheap record", id)
+	}
+	return n.change(ctx, domain, func(hosts []ncHost) ([]ncHost, bool, error) {
+		kept := slices.DeleteFunc(hosts, func(r ncHost) bool {
+			return strings.EqualFold(r.Type, "A") && strings.EqualFold(r.Name, h)
+		})
+		// Nothing to remove (already gone): nothing is written.
+		return kept, len(kept) != len(hosts), nil
+	})
+}
+
 func (n *namecheap) UpdateA(ctx context.Context, domain, id, name, address string) error {
 	kind, h, _ := strings.Cut(id, "|")
 	if kind != "a" || h == "" {

@@ -9,6 +9,7 @@ import { DnsCard } from '@/components/dns-card'
 import { DomainCard } from '@/components/domain-card'
 import { ExportCard } from '@/components/export-card'
 import { FirewallCard } from '@/components/firewall-card'
+import { InternetSection } from '@/components/internet-cards'
 import { Log2ramCard } from '@/components/log2ram-card'
 import { Logo } from '@/components/logo'
 import { MaintenanceCard } from '@/components/maintenance-card'
@@ -193,6 +194,8 @@ function SectionContent({
           <AccountCard username={username} minPasswordLength={minPasswordLength} />
         </>
       )
+    case 'internet':
+      return <InternetSection onError={onError} />
     case 'domain':
       return (
         <>
@@ -251,6 +254,7 @@ function useSectionSummary(active: boolean): Partial<Record<SystemSection, Line>
   const [notifications] = usePolled(api.notificationSettings, interval, ignore)
   const [health] = usePolled(api.health, interval, ignore)
   const [log2ram] = usePolled(api.log2ram, interval, ignore)
+  const [internet] = usePolled(api.publicStatus, interval, ignore)
 
   const out: Partial<Record<SystemSection, Line>> = {}
 
@@ -260,6 +264,13 @@ function useSectionSummary(active: boolean): Partial<Record<SystemSection, Line>
     else if (firewall.state === 'off') out.security = { text: `Firewall off${keys}`, tone: 'warn' }
     else if (firewall.behind.length > 0) out.security = { text: 'Firewall rules are behind', tone: 'warn' }
     else out.security = { text: `Firewall on${keys}`, tone: 'ok' }
+  }
+
+  if (internet) {
+    const count = internet.services.length
+    if (!internet.wanted) out.internet = { text: 'Off: nothing is public', tone: 'muted' }
+    else if (internet.problem) out.internet = { text: 'A public name needs a look', tone: 'warn' }
+    else out.internet = { text: count === 0 ? 'On, nothing public yet' : `${count} public`, tone: 'ok' }
   }
 
   if (domain) {

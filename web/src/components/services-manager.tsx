@@ -1,5 +1,5 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
-import { Ellipsis, ExternalLink, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { Earth, Ellipsis, ExternalLink, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
 
 import { FormError } from '@/components/auth-card'
 import { HealthDot, ServiceIcon } from '@/components/service-icon'
@@ -28,6 +28,7 @@ import {
   errorMessage,
   type IconsStatus,
   type Person,
+  type PublicStatus,
   type Service,
   type ServiceInput,
   type ServicesResponse,
@@ -51,6 +52,9 @@ const blank: ServiceInput = {
   category: '',
   protected: false,
   enabled: true,
+  proxyProtocol: false,
+  udpTimeout: 0,
+  srvService: '',
 }
 
 /**
@@ -61,17 +65,21 @@ const blank: ServiceInput = {
 export function ServicesManager({
   data,
   people,
+  internet,
   refresh,
   onError,
 }: {
   data: ServicesResponse
   people: Person[]
+  /** internet access, for opening services to it; null while unknown */
+  internet: PublicStatus | null
   refresh: () => void
   onError: (error: unknown) => void
 }) {
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<Service | null>(null)
   const [removing, setRemoving] = useState<Service | null>(null)
+  const [publicFor, setPublicFor] = useState<Service | null>(null)
 
   const pending = data.services.filter((s) => s.pending)
   const listed = data.services.filter((s) => !s.pending)
@@ -164,6 +172,7 @@ export function ServicesManager({
                     service={s}
                     people={people}
                     onEdit={() => setEditing(s)}
+                    onPublic={() => setPublicFor(s)}
                     onRemove={() => setRemoving(s)}
                     onRefreshIcon={() => api.refreshServiceIcon(s.id).then(() => setTimeout(refresh, 4000), onError)}
                   />
@@ -172,6 +181,18 @@ export function ServicesManager({
           </div>
         </section>
       ))}
+
+      {publicFor && (
+        <PublicDialog
+          service={publicFor}
+          internet={internet}
+          onClose={() => setPublicFor(null)}
+          onDone={() => {
+            setPublicFor(null)
+            refresh()
+          }}
+        />
+      )}
 
       {removing && (
         <RemoveDialog
@@ -198,16 +219,23 @@ function onListsOf(s: Service, people: Person[]): string[] {
   return people.filter((p) => p.active && !p.disabled && (p.allServices || p.serviceIds.includes(s.id))).map((p) => p.name)
 }
 
+/** A service that can be opened to the internet goes through SGC. */
+function canBePublic(s: Service): boolean {
+  return s.enabled && !s.pending && (s.kind === 'http' || s.mode === 'proxied')
+}
+
 function ServiceRow({
   service: s,
   people,
   onEdit,
+  onPublic,
   onRemove,
   onRefreshIcon,
 }: {
   service: Service
   people: Person[]
   onEdit: () => void
+  onPublic: () => void
   onRemove: () => void
   onRefreshIcon: () => void
 }) {
@@ -255,6 +283,12 @@ function ServiceRow({
               <Pencil />
               Change
             </DropdownMenuItem>
+            {(s.exposure === 'public' || canBePublic(s)) && (
+              <DropdownMenuItem onClick={onPublic}>
+                <Earth />
+                {s.exposure === 'public' ? 'Close to the internet' : 'Make reachable from the internet…'}
+              </DropdownMenuItem>
+            )}
             {s.kind === 'http' && !s.hasIcon && (
               <DropdownMenuItem onClick={onRefreshIcon}>
                 <RefreshCw />
@@ -273,7 +307,14 @@ function ServiceRow({
         <span className="block truncate text-xs">{s.tokenId !== null ? `announced by ${s.tokenLabel}` : 'added here'}</span>
       </div>
       <div className="col-span-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 md:col-span-1 md:col-start-3 md:row-start-1">
-        <span className="rounded-full bg-muted px-2 py-0.5 text-xs">{s.protected ? 'Behind SGC’s login' : 'Open in the home network'}</span>
+        {s.exposure === 'public' ? (
+          <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-800 dark:text-amber-300">
+            <Earth className="size-3" aria-hidden="true" />
+            Reachable from the internet{s.protected ? ', behind SGC’s login' : ''}
+          </span>
+        ) : (
+          <span className="rounded-full bg-muted px-2 py-0.5 text-xs">{s.protected ? 'Behind SGC’s login' : 'Open in the home network'}</span>
+        )}
         {lists.length > 0 && (
           <span className="truncate text-xs text-muted-foreground" title={lists.join(', ')}>
             on the list of {lists.length <= 2 ? lists.join(' and ') : `${lists.length} people`}
@@ -341,8 +382,8 @@ function ServiceForm({
           <select id="svc-kind" className={selectClass} value={input.kind}
             onChange={(e) => set({ kind: e.target.value as ServiceInput['kind'], protected: false })}>
             <option value="http">Web page (http or https)</option>
-            <option value="tcp">Other, TCP (a game server, …)</option>
-            <option value="udp">Other, UDP</option>
+            <option value="tcp">Other, TCP (not a website)</option>
+            <option value="udp">Other, UDP (not a website)</option>
           </select>
         </Field>
         <Field id="svc-category" label="Category (optional)" hint="Groups services on the dashboard.">
@@ -383,6 +424,32 @@ function ServiceForm({
           </Field>
         )}
       </div>
+      {!web && input.mode === 'proxied' && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field id="svc-srv" label="Its name for SRV records (optional)"
+            hint="For programs that look up SRV records (some game servers, chat and calling programs, for example): with one, they find the port by the service's name alone, once it is public.">
+            <Input id="svc-srv" value={input.srvService} maxLength={15} autoCapitalize="none" spellCheck={false} placeholder="minecraft"
+              onChange={(e) => set({ srvService: e.target.value.toLowerCase() })} />
+          </Field>
+          {input.kind === 'udp' && (
+            <Field id="svc-udp" label="Keep a quiet connection for (seconds)" hint="Empty: 3 seconds, the proxy's own. More for a service whose users can be quiet for a while (voice chat, games).">
+              <Input id="svc-udp" type="number" min={1} max={3600} value={input.udpTimeout || ''}
+                onChange={(e) => set({ udpTimeout: Number(e.target.value) })} />
+            </Field>
+          )}
+        </div>
+      )}
+      {!web && input.mode === 'proxied' && input.kind === 'tcp' && (
+        <label className="flex items-start gap-2 text-sm">
+          <Switch checked={input.proxyProtocol} onCheckedChange={(v) => set({ proxyProtocol: v })} />
+          <span>
+            Tell the server who each visitor is (PROXY protocol)
+            <span className="block text-xs text-muted-foreground">
+              Without it the server sees every visitor as this device. Only for a server set up to expect it (Velocity, Paper and the like have a setting); any other is confused by it.
+            </span>
+          </span>
+        </label>
+      )}
       {web && input.scheme === 'https' && (
         <label className="flex items-center gap-2 text-sm">
           <Switch checked={input.verifyTls} onCheckedChange={(v) => set({ verifyTls: v })} />
@@ -499,6 +566,93 @@ function IconsLine({
         by homarr-labs, under the Apache License 2.0, drawn anew by SGC at 64 pixels.
       </p>
     </div>
+  )
+}
+
+/**
+ * Opening a service to the internet, or closing it. Opening asks for the
+ * admin's password again and says what the router has to forward; closing
+ * is one click.
+ */
+function PublicDialog({
+  service,
+  internet,
+  onClose,
+  onDone,
+}: {
+  service: Service
+  internet: PublicStatus | null
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const closing = service.exposure === 'public'
+  const name = service.title || service.name
+  const web = service.kind === 'http'
+  async function act(event?: FormEvent) {
+    event?.preventDefault()
+    setBusy(true)
+    setError(null)
+    try {
+      await api.setServicePublic(service.id, !closing, password)
+      onDone()
+    } catch (e) {
+      setError(errorMessage(e))
+      setBusy(false)
+    }
+  }
+  const lan = internet?.lanAddress || 'this device'
+  return (
+    <AlertDialog open onOpenChange={(open) => !open && !busy && onClose()}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{closing ? `Close ${name} to the internet?` : `Make ${name} reachable from the internet?`}</AlertDialogTitle>
+          <AlertDialogDescription>
+            {closing
+              ? 'It is reachable from your home network only again, at once. Connections from the internet that are open now are cut.'
+              : web
+                ? `Anyone on the internet can then open https://${service.url.replace('https://', '')}${service.protected ? ' and is asked to sign in with SGC’s login first' : '; it relies on its own login'}. Visitors are limited and filtered as set on the System page (Internet).`
+                : `Anyone on the internet can then reach it at ${service.url}. Visitors are limited and filtered as set on the System page (Internet).`}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        {!closing && internet && !internet.wanted ? (
+          <p className="text-sm">Switch internet access on first, on the System page (Internet).</p>
+        ) : (
+          !closing && (
+            <form id="public-form" onSubmit={act} className="flex flex-col gap-3 text-sm">
+              <p className="rounded-lg bg-muted/50 p-3">
+                On your router:{' '}
+                {web
+                  ? `forward TCP port 443 to ${lan}, port ${internet?.doorPort ?? 8446} (once, for every website you make public).`
+                  : `forward ${service.kind.toUpperCase()} port ${service.listenPort} to ${lan}, port ${service.listenPort}.`}
+              </p>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="public-password">Your admin password</Label>
+                <Input id="public-password" type="password" autoComplete="current-password" value={password}
+                  onChange={(e) => setPassword(e.target.value)} />
+              </div>
+            </form>
+          )
+        )}
+        <FormError message={error} />
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+          {closing ? (
+            <Button onClick={() => act()} disabled={busy}>
+              {busy ? 'Closing…' : 'Close it'}
+            </Button>
+          ) : (
+            internet?.wanted !== false && (
+              <Button type="submit" form="public-form" disabled={busy || password === ''}>
+                {busy ? 'Opening…' : 'Make it reachable'}
+              </Button>
+            )
+          )}
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   )
 }
 

@@ -28,6 +28,7 @@ import (
 	"github.com/Troglobitten/sgc/internal/netinfo"
 	"github.com/Troglobitten/sgc/internal/proxy"
 	"github.com/Troglobitten/sgc/internal/proxycontrol"
+	"github.com/Troglobitten/sgc/internal/publiccontrol"
 	"github.com/Troglobitten/sgc/internal/services"
 	"github.com/Troglobitten/sgc/internal/store"
 	"github.com/Troglobitten/sgc/internal/vpncontrol"
@@ -51,6 +52,9 @@ type partsReport struct {
 	Endpoint    vpncontrol.EndpointState `json:"endpoint"`
 	Backups     backups.Status           `json:"backups"`
 	EndOfLife   eol.State                `json:"endOfLife"`
+	// Internet access (docs/design.md §14).
+	Internet   publiccontrol.Status `json:"internet"`
+	StaleLists []string             `json:"staleLists"`
 }
 
 func readParts(ctx context.Context, stateDir string) (partsReport, error) {
@@ -269,6 +273,12 @@ func readPartsReport(ctx context.Context, db *sql.DB, domain *domaincontrol.Serv
 		report.Backups = status
 	}
 	report.EndOfLife = eol.New(eol.Config{DB: db, Log: log}).State(ctx)
+	// What SGC recorded; nothing is asked of anybody.
+	internet := publiccontrol.New(publiccontrol.Config{DB: db, Audit: audit.New(db), Catalog: catalog, LAN: netinfo.Reader{}.Find, Log: log})
+	if report.Internet, err = internet.Status(ctx); err != nil {
+		return report, err
+	}
+	report.StaleLists = internet.StaleLists(ctx)
 	for _, s := range list {
 		switch {
 		case s.Pending:

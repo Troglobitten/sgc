@@ -162,12 +162,12 @@ func TestApproval(t *testing.T) {
 	if !results[0].Pending {
 		t.Fatalf("not pending: %+v", results[0])
 	}
-	if names, _ := w.catalog.ProxyServices(ctx, nil); len(names) != 0 {
+	if names, _ := w.catalog.ProxyServices(ctx, nil, false); len(names) != 0 {
 		t.Error("a pending service has a route")
 	}
 	list, _ := w.catalog.List(ctx)
 	w.catalog.Approve(ctx, "alex", "", list[0].ID)
-	if names, _ := w.catalog.ProxyServices(ctx, nil); len(names) != 1 {
+	if names, _ := w.catalog.ProxyServices(ctx, nil, false); len(names) != 1 {
 		t.Error("an approved service has no route")
 	}
 }

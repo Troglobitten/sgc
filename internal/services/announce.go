@@ -34,6 +34,8 @@ type AnnounceResult struct {
 	// Conflict: another server or the owner already has the name, which is
 	// worth an alert (docs/design.md §4.6).
 	Conflict bool `json:"conflict"`
+	// Closed: it was public, and the announcement's changes closed it.
+	Closed bool `json:"closed,omitempty"`
 }
 
 // Announce takes up what a server announced. The address is the one the
@@ -78,9 +80,10 @@ func (c *Catalog) Announce(ctx context.Context, tokenID int64, tokenLabel, ip st
 		var existingID int64
 		var existingToken sql.NullInt64
 		var existing Input
-		err := c.cfg.DB.QueryRowContext(ctx, `SELECT id, token_id, kind, mode, upstream_ip, upstream_port, scheme, listen_port, category
-			FROM service WHERE name = ?`, in.Name).Scan(&existingID, &existingToken, &existing.Kind, &existing.Mode,
-			&existing.UpstreamIP, &existing.UpstreamPort, &existing.Scheme, &existing.ListenPort, &existing.Category)
+		var exposure string
+		err := c.cfg.DB.QueryRowContext(ctx, `SELECT id, token_id, kind, mode, upstream_ip, upstream_port, scheme, listen_port, category,
+			exposure FROM service WHERE name = ?`, in.Name).Scan(&existingID, &existingToken, &existing.Kind, &existing.Mode,
+			&existing.UpstreamIP, &existing.UpstreamPort, &existing.Scheme, &existing.ListenPort, &existing.Category, &exposure)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			// New: first claim wins.
@@ -152,6 +155,14 @@ func (c *Catalog) Announce(ctx context.Context, tokenID int64, tokenLabel, ip st
 				}
 				c.cfg.DB.ExecContext(ctx, "DELETE FROM service_health WHERE service_id = ?", existingID)
 				c.record(ctx, actor, audit.ActionServiceAnnounced, describe(normal)+" (changed)", ip)
+				// A public service changed by an announcement is closed: a
+				// server must not be able to put something else (another
+				// port, its admin page) where the owner opened a door. Only
+				// the owner opens it again, in SGC's page.
+				if exposure == ExposurePublic {
+					c.closePublic(ctx, actor, ip, "its server announced it anew with other settings", "id = ?", existingID)
+					result.Closed = true
+				}
 				changed = true
 			} else if _, err := c.cfg.DB.ExecContext(ctx, "UPDATE service SET announced_at = ? WHERE id = ?", now, existingID); err != nil {
 				return nil, err
@@ -195,6 +206,9 @@ func (c *Catalog) TokenServices(ctx context.Context) (map[int64][]string, error)
 // ReleaseToken handles a removed token's services: switched off, or kept as
 // services of the page's own.
 func (c *Catalog) ReleaseToken(ctx context.Context, tokenID int64, keep bool) error {
+	// Its public services are closed either way: nobody vouches for what
+	// runs there any more.
+	c.closePublic(ctx, "system", "", "the token of its server was removed", "token_id = ?", tokenID)
 	query := "UPDATE service SET enabled = 0, token_id = NULL, updated_at = ? WHERE token_id = ?"
 	if keep {
 		query = "UPDATE service SET token_id = NULL, updated_at = ? WHERE token_id = ?"
